@@ -1,0 +1,76 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.1)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes'
+        required: false
+        type: string
+        default: 'See commit history for changes'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Get full history for changelog
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Update package version
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          npm version ${{ github.event.inputs.version }} -m "Release v${{ github.event.inputs.version }}"
+      
+      - name: Push version commit and tag
+        run: |
+          git push origin main
+          git push origin v${{ github.event.inputs.version }}
+      
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "First release - all commits included"
+            CHANGES=$(git log --pretty=format:"- %s" HEAD)
+          else
+            echo "Changes since $PREVIOUS_TAG"
+            CHANGES=$(git log --pretty=format:"- %s" $PREVIOUS_TAG..HEAD)
+          fi
+          
+          # Write to file for multi-line support
+          cat > changelog.md << EOF
+          ## What's Changed
+          
+          ${{ github.event.inputs.release_notes }}
+          
+          ### Commits
+          $CHANGES
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...v${{ github.event.inputs.version }}
+          EOF
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: Release v${{ github.event.inputs.version }}
+          body_path: changelog.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

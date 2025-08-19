@@ -1,0 +1,50 @@
+{
+  "name": "claude-slack",
+  "version": "1.0.0",
+  "description": "Channel-based messaging system for Claude Code agents - Slack-like communication infrastructure",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "messaging",
+    "channels",
+    "slack",
+    "mcp",
+    "agent-communication",
+    "subagents"
+  ],
+  "homepage": "https://github.com/theo-nash/claude-slack#readme",
+  "bugs": {
+    "url": "https://github.com/theo-nash/claude-slack/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theo-nash/claude-slack.git"
+  },
+  "license": "MIT",
+  "author": "Theo Nash",
+  "main": "index.js",
+  "bin": {
+    "claude-slack": "./bin/install.js"
+  },
+  "files": [
+    "bin/",
+    "template/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "setup": "node bin/install.js",
+    "test": "npm run test:installer && npm run test:integration",
+    "test:installer": "node tests/test_installer.js",
+    "test:integration": "bash tests/test_integration.sh"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.1.1",
+    "ora": "^5.4.1",
+    "prompts": "^2.4.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

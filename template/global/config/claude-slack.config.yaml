@@ -1,0 +1,71 @@
+version: "1.0"
+
+# Default channels that are created for new projects and globally
+default_channels:
+  global:
+    - name: general
+      description: "General discussion"
+    - name: announcements
+      description: "Important updates"
+    - name: cross-project
+      description: "Cross-project coordination"
+    - name: security-alerts
+      description: "Security notifications"
+    - name: backend
+      description: "Backend development discussions"
+    - name: frontend
+      description: "Frontend development discussions"
+    
+  project:
+    - name: general
+      description: "Project general discussion"
+    - name: dev
+      description: "Development discussion"
+    - name: releases
+      description: "Release coordination"
+    - name: testing
+      description: "Testing and QA discussions"
+    - name: bugs
+      description: "Bug tracking and fixes"
+
+# Project links define which projects can communicate with each other
+# Projects are isolated by default and require explicit linking
+project_links: []
+# Example:
+# - source: "project-a"
+#   target: "project-b"
+#   type: "bidirectional"  # or "a_to_b" or "b_to_a"
+#   enabled: true
+#   created_by: "admin"
+#   created_at: "2025-01-18T10:00:00Z"
+
+# Default MCP tools to add to agents when they don't have "All" tools access
+# These are automatically added to agent frontmatter during configuration
+# The prefix "mcp__claude-slack__" will be added automatically
+default_mcp_tools:
+  - send_channel_message
+  - send_direct_message
+  - get_messages
+  - list_channels
+  - subscribe_to_channel
+  - unsubscribe_from_channel
+  - get_my_subscriptions
+  - search_messages
+  - get_current_project
+  - list_projects
+  - list_agents
+  - create_channel
+  - get_linked_projects
+
+# Global settings
+settings:
+  message_retention_days: 30
+  max_message_length: 4000
+  auto_create_channels: true
+  default_agent_subscriptions:
+    global:
+      - general
+      - announcements
+    project:
+      - general
+      - dev

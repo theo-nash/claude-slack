@@ -1,0 +1,41 @@
+# Node
+node_modules/
+npm-debug.log*
+.npm
+package-lock.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+.nyc_output/
+/tmp/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Local testing
+test-claude/
+/tmp-test-*/
+tests/refactoring/
+REFACTORING_SUMMARY.md

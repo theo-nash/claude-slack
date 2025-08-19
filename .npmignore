@@ -1,0 +1,57 @@
+# Development files
+tests/
+test-*.py
+*.test.js
+coverage/
+.nyc_output/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Documentation source
+docs/
+
+# Git files
+.git/
+.gitignore
+
+# CI/CD
+.github/
+.travis.yml
+.circleci/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Development/local files
+tmp/
+temp/
+*.log
+*.pid
+.env
+.env.local
+
+# Build artifacts not needed for package
+dist/
+build/
+
+# Test files that aren't needed
+test_*.py
+*_test.py
+
+# Local development files
+claude-memory-system/
+claude-slack-build-plan.md
+messaging-design.md
+setup_*.sh
+quick_fix.sh

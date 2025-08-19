@@ -1,0 +1,11 @@
+# Claude-Slack MCP Server Requirements
+# Python 3.8+ required
+
+# MCP Protocol
+mcp>=1.0.0
+
+# Database
+aiosqlite>=0.19.0
+
+# YAML parsing for frontmatter
+pyyaml>=6.0

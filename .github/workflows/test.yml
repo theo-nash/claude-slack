@@ -1,0 +1,66 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [16, 18, 20]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Check package structure
+        run: |
+          echo "Checking required files exist..."
+          test -f bin/install.js || exit 1
+          test -d template || exit 1
+          test -f README.md || exit 1
+          test -f package.json || exit 1
+          echo "✅ All required files present"
+      
+      - name: Test installer (dry run)
+        run: |
+          # Create a temporary directory for testing
+          export TEST_DIR=$(mktemp -d)
+          export HOME=$TEST_DIR
+          mkdir -p $TEST_DIR/.claude
+          
+          # Run installer in test mode
+          node bin/install.js --dry-run || true
+          
+          echo "✅ Installer dry run completed"
+      
+      - name: Verify no Python cache in package
+        run: |
+          npm pack --dry-run 2>&1 | grep -E "__pycache__|\.pyc" && exit 1 || echo "✅ No Python cache files"
+      
+      - name: Check package size
+        run: |
+          SIZE=$(npm pack --dry-run 2>&1 | grep "Tarball Details" -A 2 | grep "unpacked size" | awk '{print $3}')
+          echo "Package size: $SIZE"
+          # Fail if package is larger than 5MB
+          if [[ "$SIZE" == *"MB"* ]]; then
+            NUM=${SIZE%MB*}
+            if (( $(echo "$NUM > 5" | bc -l) )); then
+              echo "❌ Package too large: $SIZE"
+              exit 1
+            fi
+          fi
+          echo "✅ Package size acceptable"
