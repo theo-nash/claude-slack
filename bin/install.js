@@ -2,7 +2,7 @@
 /**
  * Claude-Slack NPX Installer
  * Installs channel-based messaging system for Claude Code agents
- * ALWAYS installs globally to ~/.claude with optional project agent setup
+ * Installs globally to Claude configuration directory (respects CLAUDE_CONFIG_DIR)
  */
 
 const fs = require('fs-extra');
@@ -13,8 +13,24 @@ const chalk = require('chalk');
 const ora = require('ora');
 const os = require('os');
 
+/**
+ * Get the Claude configuration directory, respecting CLAUDE_CONFIG_DIR environment variable
+ * @returns {string} Path to Claude configuration directory
+ */
+function getClaudeConfigDir() {
+    // Check for CLAUDE_CONFIG_DIR environment variable
+    const customDir = process.env.CLAUDE_CONFIG_DIR;
+    if (customDir) {
+        // Expand ~ to home directory if present
+        const expandedDir = customDir.replace(/^~/, os.homedir());
+        return path.resolve(expandedDir);
+    }
+    // Default to ~/.claude
+    return path.join(os.homedir(), '.claude');
+}
+
 // Configuration
-const GLOBAL_CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const GLOBAL_CLAUDE_DIR = getClaudeConfigDir();
 const MCP_SERVER_DIR = 'mcp/claude-slack';
 const PYTHON_MIN_VERSION = '3.8';
 const DB_NAME = 'claude-slack.db';
@@ -149,9 +165,15 @@ class ClaudeSlackInstaller {
 
     async confirmInstallation() {
         console.log(chalk.yellow('\n📋 Installation Summary:'));
+        
+        // Show if using custom config directory
+        if (process.env.CLAUDE_CONFIG_DIR) {
+            console.log(chalk.blue(`  ℹ️  Using custom config directory from CLAUDE_CONFIG_DIR`));
+        }
+        
         console.log(`  • ${chalk.bold('Global Installation')}: ${this.globalClaudeDir}`);
         console.log(`  • ${chalk.bold('MCP Server')}: Always global`);
-        console.log(`  • ${chalk.bold('Database')}: Always global at ~/.claude/data/`);
+        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
         console.log(`  • ${chalk.bold('Commands')}: Global slash commands`);
         console.log(`  • ${chalk.bold('Hook')}: Global PreToolUse hook for project detection`);
         
@@ -234,7 +256,11 @@ pyyaml>=6.0
             });
             
             // Install dependencies
-            const pipCmd = path.join('venv', 'bin', 'pip');
+            // Handle platform-specific pip location
+            const pipCmd = process.platform === 'win32'
+                ? path.join('venv', 'Scripts', 'pip.exe')
+                : path.join('venv', 'bin', 'pip');
+            
             execSync(`${pipCmd} install --upgrade pip`, {
                 cwd: mcpDir,
                 stdio: 'pipe'
@@ -266,7 +292,10 @@ pyyaml>=6.0
         
         // Run Python script to create database with schema
         const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
-        const pythonPath = path.join(mcpDir, 'venv', 'bin', 'python');
+        // Handle platform-specific Python executable location
+        const pythonPath = process.platform === 'win32'
+            ? path.join(mcpDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(mcpDir, 'venv', 'bin', 'python');
         const schemaPath = path.join(mcpDir, 'db', 'schema.sql');
         
         const initScript = `
@@ -319,19 +348,89 @@ print('Database initialized successfully')
         }
         
         // Add claude-slack MCP server configuration
+        // Use the venv Python to ensure dependencies are available
+        // Handle platform-specific Python executable location
+        const venvPython = process.platform === 'win32'
+            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
+            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
+        
         settings.mcpServers['claude-slack'] = {
-            "command": "python",
-            "args": ["-m", "claude_slack.server"],
+            "command": venvPython,
+            "args": ["server.py"],
             "cwd": path.join(this.globalClaudeDir, MCP_SERVER_DIR),
             "env": {
                 "PYTHONPATH": path.join(this.globalClaudeDir, MCP_SERVER_DIR),
-                "DB_PATH": path.join(this.globalClaudeDir, 'data', DB_NAME)
+                "DB_PATH": path.join(this.globalClaudeDir, 'data', DB_NAME),
+                "CLAUDE_CONFIG_DIR": this.globalClaudeDir  // Pass config dir to Python
             }
         };
         
         // Save updated settings
         await fs.writeJson(settingsPath, settings, { spaces: 2 });
         this.spinner.succeed('MCP server configured in global settings.json');
+    }
+
+    async createWrapperScripts(scriptsDir) {
+        // Create wrapper scripts that use the venv Python
+        // Handle platform-specific paths
+        const venvPython = process.platform === 'win32'
+            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
+            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
+        
+        if (process.platform === 'win32') {
+            // Windows batch files
+            const configureBat = `@echo off
+REM Wrapper script for configure_agents.py using venv Python
+set SCRIPT_DIR=%~dp0
+set VENV_PYTHON="${venvPython}"
+"%VENV_PYTHON%" "%SCRIPT_DIR%configure_agents.py" %*
+`;
+            await fs.writeFile(path.join(scriptsDir, 'configure_agents.bat'), configureBat);
+            
+            const registerBat = `@echo off
+REM Wrapper script for register_project_agents.py using venv Python
+set SCRIPT_DIR=%~dp0
+set VENV_PYTHON="${venvPython}"
+"%VENV_PYTHON%" "%SCRIPT_DIR%register_project_agents.py" %*
+`;
+            await fs.writeFile(path.join(scriptsDir, 'register_project_agents.bat'), registerBat);
+            
+            const linksBat = `@echo off
+REM Wrapper script for manage_project_links.py using venv Python
+set SCRIPT_DIR=%~dp0
+set VENV_PYTHON="${venvPython}"
+"%VENV_PYTHON%" "%SCRIPT_DIR%manage_project_links.py" %*
+`;
+            await fs.writeFile(path.join(scriptsDir, 'manage_project_links.bat'), linksBat);
+        } else {
+            // Unix/Linux/Mac shell scripts
+            const configureWrapper = `#!/bin/bash
+# Wrapper script for configure_agents.py using venv Python
+SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+VENV_PYTHON="${venvPython}"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/configure_agents.py" "$@"
+`;
+            await fs.writeFile(path.join(scriptsDir, 'configure_agents'), configureWrapper);
+            await fs.chmod(path.join(scriptsDir, 'configure_agents'), '755');
+            
+            const registerWrapper = `#!/bin/bash
+# Wrapper script for register_project_agents.py using venv Python
+SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+VENV_PYTHON="${venvPython}"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/register_project_agents.py" "$@"
+`;
+            await fs.writeFile(path.join(scriptsDir, 'register_project_agents'), registerWrapper);
+            await fs.chmod(path.join(scriptsDir, 'register_project_agents'), '755');
+            
+            const linksWrapper = `#!/bin/bash
+# Wrapper script for manage_project_links.py using venv Python
+SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
+VENV_PYTHON="${venvPython}"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
+`;
+            await fs.writeFile(path.join(scriptsDir, 'manage_project_links'), linksWrapper);
+            await fs.chmod(path.join(scriptsDir, 'manage_project_links'), '755');
+        }
     }
 
     async installHooks() {
@@ -369,6 +468,9 @@ print('Database initialized successfully')
         const linksTarget = path.join(scriptsDir, 'manage_project_links.py');
         await fs.copy(linksSource, linksTarget, { overwrite: true });
         
+        // Create wrapper scripts that use venv Python
+        await this.createWrapperScripts(scriptsDir);
+        
         // Update settings.json to register the hooks
         const settingsPath = path.join(this.globalClaudeDir, 'settings.json');
         let settings = {};
@@ -376,40 +478,55 @@ print('Database initialized successfully')
             settings = await fs.readJson(settingsPath);
         }
         
-        // Ensure hooks object exists
+        // Ensure hooks object exists with correct Claude Code format
         if (!settings.hooks) {
             settings.hooks = {};
         }
-        if (!settings.hooks.sessionStart) {
-            settings.hooks.sessionStart = [];
-        }
-        if (!settings.hooks.preToolUse) {
-            settings.hooks.preToolUse = [];
-        }
         
-        // Register SessionStart hook
-        const sessionHookConfig = {
-            "name": "slack_session_start",
-            "path": sessionHookTarget,
-            "enabled": true
-        };
-        
-        const existingSessionHook = settings.hooks.sessionStart.find(h => h.name === 'slack_session_start');
-        if (!existingSessionHook) {
-            settings.hooks.sessionStart.push(sessionHookConfig);
+        // Configure SessionStart hook (Claude Code format)
+        if (!settings.hooks.SessionStart) {
+            settings.hooks.SessionStart = [];
         }
         
-        // Register PreToolUse hook
-        const preToolHookConfig = {
-            "name": "slack_pre_tool_use",
-            "path": preToolHookTarget,
-            "pattern": "claude_slack.*",
-            "enabled": true
-        };
+        // Check if our SessionStart hook already exists
+        const sessionHookCommand = `python3 ${sessionHookTarget}`;
+        const hasSessionHook = settings.hooks.SessionStart.some(entry => 
+            entry.hooks && entry.hooks.some(h => h.command === sessionHookCommand)
+        );
         
-        const existingPreToolHook = settings.hooks.preToolUse.find(h => h.name === 'slack_pre_tool_use');
-        if (!existingPreToolHook) {
-            settings.hooks.preToolUse.push(preToolHookConfig);
+        if (!hasSessionHook) {
+            settings.hooks.SessionStart.push({
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": sessionHookCommand
+                    }
+                ]
+            });
+        }
+        
+        // Configure PreToolUse hook for claude-slack MCP tools
+        if (!settings.hooks.PreToolUse) {
+            settings.hooks.PreToolUse = [];
+        }
+        
+        // Check if our PreToolUse hook already exists
+        const preToolHookCommand = `python3 ${preToolHookTarget}`;
+        const hasPreToolHook = settings.hooks.PreToolUse.some(entry =>
+            entry.matcher === "mcp__claude-slack__.*" &&
+            entry.hooks && entry.hooks.some(h => h.command === preToolHookCommand)
+        );
+        
+        if (!hasPreToolHook) {
+            settings.hooks.PreToolUse.push({
+                "matcher": "mcp__claude-slack__.*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": preToolHookCommand
+                    }
+                ]
+            });
         }
         
         await fs.writeJson(settingsPath, settings, { spaces: 2 });
@@ -545,9 +662,11 @@ print('Database initialized successfully')
         console.log('  5. Start using channels immediately!\n');
         
         console.log(chalk.cyan('🔧 Configuration Scripts:'));
-        console.log(`  • Configure agents: python3 ${path.join(this.globalClaudeDir, 'scripts', 'configure_agents.py')}`);
-        console.log(`  • Register project agents: python3 ${path.join(this.globalClaudeDir, 'scripts', 'register_project_agents.py')} [path]`);
-        console.log(`  • Manage project links: python3 ${path.join(this.globalClaudeDir, 'scripts', 'manage_project_links.py')} [command]`);
+        console.log(chalk.gray('  (Scripts automatically use the virtual environment)'));
+        const scriptExt = process.platform === 'win32' ? '.bat' : '';
+        console.log(`  • Configure agents: ${path.join(this.globalClaudeDir, 'scripts', `configure_agents${scriptExt}`)}`);
+        console.log(`  • Register project agents: ${path.join(this.globalClaudeDir, 'scripts', `register_project_agents${scriptExt}`)} [path]`);
+        console.log(`  • Manage project links: ${path.join(this.globalClaudeDir, 'scripts', `manage_project_links${scriptExt}`)} [command]`);
         console.log('  • Project links control cross-project agent discovery and communication');
         console.log('  • Agents auto-configured on SessionStart hook\n');
         

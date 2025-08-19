@@ -25,13 +25,14 @@ from frontmatter import FrontmatterParser, FrontmatterUpdater
 from db.manager import DatabaseManager
 from admin_operations import AdminOperations
 from transcript_parser import TranscriptParser
+from environment_config import env_config
 
 # Initialize server
 app = Server("claude-slack")
 
-# Configuration - ALWAYS use global paths
-CLAUDE_DIR = os.path.expanduser("~/.claude")
-DB_PATH = os.path.expanduser("~/.claude/data/claude-slack.db")
+# Configuration - Use environment-aware paths
+CLAUDE_DIR = str(env_config.global_claude_dir)
+DB_PATH = str(env_config.db_path)
 
 # Global managers
 db_manager = None
@@ -47,8 +48,8 @@ class SessionContextManager:
     """
     
     def __init__(self):
-        self.db_path = Path(os.path.expanduser("~/.claude/data/claude-slack.db"))
-        self.sessions_dir = Path(os.path.expanduser("~/.claude/data/claude-slack-sessions"))
+        self.db_path = env_config.db_path
+        self.sessions_dir = env_config.sessions_dir
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.cache = {}  # In-memory cache for performance
         self.cache_ttl = 60  # Cache for 60 seconds

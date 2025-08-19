@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-slack_session_start.py - MUST BE INSTALLED GLOBALLY at ~/.claude/hooks/
+slack_session_start.py - MUST BE INSTALLED GLOBALLY in Claude hooks directory
 Initializes claude-slack session context and ensures agent MCP tool access.
 
 This hook runs at the start of every Claude Code session and:
@@ -21,13 +21,21 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Add MCP directory to path to import admin_operations
-sys.path.insert(0, str(Path.home() / '.claude' / 'mcp' / 'claude-slack'))
+# Add MCP directory to path to import modules
+claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
+sys.path.insert(0, os.path.join(claude_config_dir, 'mcp', 'claude-slack'))
 
 try:
     from admin_operations import AdminOperations
 except ImportError:
     AdminOperations = None
+
+try:
+    from environment_config import env_config
+    USE_ENV_CONFIG = True
+except ImportError:
+    # Fallback if environment_config not available yet
+    USE_ENV_CONFIG = False
 
 def find_project_root(working_dir: str) -> Optional[str]:
     """
@@ -39,6 +47,12 @@ def find_project_root(working_dir: str) -> Optional[str]:
     Returns:
         Absolute path to project root or None if no project found
     """
+    if USE_ENV_CONFIG:
+        # Use centralized project detection
+        result = env_config.find_project_root(working_dir)
+        return str(result) if result else None
+    
+    # Fallback to original logic
     current = Path(working_dir).resolve()
     
     # Walk up directory tree
@@ -73,8 +87,11 @@ def register_session_in_db(session_id: str, project_info: Optional[Dict[str, str
         True if successful
     """
     try:
-        # Database path
-        db_path = Path.home() / '.claude' / 'data' / 'claude-slack.db'
+        # Database path - use environment config if available
+        if USE_ENV_CONFIG:
+            db_path = env_config.db_path
+        else:
+            db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
         
         # Ensure database directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,7 +201,10 @@ def ensure_agent_mcp_tools(claude_dir: Path, agent_name: str) -> bool:
     slack_tools = []
     try:
         # Try to read from config first
-        config_path = Path.home() / '.claude' / 'config' / 'claude-slack.config.yaml'
+        if USE_ENV_CONFIG:
+            config_path = env_config.config_path
+        else:
+            config_path = Path(claude_config_dir) / 'config' / 'claude-slack.config.yaml'
         if config_path.exists():
             import yaml
             with open(config_path, 'r') as f:
@@ -377,7 +397,10 @@ def main():
         
         # Debug logging if enabled
         if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            debug_file = Path.home() / '.claude' / 'logs' / 'slack_session_start.log'
+            if USE_ENV_CONFIG:
+                debug_file = env_config.logs_dir / 'slack_session_start.log'
+            else:
+                debug_file = Path(claude_config_dir) / 'logs' / 'slack_session_start.log'
             debug_file.parent.mkdir(parents=True, exist_ok=True)
             with open(debug_file, 'a') as f:
                 f.write(f"\n--- SessionStart Hook ---\n")
@@ -412,7 +435,10 @@ def main():
         claude_dirs = []
         
         # Always check global agents
-        global_claude = Path.home() / '.claude'
+        if USE_ENV_CONFIG:
+            global_claude = env_config.global_claude_dir
+        else:
+            global_claude = Path(claude_config_dir)
         if global_claude.exists():
             claude_dirs.append(global_claude)
         

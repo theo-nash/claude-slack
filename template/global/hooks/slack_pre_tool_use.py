@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-slack_pre_tool_use.py - MUST BE INSTALLED GLOBALLY at ~/.claude/hooks/
+slack_pre_tool_use.py - MUST BE INSTALLED GLOBALLY in Claude hooks directory
 Sets project context in SQLite database before each tool invocation.
 
 This hook receives a JSON payload from Claude Code on stdin containing:
@@ -21,6 +21,17 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+# Add MCP directory to path to import environment_config
+claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
+sys.path.insert(0, os.path.join(claude_config_dir, 'mcp', 'claude-slack'))
+
+try:
+    from environment_config import env_config
+    USE_ENV_CONFIG = True
+except ImportError:
+    # Fallback if environment_config not available yet
+    USE_ENV_CONFIG = False
+
 def find_project_root(working_dir: str) -> Optional[str]:
     """
     Walk up from working_dir to find .claude directory
@@ -31,6 +42,12 @@ def find_project_root(working_dir: str) -> Optional[str]:
     Returns:
         Absolute path to project root or None if no project found
     """
+    if USE_ENV_CONFIG:
+        # Use centralized project detection
+        result = env_config.find_project_root(working_dir)
+        return str(result) if result else None
+    
+    # Fallback to original logic
     current = Path(working_dir).resolve()
     
     # Walk up directory tree
@@ -66,8 +83,11 @@ def set_session_context_db(session_id: str, project_info: Optional[Dict[str, str
         True if successful
     """
     try:
-        # Database path
-        db_path = Path.home() / '.claude' / 'data' / 'claude-slack.db'
+        # Database path - use environment config if available
+        if USE_ENV_CONFIG:
+            db_path = env_config.db_path
+        else:
+            db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
         
         # Ensure database directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,8 +141,11 @@ def set_session_context_file(session_id: str, project_info: Optional[Dict[str, s
         True if successful
     """
     try:
-        # Create sessions directory
-        sessions_dir = Path.home() / '.claude' / 'data' / 'claude-slack-sessions'
+        # Create sessions directory - use environment config if available
+        if USE_ENV_CONFIG:
+            sessions_dir = env_config.sessions_dir
+        else:
+            sessions_dir = Path(claude_config_dir) / 'data' / 'claude-slack-sessions'
         sessions_dir.mkdir(parents=True, exist_ok=True)
         
         # Write session context file
@@ -163,7 +186,10 @@ def main():
         
         # Debug logging if enabled
         if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            debug_file = Path.home() / '.claude' / 'logs' / 'slack_pre_tool_use.log'
+            if USE_ENV_CONFIG:
+                debug_file = env_config.logs_dir / 'slack_pre_tool_use.log'
+            else:
+                debug_file = Path(claude_config_dir) / 'logs' / 'slack_pre_tool_use.log'
             debug_file.parent.mkdir(parents=True, exist_ok=True)
             with open(debug_file, 'a') as f:
                 f.write(f"\n--- PreToolUse Hook ---\n")
