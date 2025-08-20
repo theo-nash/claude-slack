@@ -62,6 +62,7 @@ settings:
   message_retention_days: 30
   max_message_length: 4000
   auto_create_channels: true
+  auto_link_projects: true
   default_agent_subscriptions:
     global:
       - general

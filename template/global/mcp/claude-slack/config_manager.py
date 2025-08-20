@@ -54,7 +54,8 @@ class ConfigManager:
         "settings": {
             "message_retention_days": 30,
             "max_message_length": 4000,
-            "auto_create_channels": True
+            "auto_create_channels": True,
+            "auto_link_projects": True,
         }
     }
     

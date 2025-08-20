@@ -34,7 +34,7 @@ class FrontmatterParser:
             return {
                 'error': f"Failed to parse file: {str(e)}",
                 'name': Path(file_path).stem,
-                'channels': ['general', 'announcements'],
+                'channels': {'global': ['general', 'announcements'], 'project': []},
                 'direct_messages': True
             }
     
@@ -52,7 +52,7 @@ class FrontmatterParser:
         if not content.startswith('---'):
             return {
                 'error': 'No frontmatter found',
-                'channels': ['general', 'announcements'],
+                'channels': {'global': ['general', 'announcements'], 'project': []},
                 'direct_messages': True
             }
         
@@ -68,7 +68,7 @@ class FrontmatterParser:
         if end_index == -1:
             return {
                 'error': 'Invalid frontmatter format',
-                'channels': ['general', 'announcements'],
+                'channels': {'global': ['general', 'announcements'], 'project': []},
                 'direct_messages': True
             }
         

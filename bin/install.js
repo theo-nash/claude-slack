@@ -56,43 +56,43 @@ class ClaudeSlackInstaller {
         try {
             // 1. Check prerequisites
             await this.checkPrerequisites();
-            
+
             // 2. Detect project context (optional)
             await this.detectProjectContext();
-            
+
             // 3. Confirm installation
             const confirmed = await this.confirmInstallation();
             if (!confirmed) {
                 console.log(chalk.yellow('\n⚠️  Installation cancelled'));
                 process.exit(0);
             }
-            
+
             // 4. Install global components
             await this.installGlobalComponents();
-            
+
             // 5. Setup Python environment
             await this.setupPythonEnvironment();
-            
+
             // 6. Initialize database
             await this.initializeDatabase();
-            
+
             // 7. Configure MCP in global settings
             await this.configureMCP();
-            
+
             // 8. Install hooks (SessionStart and PreToolUse)
             await this.installHooks();
-            
+
             // 9. Setup project agents (if in project)
             if (this.hasProject) {
                 await this.setupProjectAgents();
             }
-            
+
             // 10. Update existing agents for scoped subscriptions
             await this.migrateExistingAgents();
-            
+
             // 11. Display success message
             this.displaySuccess();
-            
+
         } catch (error) {
             if (this.spinner) this.spinner.fail();
             console.error(chalk.red(`\n❌ Installation failed: ${error.message}`));
@@ -103,16 +103,16 @@ class ClaudeSlackInstaller {
 
     async checkPrerequisites() {
         this.spinner = ora('Checking prerequisites...').start();
-        
+
         const issues = [];
-        
+
         // Check for global .claude directory
         if (!fs.existsSync(this.globalClaudeDir)) {
             // Create it if it doesn't exist
             fs.ensureDirSync(this.globalClaudeDir);
             this.spinner.info(`Created global Claude directory at ${this.globalClaudeDir}`);
         }
-        
+
         // Check Python version
         try {
             const pythonVersion = execSync('python3 --version', { encoding: 'utf8' });
@@ -122,7 +122,7 @@ class ClaudeSlackInstaller {
                 const minor = parseInt(versionMatch[2]);
                 const minMajor = parseInt(PYTHON_MIN_VERSION.split('.')[0]);
                 const minMinor = parseInt(PYTHON_MIN_VERSION.split('.')[1]);
-                
+
                 if (major < minMajor || (major === minMajor && minor < minMinor)) {
                     issues.push(`Python ${PYTHON_MIN_VERSION}+ required (found ${versionMatch[1]}.${versionMatch[2]})`);
                 }
@@ -130,11 +130,11 @@ class ClaudeSlackInstaller {
         } catch (error) {
             issues.push('Python 3 not found (required for MCP server)');
         }
-        
+
         // Check for existing claude-memory-system
         const memorySystemPath = path.join(this.globalClaudeDir, 'agents', 'memory-manager.md');
         const hasMemorySystem = fs.existsSync(memorySystemPath);
-        
+
         if (hasMemorySystem) {
             this.spinner.succeed('Prerequisites checked (claude-memory-system detected)');
             console.log(chalk.blue('ℹ️  Existing claude-memory-system will be integrated'));
@@ -149,10 +149,10 @@ class ClaudeSlackInstaller {
 
     async detectProjectContext() {
         this.spinner = ora('Detecting project context...').start();
-        
+
         // Check for local .claude directory
         const localClaude = path.join(process.cwd(), '.claude');
-        
+
         if (fs.existsSync(localClaude)) {
             this.projectDir = process.cwd();
             this.projectClaudeDir = localClaude;
@@ -165,78 +165,104 @@ class ClaudeSlackInstaller {
 
     async confirmInstallation() {
         console.log(chalk.yellow('\n📋 Installation Summary:'));
-        
+
         // Show if using custom config directory
         if (process.env.CLAUDE_CONFIG_DIR) {
             console.log(chalk.blue(`  ℹ️  Using custom config directory from CLAUDE_CONFIG_DIR`));
         }
-        
+
         console.log(`  • ${chalk.bold('Global Installation')}: ${this.globalClaudeDir}`);
         console.log(`  • ${chalk.bold('MCP Server')}: Always global`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
         console.log(`  • ${chalk.bold('Commands')}: Global slash commands`);
         console.log(`  • ${chalk.bold('Hook')}: Global PreToolUse hook for project detection`);
-        
+
         if (this.hasProject) {
             console.log(`  • ${chalk.bold('Project')}: ${this.projectDir}`);
             console.log(`    - Will add example agent with scoped subscriptions`);
         }
-        
+
         console.log(chalk.cyan('\n📚 Features:'));
         console.log('  • Project isolation with scoped channels');
         console.log('  • Global vs project message separation');
         console.log('  • Automatic project detection');
         console.log('  • Frontmatter-based subscriptions');
-        
+
         const response = await prompts({
             type: 'confirm',
             name: 'proceed',
             message: 'Proceed with installation?',
             initial: true
         });
-        
+
         return response.proceed;
     }
 
     async installGlobalComponents() {
         this.spinner = ora('Installing global components...').start();
-        
+
         const templateDir = path.join(__dirname, '..', 'template');
         const globalTemplateDir = path.join(templateDir, 'global');
-        
-        // Copy MCP server
+
+        // Copy MCP server with new manager architecture
         const mcpSource = path.join(globalTemplateDir, 'mcp');
         const mcpTarget = path.join(this.globalClaudeDir, 'mcp');
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
+        // Ensure new manager directories are properly copied
+        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager'];
+        for (const dir of managerDirs) {
+            const dirSource = path.join(mcpSource, 'claude-slack', dir);
+            const dirTarget = path.join(mcpTarget, 'claude-slack', dir);
+            if (fs.existsSync(dirSource)) {
+                await fs.copy(dirSource, dirTarget, { overwrite: false });
+                this.spinner.info(`Copied ${dir} manager module`);
+            }
+        }
+
+        // Make server.py executable on Unix-like systems
+        if (process.platform !== 'win32') {
+            const serverPath = path.join(mcpTarget, 'claude-slack', 'server.py');
+            if (fs.existsSync(serverPath)) {
+                await fs.chmod(serverPath, '755');
+            }
+        }
+
         // Copy commands
         const commandsSource = path.join(globalTemplateDir, 'commands');
         const commandsTarget = path.join(this.globalClaudeDir, 'commands');
         await fs.copy(commandsSource, commandsTarget, { overwrite: false });
-        
+
         // Copy config file
         const configSource = path.join(globalTemplateDir, 'config');
         const configTarget = path.join(this.globalClaudeDir, 'config');
         await fs.copy(configSource, configTarget, { overwrite: false });
-        
+
         // Copy scripts (including manage_project_links.py)
         const scriptsSource = path.join(globalTemplateDir, 'scripts');
         const scriptsTarget = path.join(this.globalClaudeDir, 'scripts');
         await fs.copy(scriptsSource, scriptsTarget, { overwrite: false });
-        
+
         // Ensure data directory exists
         const dataDir = path.join(this.globalClaudeDir, 'data');
         await fs.ensureDir(dataDir);
         await fs.ensureDir(path.join(dataDir, 'backups'));
         
+        // Ensure log directories exist
+        const logDir = path.join(this.globalClaudeDir, 'logs', 'claude-slack');
+        await fs.ensureDir(logDir);
+        await fs.ensureDir(path.join(logDir, 'hooks'));
+        await fs.ensureDir(path.join(logDir, 'managers'));
+        await fs.ensureDir(path.join(logDir, 'archive'));
+
         this.spinner.succeed('Global components installed');
     }
 
     async setupPythonEnvironment() {
         this.spinner = ora('Setting up Python environment...').start();
-        
+
         const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
-        
+
         // First, create requirements.txt if it doesn't exist
         const requirementsPath = path.join(mcpDir, 'requirements.txt');
         if (!fs.existsSync(requirementsPath)) {
@@ -247,30 +273,30 @@ pyyaml>=6.0
 `;
             await fs.writeFile(requirementsPath, requirements);
         }
-        
+
         try {
             // Create virtual environment
             execSync('python3 -m venv venv', {
                 cwd: mcpDir,
                 stdio: 'pipe'
             });
-            
+
             // Install dependencies
             // Handle platform-specific pip location
             const pipCmd = process.platform === 'win32'
                 ? path.join('venv', 'Scripts', 'pip.exe')
                 : path.join('venv', 'bin', 'pip');
-            
+
             execSync(`${pipCmd} install --upgrade pip`, {
                 cwd: mcpDir,
                 stdio: 'pipe'
             });
-            
+
             execSync(`${pipCmd} install -r requirements.txt`, {
                 cwd: mcpDir,
                 stdio: 'pipe'
             });
-            
+
             this.spinner.succeed('Python environment configured');
         } catch (error) {
             this.spinner.fail('Failed to setup Python environment');
@@ -280,16 +306,16 @@ pyyaml>=6.0
 
     async initializeDatabase() {
         this.spinner = ora('Initializing SQLite database...').start();
-        
+
         const dataDir = path.join(this.globalClaudeDir, 'data');
         const dbPath = path.join(dataDir, DB_NAME);
-        
+
         // Check if database already exists
         if (fs.existsSync(dbPath)) {
             this.spinner.info('Database already exists, skipping initialization');
             return;
         }
-        
+
         // Run Python script to create database with schema
         const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
         // Handle platform-specific Python executable location
@@ -297,7 +323,7 @@ pyyaml>=6.0
             ? path.join(mcpDir, 'venv', 'Scripts', 'python.exe')
             : path.join(mcpDir, 'venv', 'bin', 'python');
         const schemaPath = path.join(mcpDir, 'db', 'schema.sql');
-        
+
         const initScript = `
 import sqlite3
 import os
@@ -318,7 +344,7 @@ conn.close()
 
 print('Database initialized successfully')
 `;
-        
+
         try {
             execSync(`${pythonPath} -c "${initScript}"`, {
                 cwd: mcpDir,
@@ -332,42 +358,44 @@ print('Database initialized successfully')
     }
 
     async configureMCP() {
-        this.spinner = ora('Configuring MCP server in global settings...').start();
-        
-        const settingsPath = path.join(this.globalClaudeDir, 'settings.json');
-        let settings = {};
-        
-        // Read existing settings if present
-        if (fs.existsSync(settingsPath)) {
-            settings = await fs.readJson(settingsPath);
+        this.spinner = ora('Configuring MCP server...').start();
+
+        // MCP servers are configured in ~/.claude.json (not settings.json)
+        const claudeJsonPath = path.join(os.homedir(), '.claude.json');
+        let claudeConfig = {};
+
+        // Read existing config if present
+        if (fs.existsSync(claudeJsonPath)) {
+            claudeConfig = await fs.readJson(claudeJsonPath);
         }
-        
+
         // Ensure mcpServers object exists
-        if (!settings.mcpServers) {
-            settings.mcpServers = {};
+        if (!claudeConfig.mcpServers) {
+            claudeConfig.mcpServers = {};
         }
-        
+
         // Add claude-slack MCP server configuration
         // Use the venv Python to ensure dependencies are available
         // Handle platform-specific Python executable location
         const venvPython = process.platform === 'win32'
             ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
             : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
-        
-        settings.mcpServers['claude-slack'] = {
+
+        const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
+        claudeConfig.mcpServers['claude-slack'] = {
             "command": venvPython,
-            "args": ["server.py"],
-            "cwd": path.join(this.globalClaudeDir, MCP_SERVER_DIR),
+            "args": [path.join(mcpDir, "server.py")],
+            "cwd": mcpDir,
             "env": {
-                "PYTHONPATH": path.join(this.globalClaudeDir, MCP_SERVER_DIR),
+                "PYTHONPATH": mcpDir,
                 "DB_PATH": path.join(this.globalClaudeDir, 'data', DB_NAME),
                 "CLAUDE_CONFIG_DIR": this.globalClaudeDir  // Pass config dir to Python
             }
         };
-        
-        // Save updated settings
-        await fs.writeJson(settingsPath, settings, { spaces: 2 });
-        this.spinner.succeed('MCP server configured in global settings.json');
+
+        // Save updated config
+        await fs.writeJson(claudeJsonPath, claudeConfig, { spaces: 2 });
+        this.spinner.succeed('MCP server configured in ~/.claude.json');
     }
 
     async createWrapperScripts(scriptsDir) {
@@ -376,7 +404,7 @@ print('Database initialized successfully')
         const venvPython = process.platform === 'win32'
             ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
             : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
-        
+
         if (process.platform === 'win32') {
             // Windows batch files
             const configureBat = `@echo off
@@ -386,7 +414,7 @@ set VENV_PYTHON="${venvPython}"
 "%VENV_PYTHON%" "%SCRIPT_DIR%configure_agents.py" %*
 `;
             await fs.writeFile(path.join(scriptsDir, 'configure_agents.bat'), configureBat);
-            
+
             const registerBat = `@echo off
 REM Wrapper script for register_project_agents.py using venv Python
 set SCRIPT_DIR=%~dp0
@@ -394,7 +422,7 @@ set VENV_PYTHON="${venvPython}"
 "%VENV_PYTHON%" "%SCRIPT_DIR%register_project_agents.py" %*
 `;
             await fs.writeFile(path.join(scriptsDir, 'register_project_agents.bat'), registerBat);
-            
+
             const linksBat = `@echo off
 REM Wrapper script for manage_project_links.py using venv Python
 set SCRIPT_DIR=%~dp0
@@ -412,7 +440,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/configure_agents.py" "$@"
 `;
             await fs.writeFile(path.join(scriptsDir, 'configure_agents'), configureWrapper);
             await fs.chmod(path.join(scriptsDir, 'configure_agents'), '755');
-            
+
             const registerWrapper = `#!/bin/bash
 # Wrapper script for register_project_agents.py using venv Python
 SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
@@ -421,7 +449,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/register_project_agents.py" "$@"
 `;
             await fs.writeFile(path.join(scriptsDir, 'register_project_agents'), registerWrapper);
             await fs.chmod(path.join(scriptsDir, 'register_project_agents'), '755');
-            
+
             const linksWrapper = `#!/bin/bash
 # Wrapper script for manage_project_links.py using venv Python
 SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
@@ -435,65 +463,78 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
     async installHooks() {
         this.spinner = ora('Installing hooks...').start();
-        
+
         const hooksDir = path.join(this.globalClaudeDir, 'hooks');
         await fs.ensureDir(hooksDir);
-        
+
         // Copy SessionStart hook
         const sessionHookSource = path.join(__dirname, '..', 'template', 'global', 'hooks', 'slack_session_start.py');
         const sessionHookTarget = path.join(hooksDir, 'slack_session_start.py');
         await fs.copy(sessionHookSource, sessionHookTarget, { overwrite: true });
-        
+
         // Copy PreToolUse hook
         const preToolHookSource = path.join(__dirname, '..', 'template', 'global', 'hooks', 'slack_pre_tool_use.py');
         const preToolHookTarget = path.join(hooksDir, 'slack_pre_tool_use.py');
         await fs.copy(preToolHookSource, preToolHookTarget, { overwrite: true });
-        
+
+        // Make hook scripts executable on Unix-like systems
+        if (process.platform !== 'win32') {
+            await fs.chmod(sessionHookTarget, '755');
+            await fs.chmod(preToolHookTarget, '755');
+        }
+
         // Copy scripts
         const scriptsDir = path.join(this.globalClaudeDir, 'scripts');
         await fs.ensureDir(scriptsDir);
-        
+
         // Copy configure_agents script
         const configureSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'configure_agents.py');
         const configureTarget = path.join(scriptsDir, 'configure_agents.py');
         await fs.copy(configureSource, configureTarget, { overwrite: true });
-        
+
         // Copy register_project_agents script
         const registerSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'register_project_agents.py');
         const registerTarget = path.join(scriptsDir, 'register_project_agents.py');
         await fs.copy(registerSource, registerTarget, { overwrite: true });
-        
+
         // Copy manage_project_links script
         const linksSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'manage_project_links.py');
         const linksTarget = path.join(scriptsDir, 'manage_project_links.py');
         await fs.copy(linksSource, linksTarget, { overwrite: true });
-        
+
+        // Make Python scripts executable on Unix-like systems
+        if (process.platform !== 'win32') {
+            await fs.chmod(configureTarget, '755');
+            await fs.chmod(registerTarget, '755');
+            await fs.chmod(linksTarget, '755');
+        }
+
         // Create wrapper scripts that use venv Python
         await this.createWrapperScripts(scriptsDir);
-        
+
         // Update settings.json to register the hooks
         const settingsPath = path.join(this.globalClaudeDir, 'settings.json');
         let settings = {};
         if (fs.existsSync(settingsPath)) {
             settings = await fs.readJson(settingsPath);
         }
-        
+
         // Ensure hooks object exists with correct Claude Code format
         if (!settings.hooks) {
             settings.hooks = {};
         }
-        
+
         // Configure SessionStart hook (Claude Code format)
         if (!settings.hooks.SessionStart) {
             settings.hooks.SessionStart = [];
         }
-        
+
         // Check if our SessionStart hook already exists
         const sessionHookCommand = `python3 ${sessionHookTarget}`;
-        const hasSessionHook = settings.hooks.SessionStart.some(entry => 
+        const hasSessionHook = settings.hooks.SessionStart.some(entry =>
             entry.hooks && entry.hooks.some(h => h.command === sessionHookCommand)
         );
-        
+
         if (!hasSessionHook) {
             settings.hooks.SessionStart.push({
                 "hooks": [
@@ -504,19 +545,19 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
                 ]
             });
         }
-        
+
         // Configure PreToolUse hook for claude-slack MCP tools
         if (!settings.hooks.PreToolUse) {
             settings.hooks.PreToolUse = [];
         }
-        
+
         // Check if our PreToolUse hook already exists
         const preToolHookCommand = `python3 ${preToolHookTarget}`;
         const hasPreToolHook = settings.hooks.PreToolUse.some(entry =>
             entry.matcher === "mcp__claude-slack__.*" &&
             entry.hooks && entry.hooks.some(h => h.command === preToolHookCommand)
         );
-        
+
         if (!hasPreToolHook) {
             settings.hooks.PreToolUse.push({
                 "matcher": "mcp__claude-slack__.*",
@@ -528,22 +569,22 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
                 ]
             });
         }
-        
+
         await fs.writeJson(settingsPath, settings, { spaces: 2 });
-        
+
         this.spinner.succeed('Hooks installed (SessionStart + PreToolUse)');
     }
 
     async setupProjectAgents() {
         this.spinner = ora('Setting up project agents...').start();
-        
+
         const agentsDir = path.join(this.projectClaudeDir, 'agents');
         await fs.ensureDir(agentsDir);
-        
+
         // Copy example agent template
         const exampleSource = path.join(__dirname, '..', 'template', 'project', '.claude', 'agents', 'example-agent.md.template');
         const exampleTarget = path.join(agentsDir, 'example-agent.md');
-        
+
         if (!fs.existsSync(exampleTarget)) {
             await fs.copy(exampleSource, exampleTarget);
             this.spinner.succeed('Added example agent with scoped subscriptions');
@@ -554,34 +595,34 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
     async migrateExistingAgents() {
         this.spinner = ora('Migrating existing agents to scoped format...').start();
-        
+
         const locations = [
             path.join(this.globalClaudeDir, 'agents'),
             this.projectClaudeDir ? path.join(this.projectClaudeDir, 'agents') : null
         ].filter(Boolean);
-        
+
         let migrated = 0;
-        
+
         for (const agentsDir of locations) {
             if (!fs.existsSync(agentsDir)) continue;
-            
+
             const agentFiles = await fs.readdir(agentsDir);
             const mdFiles = agentFiles.filter(f => f.endsWith('.md'));
-            
+
             for (const file of mdFiles) {
                 const filePath = path.join(agentsDir, file);
                 let content = await fs.readFile(filePath, 'utf8');
-                
+
                 // Check if already has scoped channels
                 if (content.includes('channels:\n  global:')) {
                     continue; // Already migrated
                 }
-                
+
                 // Find and update channels in frontmatter
                 const lines = content.split('\n');
                 let inFrontmatter = false;
                 let foundChannels = false;
-                
+
                 for (let i = 0; i < lines.length; i++) {
                     if (lines[i] === '---') {
                         if (!inFrontmatter) {
@@ -592,7 +633,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
                     } else if (inFrontmatter && lines[i].startsWith('channels:')) {
                         foundChannels = true;
                         const channelLine = lines[i];
-                        
+
                         // Extract channel list
                         let channels = [];
                         if (channelLine.includes('[')) {
@@ -602,20 +643,20 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
                                 channels = match[1].split(',').map(c => c.trim());
                             }
                         }
-                        
+
                         // Replace with scoped format
                         lines[i] = 'channels:';
-                        lines.splice(i + 1, 0, 
+                        lines.splice(i + 1, 0,
                             '  global:',
                             ...channels.map(c => `    - ${c}`),
                             '  project: []'
                         );
-                        
+
                         migrated++;
                         break;
                     }
                 }
-                
+
                 if (foundChannels) {
                     await fs.writeFile(filePath, lines.join('\n'));
                 } else if (inFrontmatter) {
@@ -637,7 +678,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
                 }
             }
         }
-        
+
         if (migrated > 0) {
             this.spinner.succeed(`Migrated ${migrated} agent(s) to scoped subscription format`);
         } else {
@@ -647,20 +688,31 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
     displaySuccess() {
         console.log(chalk.green.bold('\n✅ Claude-Slack installed successfully!\n'));
-        
+
         console.log(chalk.cyan('📚 Installation Summary:'));
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, MCP_SERVER_DIR)}`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
         console.log(`  • ${chalk.bold('Commands')}: ${path.join(this.globalClaudeDir, 'commands', 'slack-*.md')}`);
         console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
-        
+        console.log(`  • ${chalk.bold('Managers')}: SessionManager, ChannelManager, SubscriptionManager, ProjectSetupManager`);
+
+        console.log(chalk.cyan('\n🐛 Debug Logging:'));
+        console.log('  • Enable debug logs: export CLAUDE_SLACK_DEBUG=1');
+        console.log(`  • Log files: ${path.join(this.globalClaudeDir, 'logs')}/*.log`);
+        console.log('  • Logs show hook execution, database operations, and errors');
+
         console.log(chalk.cyan('\n🚀 Quick Start Guide:'));
         console.log('  1. Restart Claude Code to load the MCP server');
         console.log('  2. Projects are auto-detected when you have a .claude/ directory');
         console.log('  3. Agents are auto-configured with MCP tools on session start');
         console.log('  4. Use /slack-status to verify your context');
-        console.log('  5. Start using channels immediately!\n');
-        
+        console.log('  5. Start using channels immediately!');
+        console.log('  ');
+        console.log(chalk.cyan('🏗️  Architecture:'));
+        console.log('  • SessionManager: Manages session contexts and project detection');
+        console.log('  • ChannelManager: Handles channel CRUD operations');
+        console.log('  • SubscriptionManager: Manages agent-channel relationships\n');
+
         console.log(chalk.cyan('🔧 Configuration Scripts:'));
         console.log(chalk.gray('  (Scripts automatically use the virtual environment)'));
         const scriptExt = process.platform === 'win32' ? '.bat' : '';
@@ -669,14 +721,14 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log(`  • Manage project links: ${path.join(this.globalClaudeDir, 'scripts', `manage_project_links${scriptExt}`)} [command]`);
         console.log('  • Project links control cross-project agent discovery and communication');
         console.log('  • Agents auto-configured on SessionStart hook\n');
-        
+
         console.log(chalk.cyan('💬 Basic Commands:'));
         console.log('  • /slack-send #general "Hello, world!" - Send to global channel');
         console.log('  • /slack-send #project:dev "Update" - Send to project channel');
         console.log('  • /slack-dm @agent "Private message" - Send direct message');
         console.log('  • /slack-inbox - Check unread messages');
         console.log('  • /slack-subscribe #channel - Join a channel\n');
-        
+
         console.log(chalk.cyan('🔍 Project Isolation:'));
         if (this.hasProject) {
             console.log(`  • Current project: ${chalk.green(this.projectDir)}`);
@@ -686,7 +738,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
             console.log('  • No project detected - using global context only');
             console.log('  • Create a .claude directory in your project for project channels');
         }
-        
+
         console.log(chalk.blue('\n📖 For documentation: https://github.com/yourusername/claude-slack'));
         console.log(chalk.yellow('⚠️  Remember to restart Claude Code for changes to take effect!'));
     }

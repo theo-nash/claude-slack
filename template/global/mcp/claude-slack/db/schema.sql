@@ -39,23 +39,43 @@ CREATE TABLE IF NOT EXISTS channels (
     scope TEXT NOT NULL,           -- 'global' or 'project'
     name TEXT NOT NULL,            -- Channel name without prefix (e.g., "general", "dev")
     description TEXT,
-    created_by TEXT,
+    created_by TEXT,               -- Agent name that created the channel
+    created_by_project_id TEXT,    -- Agent's project_id (NULL for global agents)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_default BOOLEAN DEFAULT FALSE, -- Auto-subscribe new agents
     is_archived BOOLEAN DEFAULT FALSE,
     metadata JSON,
     FOREIGN KEY (project_id) REFERENCES projects(id),
-    FOREIGN KEY (created_by) REFERENCES agents(name),
+    FOREIGN KEY (created_by, created_by_project_id) REFERENCES agents(name, project_id),
     UNIQUE(project_id, name)      -- Ensures unique channel names per scope
 );
+
+-- Subscriptions table (agent channel subscriptions)
+CREATE TABLE IF NOT EXISTS subscriptions (
+    agent_name TEXT NOT NULL,       -- Agent name
+    agent_project_id TEXT,          -- Agent's project_id (NULL for global agents)
+    channel_id TEXT NOT NULL,       -- Channel ID (e.g., "global:general" or "proj_abc123:dev")
+    subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source TEXT DEFAULT 'frontmatter', -- 'frontmatter', 'manual', 'auto_pattern'
+    is_muted BOOLEAN DEFAULT FALSE, -- Whether notifications are muted
+    PRIMARY KEY (agent_name, agent_project_id, channel_id),
+    FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id) ON DELETE CASCADE,
+    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+);
+
+-- Index for efficient subscription lookups
+CREATE INDEX IF NOT EXISTS idx_subscriptions_agent ON subscriptions(agent_name, agent_project_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON subscriptions(channel_id);
 
 -- Messages table (with project scoping)
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT,               -- NULL for global messages
     channel_id TEXT,               -- NULL for DMs
-    sender_id TEXT NOT NULL,
-    recipient_id TEXT,             -- For DMs only
+    sender_id TEXT NOT NULL,       -- Agent name
+    sender_project_id TEXT,        -- Agent's project_id (NULL for global agents)
+    recipient_id TEXT,             -- For DMs only - agent name
+    recipient_project_id TEXT,     -- Recipient's project_id (NULL for global agents)
     content TEXT NOT NULL,
     scope TEXT,                    -- 'global' or 'project'
     thread_id TEXT,                -- For threading
@@ -64,18 +84,19 @@ CREATE TABLE IF NOT EXISTS messages (
     edited_at TIMESTAMP,
     metadata JSON,                 -- priority, tags, references, etc.
     FOREIGN KEY (channel_id) REFERENCES channels(id),
-    FOREIGN KEY (sender_id) REFERENCES agents(name),
-    FOREIGN KEY (recipient_id) REFERENCES agents(name),
+    FOREIGN KEY (sender_id, sender_project_id) REFERENCES agents(name, project_id),
+    FOREIGN KEY (recipient_id, recipient_project_id) REFERENCES agents(name, project_id),
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
 -- Read receipts table
 CREATE TABLE IF NOT EXISTS read_receipts (
-    agent_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,        -- Agent name
+    agent_project_id TEXT,         -- Agent's project_id (NULL for global agents)
     message_id INTEGER NOT NULL,
     read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (agent_id, message_id),
-    FOREIGN KEY (agent_id) REFERENCES agents(name),
+    PRIMARY KEY (agent_id, agent_project_id, message_id),
+    FOREIGN KEY (agent_id, agent_project_id) REFERENCES agents(name, project_id),
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
 
@@ -211,4 +232,30 @@ AFTER INSERT ON sessions
 BEGIN
     DELETE FROM sessions 
     WHERE updated_at < datetime('now', '-24 hours');
+END;
+
+-- Tool calls table for tracking which session called which tool with which inputs
+CREATE TABLE IF NOT EXISTS tool_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,         -- session_id from Claude
+    tool_name TEXT NOT NULL,          -- Name of the tool called
+    tool_inputs_hash TEXT NOT NULL,   -- Hash of the tool inputs for matching
+    tool_inputs JSON,                 -- Full tool inputs for debugging
+    called_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+-- Index for fast lookups by tool, inputs hash, and time
+CREATE INDEX IF NOT EXISTS idx_tool_calls_lookup ON tool_calls(tool_name, tool_inputs_hash, called_at DESC);
+
+-- Index for session-specific tool calls
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+
+-- Automatic cleanup of old tool calls (older than 10 minutes)
+CREATE TRIGGER IF NOT EXISTS cleanup_old_tool_calls
+AFTER INSERT ON tool_calls
+BEGIN
+    DELETE FROM tool_calls 
+    WHERE called_at < datetime('now', '-10 minutes');
 END;

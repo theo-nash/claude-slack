@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
+from .db_helpers import with_connection, aconnect
 
 # Add parent directory to path to import config_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,45 +35,37 @@ class DatabaseManager:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
-        self.conn = None
+    
     
     async def initialize(self):
-        """Initialize database connection and ensure schema exists"""
+        """Initialize database and ensure schema exists"""
         # Ensure directory exists
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
         # Check if database exists
         is_new = not os.path.exists(self.db_path)
         
-        # Connect to database
-        self.conn = await aiosqlite.connect(self.db_path)
-        
-        # Enable WAL mode for better concurrency
-        await self.conn.execute("PRAGMA journal_mode=WAL")
-        await self.conn.execute("PRAGMA synchronous=NORMAL")
-        await self.conn.execute("PRAGMA cache_size=10000")
-        await self.conn.execute("PRAGMA temp_store=MEMORY")
-        await self.conn.execute("PRAGMA foreign_keys=ON")
-        
         if is_new:
-            # Create schema
-            schema_path = os.path.join(
-                os.path.dirname(__file__), 'schema.sql'
-            )
-            with open(schema_path, 'r') as f:
-                schema = f.read()
-                await self.conn.executescript(schema)
-            
-            await self.conn.commit()
+            # Create schema using a temporary connection
+            async with aconnect(self.db_path, writer=True) as conn:
+                # Create schema
+                schema_path = os.path.join(
+                    os.path.dirname(__file__), 'schema.sql'
+                )
+                with open(schema_path, 'r') as f:
+                    schema = f.read()
+                    await conn.executescript(schema)
+    
     
     async def close(self):
-        """Close database connection"""
-        if self.conn:
-            await self.conn.close()
+        """Close database connection (no-op with connection pooling)"""
+        pass
+    
     
     # Project Management
     
-    async def register_project(self, project_id: str, project_path: str, project_name: str):
+    @with_connection(writer=True)
+    async def register_project(self, conn, project_id: str, project_path: str, project_name: str):
         """
         Register a project in the database
         
@@ -81,15 +74,15 @@ class DatabaseManager:
             project_path: Absolute path to project
             project_name: Human-readable project name
         """
-        await self.conn.execute("""
+        await conn.execute("""
             INSERT OR REPLACE INTO projects (id, path, name, last_active)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         """, (project_id, project_path, project_name))
-        await self.conn.commit()
     
-    async def get_project(self, project_id: str) -> Optional[Dict]:
+    @with_connection(writer=False)
+    async def get_project(self, conn, project_id: str) -> Optional[Dict]:
         """Get project information"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT id, path, name, created_at, last_active, metadata
             FROM projects WHERE id = ?
         """, (project_id,))
@@ -106,7 +99,8 @@ class DatabaseManager:
             }
         return None
     
-    async def link_projects(self, project_a_id: str, project_b_id: str, 
+    @with_connection(writer=True)
+    async def link_projects(self, conn, project_a_id: str, project_b_id: str, 
                            link_type: str = "bidirectional", created_by: str = None) -> bool:
         """
         Create a link between two projects to allow cross-project communication.
@@ -130,30 +124,30 @@ class DatabaseManager:
                 link_type = "a_to_b"
         
         try:
-            await self.conn.execute("""
+            await conn.execute("""
                 INSERT OR REPLACE INTO project_links 
                 (project_a_id, project_b_id, link_type, created_by, enabled)
                 VALUES (?, ?, ?, ?, TRUE)
             """, (project_a_id, project_b_id, link_type, created_by))
-            await self.conn.commit()
             return True
         except Exception:
             return False
     
-    async def unlink_projects(self, project_a_id: str, project_b_id: str) -> bool:
+    @with_connection(writer=True)
+    async def unlink_projects(self, conn, project_a_id: str, project_b_id: str) -> bool:
         """Remove link between two projects"""
         # Ensure consistent ordering
         if project_a_id > project_b_id:
             project_a_id, project_b_id = project_b_id, project_a_id
         
-        await self.conn.execute("""
+        await conn.execute("""
             DELETE FROM project_links 
             WHERE project_a_id = ? AND project_b_id = ?
         """, (project_a_id, project_b_id))
-        await self.conn.commit()
         return True
     
-    async def get_linked_projects(self, project_id: str) -> List[str]:
+    @with_connection(writer=False)
+    async def get_linked_projects(self, conn, project_id: str) -> List[str]:
         """
         Get all projects linked to the given project.
         Checks config file first, then falls back to database.
@@ -170,7 +164,7 @@ class DatabaseManager:
                 pass  # Fall back to database
         
         # Fall back to database
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT 
                 CASE 
                     WHEN project_a_id = ? THEN project_b_id
@@ -190,7 +184,8 @@ class DatabaseManager:
         rows = await cursor.fetchall()
         return [row[0] for row in rows]
     
-    async def can_projects_communicate(self, project_a_id: str, project_b_id: str) -> bool:
+    @with_connection(writer=False)
+    async def can_projects_communicate(self, conn, project_a_id: str, project_b_id: str) -> bool:
         """
         Check if two projects are allowed to communicate.
         Checks config file first, then falls back to database.
@@ -212,7 +207,7 @@ class DatabaseManager:
         if project_a_id > project_b_id:
             project_a_id, project_b_id = project_b_id, project_a_id
         
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT link_type FROM project_links
             WHERE project_a_id = ? AND project_b_id = ? AND enabled = TRUE
         """, (project_a_id, project_b_id))
@@ -231,9 +226,10 @@ class DatabaseManager:
         
         return False
     
-    async def list_projects(self) -> List[Dict]:
+    @with_connection(writer=False)
+    async def list_projects(self, conn) -> List[Dict]:
         """List all known projects"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT id, path, name, created_at, last_active
             FROM projects
             ORDER BY last_active DESC
@@ -253,28 +249,11 @@ class DatabaseManager:
     
     # Channel Management
     
-    async def get_channel(self, channel_id: str) -> Optional[Dict]:
-        """Get channel information by ID"""
-        cursor = await self.conn.execute("""
-            SELECT id, name, description, scope, project_id, is_archived, created_at
-            FROM channels WHERE id = ?
-        """, (channel_id,))
-        
-        row = await cursor.fetchone()
-        if row:
-            return {
-                'id': row[0],
-                'name': row[1],
-                'description': row[2],
-                'scope': row[3],
-                'project_id': row[4],
-                'is_archived': row[5],
-                'created_at': row[6]
-            }
-        return None
     
+    @with_connection(writer=True)
     async def create_channel_if_not_exists(
         self, 
+        conn,
         channel_id: str,
         name: str,
         description: str,
@@ -284,26 +263,22 @@ class DatabaseManager:
     ):
         """Create a channel if it doesn't exist"""
         try:
-            await self.conn.execute("""
-                INSERT INTO channels (id, project_id, scope, name, description, is_default)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (channel_id, project_id, scope, name, description, is_default))
-            await self.conn.commit()
+            await conn.execute("""
+                INSERT INTO channels (id, project_id, scope, name, description, 
+                                    created_by, created_by_project_id, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (channel_id, project_id, scope, name, description, 
+                  'system', None,  # System-created channels don't have a specific creator
+                  is_default))
         except sqlite3.IntegrityError:
             # Channel already exists
             pass
     
-    def channel_exists(self, channel_id: str) -> bool:
-        """Check if a channel exists (sync version for quick checks)"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute("SELECT 1 FROM channels WHERE id = ?", (channel_id,))
-        exists = cursor.fetchone() is not None
-        conn.close()
-        return exists
     
-    async def get_channel(self, channel_id: str) -> Optional[Dict]:
+    @with_connection(writer=False)
+    async def get_channel(self, conn, channel_id: str) -> Optional[Dict]:
         """Get channel information"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT id, project_id, scope, name, description, created_at, is_default, is_archived
             FROM channels WHERE id = ?
         """, (channel_id,))
@@ -322,8 +297,10 @@ class DatabaseManager:
             }
         return None
     
+    @with_connection(writer=False)
     async def list_channels(
         self, 
+        conn,
         scope: str = 'all',
         project_id: Optional[str] = None,
         include_archived: bool = False
@@ -353,7 +330,7 @@ class DatabaseManager:
         
         query += " ORDER BY scope, name"
         
-        cursor = await self.conn.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         
         return [
@@ -370,25 +347,26 @@ class DatabaseManager:
     
     # Agent Management
     
-    async def register_agent(self, agent_name: str, description: str = "", project_id: Optional[str] = None):
+    @with_connection(writer=True)
+    async def register_agent(self, conn, agent_name: str, description: str = "", project_id: Optional[str] = None):
         """Register or update an agent"""
-        await self.conn.execute("""
+        await conn.execute("""
             INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
         """, (agent_name, description or f"Agent: {agent_name}", project_id))
-        await self.conn.commit()
     
-    async def update_agent_status(self, agent_name: str, status: str, project_id: Optional[str] = None):
+    @with_connection(writer=True)
+    async def update_agent_status(self, conn, agent_name: str, status: str, project_id: Optional[str] = None):
         """Update agent status"""
-        await self.conn.execute("""
+        await conn.execute("""
             UPDATE agents SET status = ?, last_active = CURRENT_TIMESTAMP
             WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
         """, (status, agent_name, project_id, project_id))
-        await self.conn.commit()
     
-    async def get_agent(self, agent_name: str, project_id: Optional[str] = None) -> Optional[Dict]:
+    @with_connection(writer=False)
+    async def get_agent(self, conn, agent_name: str, project_id: Optional[str] = None) -> Optional[Dict]:
         """Get agent information"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT name, description, project_id, status, current_project_id, last_active
             FROM agents WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
         """, (agent_name, project_id, project_id))
@@ -405,7 +383,8 @@ class DatabaseManager:
             }
         return None
     
-    async def get_agents_by_scope(self, project_id: Optional[str] = None, all_projects: bool = False, 
+    @with_connection(writer=False)
+    async def get_agents_by_scope(self, conn, project_id: Optional[str] = None, all_projects: bool = False, 
                                   current_project_id: Optional[str] = None) -> List[Dict]:
         """
         Get agents filtered by scope, respecting project link permissions.
@@ -420,7 +399,7 @@ class DatabaseManager:
         """
         if project_id:
             # Get agents for specific project
-            cursor = await self.conn.execute("""
+            cursor = await conn.execute("""
                 SELECT a.name, a.description, a.project_id, p.name as project_name
                 FROM agents a
                 LEFT JOIN projects p ON a.project_id = p.id
@@ -437,7 +416,7 @@ class DatabaseManager:
                 
                 if linked_projects:
                     placeholders = ','.join('?' * len(linked_projects))
-                    cursor = await self.conn.execute(f"""
+                    cursor = await conn.execute(f"""
                         SELECT a.name, a.description, a.project_id, p.name as project_name
                         FROM agents a
                         LEFT JOIN projects p ON a.project_id = p.id
@@ -446,7 +425,7 @@ class DatabaseManager:
                     """, linked_projects)
                 else:
                     # No linked projects, only show current project agents
-                    cursor = await self.conn.execute("""
+                    cursor = await conn.execute("""
                         SELECT a.name, a.description, a.project_id, p.name as project_name
                         FROM agents a
                         LEFT JOIN projects p ON a.project_id = p.id
@@ -458,7 +437,7 @@ class DatabaseManager:
                 return []
         else:
             # Get global agents only
-            cursor = await self.conn.execute("""
+            cursor = await conn.execute("""
                 SELECT name, description, project_id, NULL as project_name
                 FROM agents
                 WHERE project_id IS NULL
@@ -479,8 +458,93 @@ class DatabaseManager:
     
     # Message Operations
     
+    @with_connection(writer=True)
+    async def send_channel_message(
+        self,
+        conn,
+        channel_id: str,
+        sender_id: str,
+        content: str,
+        metadata: Optional[Dict] = None,
+        thread_id: Optional[str] = None
+    ) -> int:
+        """
+        Send a message to a channel (creates channel if it doesn't exist)
+        
+        Returns:
+            Message ID
+        """
+        # Parse channel_id to determine scope and project
+        if channel_id.startswith('global:'):
+            scope = 'global'
+            project_id = None
+            channel_name = channel_id.replace('global:', '')
+        elif channel_id.startswith('proj_'):
+            scope = 'project'
+            # Extract project_id from channel_id (e.g., proj_abc123:general)
+            parts = channel_id.split(':')
+            if len(parts) >= 2:
+                project_prefix = parts[0].replace('proj_', '')[:8]
+                channel_name = parts[1] if len(parts) > 1 else 'general'
+                # Need to look up full project_id from prefix
+                cursor = await conn.execute(
+                    "SELECT id FROM projects WHERE id LIKE ? LIMIT 1",
+                    (f"{project_prefix}%",)
+                )
+                row = await cursor.fetchone()
+                project_id = row[0] if row else None
+            else:
+                project_id = None
+                channel_name = 'general'
+        else:
+            # Default to global scope
+            scope = 'global'
+            project_id = None
+            channel_name = channel_id
+            channel_id = f'global:{channel_id}'
+        
+        # Ensure channel exists - need to call the method with conn
+        try:
+            await conn.execute("""
+                INSERT INTO channels (id, project_id, scope, name, description, 
+                                    created_by, created_by_project_id, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (channel_id, project_id, scope, channel_name, f"Channel: {channel_name}", 
+                  'system', None, False))
+        except sqlite3.IntegrityError:
+            # Channel already exists
+            pass
+        
+        # Send the message - inline the logic since we're in the same transaction
+        # Ensure sender is registered
+        await conn.execute("""
+            INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
+        """, (sender_id, f"Agent: {sender_id}", project_id))
+        
+        metadata_json = json.dumps(metadata) if metadata else None
+        
+        cursor = await conn.execute("""
+            INSERT INTO messages (
+                project_id, channel_id, 
+                sender_id, sender_project_id,
+                recipient_id, recipient_project_id,
+                content, scope, thread_id, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            project_id, channel_id, 
+            sender_id, project_id,
+            None, None,
+            content, scope, thread_id, metadata_json
+        ))
+        
+        return cursor.lastrowid
+    
+    @with_connection(writer=True)
     async def send_message(
         self,
+        conn,
         sender_id: str,
         content: str,
         channel_id: Optional[str] = None,
@@ -497,26 +561,34 @@ class DatabaseManager:
             Message ID
         """
         # Ensure sender is registered (use project_id from message if available)
-        await self.register_agent(sender_id, project_id=project_id)
+        await conn.execute("""
+            INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
+        """, (sender_id, f"Agent: {sender_id}", project_id))
         
         metadata_json = json.dumps(metadata) if metadata else None
         
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             INSERT INTO messages (
-                project_id, channel_id, sender_id, recipient_id,
+                project_id, channel_id, 
+                sender_id, sender_project_id,
+                recipient_id, recipient_project_id,
                 content, scope, thread_id, metadata
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            project_id, channel_id, sender_id, recipient_id,
+            project_id, channel_id, 
+            sender_id, project_id,  # sender's project_id is the current project
+            recipient_id, project_id if recipient_id else None,  # recipient's project_id (same project for DMs)
             content, scope, thread_id, metadata_json
         ))
         
-        await self.conn.commit()
         return cursor.lastrowid
     
+    @with_connection(writer=False)
     async def get_channel_messages(
         self,
+        conn,
         channel_id: str,
         since: Optional[str] = None,
         limit: int = 100
@@ -524,9 +596,9 @@ class DatabaseManager:
         """Get messages from a channel"""
         query = """
             SELECT m.id, m.sender_id, m.content, m.timestamp, m.thread_id, m.metadata,
-                   a.display_name as sender_name
+                   COALESCE(a.name, m.sender_id) as sender_name
             FROM messages m
-            JOIN agents a ON m.sender_id = a.id
+            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
             WHERE m.channel_id = ?
         """
         params = [channel_id]
@@ -543,7 +615,7 @@ class DatabaseManager:
         query += " ORDER BY m.timestamp DESC LIMIT ?"
         params.append(limit)
         
-        cursor = await self.conn.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         
         return [
@@ -559,8 +631,10 @@ class DatabaseManager:
             for row in rows
         ]
     
+    @with_connection(writer=False)
     async def get_direct_messages(
         self,
+        conn,
         agent_id: str,
         scope: str = 'all',
         project_id: Optional[str] = None,
@@ -570,9 +644,9 @@ class DatabaseManager:
         """Get direct messages for an agent"""
         query = """
             SELECT m.id, m.sender_id, m.recipient_id, m.content, m.timestamp, 
-                   m.scope, m.metadata, a.display_name as sender_name
+                   m.scope, m.metadata, COALESCE(a.name, m.sender_id) as sender_name
             FROM messages m
-            JOIN agents a ON m.sender_id = a.id
+            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
             WHERE m.channel_id IS NULL
             AND (m.recipient_id = ? OR m.sender_id = ?)
         """
@@ -596,7 +670,7 @@ class DatabaseManager:
         query += " ORDER BY m.timestamp DESC LIMIT ?"
         params.append(limit)
         
-        cursor = await self.conn.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         
         return [
@@ -614,8 +688,10 @@ class DatabaseManager:
             for row in rows
         ]
     
+    @with_connection(writer=False)
     async def search_messages(
         self,
+        conn,
         query: str,
         agent_id: str,
         scope: str = 'all',
@@ -627,10 +703,10 @@ class DatabaseManager:
         # For now, simple LIKE search
         search_query = """
             SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
-                   c.name as channel_name, a.display_name as sender_name
+                   c.name as channel_name, COALESCE(a.name, m.sender_id) as sender_name
             FROM messages m
             LEFT JOIN channels c ON m.channel_id = c.id
-            JOIN agents a ON m.sender_id = a.id
+            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
             WHERE m.content LIKE ?
         """
         params = [f'%{query}%']
@@ -644,7 +720,7 @@ class DatabaseManager:
         search_query += " ORDER BY m.timestamp DESC LIMIT ?"
         params.append(limit)
         
-        cursor = await self.conn.execute(search_query, params)
+        cursor = await conn.execute(search_query, params)
         rows = await cursor.fetchall()
         
         return [
@@ -662,23 +738,23 @@ class DatabaseManager:
     
     # Read Receipt Management
     
-    async def mark_messages_read(self, agent_id: str, message_ids: List[int]):
+    @with_connection(writer=True)
+    async def mark_messages_read(self, conn, agent_id: str, message_ids: List[int]):
         """Mark messages as read"""
         for msg_id in message_ids:
             try:
-                await self.conn.execute("""
+                await conn.execute("""
                     INSERT INTO read_receipts (agent_id, message_id)
                     VALUES (?, ?)
                 """, (agent_id, msg_id))
             except sqlite3.IntegrityError:
                 # Already marked as read
                 pass
-        
-        await self.conn.commit()
     
-    async def get_unread_count(self, agent_id: str) -> int:
+    @with_connection(writer=False)
+    async def get_unread_count(self, conn, agent_id: str) -> int:
         """Get count of unread messages for an agent"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT COUNT(*) FROM messages m
             WHERE m.id NOT IN (
                 SELECT message_id FROM read_receipts WHERE agent_id = ?
@@ -697,13 +773,14 @@ class DatabaseManager:
     
     # Thread Management
     
-    async def get_thread_messages(self, thread_id: str) -> List[Dict]:
+    @with_connection(writer=False)
+    async def get_thread_messages(self, conn, thread_id: str) -> List[Dict]:
         """Get all messages in a thread"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT m.id, m.sender_id, m.content, m.timestamp, m.metadata,
-                   a.display_name as sender_name
+                   COALESCE(a.name, m.sender_id) as sender_name
             FROM messages m
-            JOIN agents a ON m.sender_id = a.id
+            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
             WHERE m.thread_id = ?
             ORDER BY m.timestamp ASC
         """, (thread_id,))
@@ -723,17 +800,18 @@ class DatabaseManager:
         ]
     
     # Additional methods for channel management
-    async def get_channels_by_scope(self, scope: str, project_id: Optional[str] = None) -> List[Dict]:
+    @with_connection(writer=False)
+    async def get_channels_by_scope(self, conn, scope: str, project_id: Optional[str] = None) -> List[Dict]:
         """Get all channels for a given scope"""
         if scope == 'global':
-            cursor = await self.conn.execute("""
+            cursor = await conn.execute("""
                 SELECT id, name, description, is_default, is_archived, created_at
                 FROM channels
                 WHERE scope = 'global'
                 ORDER BY name
             """)
         elif scope == 'project' and project_id:
-            cursor = await self.conn.execute("""
+            cursor = await conn.execute("""
                 SELECT id, name, description, is_default, is_archived, created_at
                 FROM channels
                 WHERE scope = 'project' AND project_id = ?
@@ -755,54 +833,78 @@ class DatabaseManager:
             for row in rows
         ]
     
-    async def channel_exists(self, channel_id: str) -> bool:
+    @with_connection(writer=False)
+    async def channel_exists(self, conn, channel_id: str) -> bool:
         """Check if a channel exists"""
-        cursor = await self.conn.execute(
+        cursor = await conn.execute(
             "SELECT 1 FROM channels WHERE id = ?",
             (channel_id,)
         )
         row = await cursor.fetchone()
         return row is not None
     
-    async def create_channel(self, channel_id: str, project_id: Optional[str], 
+    @with_connection(writer=True)
+    async def create_channel(self, conn, channel_id: str, project_id: Optional[str], 
                             scope: str, name: str, description: str,
-                            created_by: str, is_default: bool = False) -> bool:
+                            created_by: str, created_by_project_id: Optional[str] = None, 
+                            is_default: bool = False) -> bool:
         """Create a new channel"""
         try:
-            await self.conn.execute("""
+            await conn.execute("""
                 INSERT INTO channels (id, project_id, scope, name, description, 
-                                    created_by, is_default, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            """, (channel_id, project_id, scope, name, description, created_by, is_default))
-            await self.conn.commit()
+                                    created_by, created_by_project_id, is_default, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """, (channel_id, project_id, scope, name, description, created_by, created_by_project_id, is_default))
             return True
         except Exception as e:
             # Channel might already exist or other error
             return False
     
-    async def add_subscription(self, agent_name: str, channel_id: str) -> bool:
-        """Add a subscription record (for faster lookups)"""
-        # Note: Primary source is frontmatter, this is just for optimization
+    @with_connection(writer=True)
+    async def add_subscription(self, conn, agent_name: str, channel_id: str, 
+                              agent_project_id: Optional[str] = None,
+                              source: str = 'manual') -> bool:
+        """Add a subscription to the database"""
         try:
-            # This table would need to be added to schema for optimization
-            # For now, we rely on frontmatter parsing
+            # Ensure channel exists
+            cursor = await conn.execute(
+                "SELECT 1 FROM channels WHERE id = ?", (channel_id,)
+            )
+            channel_exists = await cursor.fetchone()
+            if not channel_exists:
+                return False
+            
+            # Add subscription
+            await conn.execute("""
+                INSERT OR REPLACE INTO subscriptions 
+                (agent_name, agent_project_id, channel_id, source, subscribed_at)
+                VALUES (?, ?, ?, ?, datetime('now'))
+            """, (agent_name, agent_project_id, channel_id, source))
+            
             return True
-        except:
+        except Exception as e:
+            print(f"Error adding subscription: {e}")
             return False
     
-    async def remove_subscription(self, agent_name: str, channel_id: str) -> bool:
-        """Remove a subscription record"""
-        # Note: Primary source is frontmatter, this is just for optimization
+    @with_connection(writer=True)
+    async def remove_subscription(self, conn, agent_name: str, channel_id: str,
+                                  agent_project_id: Optional[str] = None) -> bool:
+        """Remove a subscription from the database"""
         try:
-            # This table would need to be added to schema for optimization
-            # For now, we rely on frontmatter parsing
+            await conn.execute("""
+                DELETE FROM subscriptions 
+                WHERE agent_name = ? AND agent_project_id IS ? AND channel_id = ?
+            """, (agent_name, agent_project_id, channel_id))
+            
             return True
-        except:
+        except Exception as e:
+            print(f"Error removing subscription: {e}")
             return False
     
-    async def list_all_projects(self) -> List[Dict]:
+    @with_connection(writer=False)
+    async def list_all_projects(self, conn) -> List[Dict]:
         """List all registered projects"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT id, path, name, created_at, last_active, metadata
             FROM projects
             ORDER BY last_active DESC NULLS LAST, name
@@ -821,33 +923,34 @@ class DatabaseManager:
             for row in rows
         ]
     
-    async def list_all_agents(self) -> List[Dict]:
+    @with_connection(writer=False)
+    async def list_all_agents(self, conn) -> List[Dict]:
         """List all registered agents"""
-        cursor = await self.conn.execute("""
-            SELECT id, display_name, description, status, current_project_id,
-                   last_active, created_at, metadata
+        cursor = await conn.execute("""
+            SELECT name, description, status, current_project_id,
+                   last_active, created_at, project_id
             FROM agents
-            ORDER BY display_name
+            ORDER BY name
         """)
         
         rows = await cursor.fetchall()
         return [
             {
-                'id': row[0],
-                'display_name': row[1],
-                'description': row[2],
-                'status': row[3],
-                'current_project_id': row[4],
-                'last_active': row[5],
-                'created_at': row[6],
-                'metadata': json.loads(row[7]) if row[7] else {}
+                'name': row[0],
+                'description': row[1],
+                'status': row[2],
+                'current_project_id': row[3],
+                'last_active': row[4],
+                'created_at': row[5],
+                'project_id': row[6]
             }
             for row in rows
         ]
     
-    async def list_all_channels(self) -> List[Dict]:
+    @with_connection(writer=False)
+    async def list_all_channels(self, conn) -> List[Dict]:
         """List all channels across all scopes"""
-        cursor = await self.conn.execute("""
+        cursor = await conn.execute("""
             SELECT c.id, c.project_id, c.scope, c.name, c.description,
                    c.created_by, c.created_at, c.is_default, c.is_archived,
                    p.name as project_name

@@ -18,12 +18,18 @@ import sys
 import json
 import sqlite3
 import hashlib
+import logging
+import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Add MCP directory to path to import environment_config
+# Add MCP directory to path to import modules
 claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
-sys.path.insert(0, os.path.join(claude_config_dir, 'mcp', 'claude-slack'))
+mcp_dir = os.path.join(claude_config_dir, 'mcp', 'claude-slack')
+sys.path.insert(0, mcp_dir)
+sys.path.insert(0, os.path.join(mcp_dir, 'db'))
+sys.path.insert(0, os.path.join(claude_config_dir, 'hooks'))
 
 try:
     from environment_config import env_config
@@ -32,115 +38,143 @@ except ImportError:
     # Fallback if environment_config not available yet
     USE_ENV_CONFIG = False
 
-def find_project_root(working_dir: str) -> Optional[str]:
-    """
-    Walk up from working_dir to find .claude directory
+# Import db_helpers for connection management
+try:
+    from db_helpers import connect
+except ImportError:
+    # Fallback if db_helpers not available
+    from contextlib import contextmanager
     
-    Args:
-        working_dir: Current working directory from hook payload
-        
-    Returns:
-        Absolute path to project root or None if no project found
-    """
-    if USE_ENV_CONFIG:
-        # Use centralized project detection
-        result = env_config.find_project_root(working_dir)
-        return str(result) if result else None
-    
-    # Fallback to original logic
-    current = Path(working_dir).resolve()
-    
-    # Walk up directory tree
-    while current != current.parent:
-        if (current / '.claude').exists():
-            return str(current)
-        current = current.parent
-    
-    return None  # No project found, use global context
+    @contextmanager
+    def connect(db_path: str, writer: bool = False):
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
+            if writer:
+                conn.commit()
+        except Exception:
+            if writer:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
 
-def get_project_id(project_path: str) -> str:
-    """
-    Generate consistent project ID from path
+# Set up logging - use new centralized logging system
+try:
+    from log_manager.manager import get_logger
+    logger = get_logger('pre_tool_use', component='hook')
     
-    Args:
-        project_path: Absolute path to project root
-        
-    Returns:
-        32-character project ID
-    """
-    return hashlib.sha256(project_path.encode()).hexdigest()[:32]
+    # Helper functions for structured logging
+    def log_json_data(logger, message, data, level=logging.DEBUG):
+        """Log data as JSON for structured logging"""
+        logger.log(level, f"{message}: {json.dumps(data, default=str)}")
+    
+    def log_db_result(logger, operation, success, data=None):
+        """Log database operation results"""
+        if success:
+            logger.info(f"DB {operation}: success")
+        else:
+            logger.error(f"DB {operation}: failed", extra={'data': data})
+            
+except ImportError:
+    # Fallback to null logging if system not available
+    import logging
+    logger = logging.getLogger('PreToolUse')
+    logger.addHandler(logging.NullHandler())
+    log_json_data = lambda l, m, d, level=logging.DEBUG: pass
+    log_db_result = lambda l, o, s, d=None: pass
 
-def set_session_context_db(session_id: str, project_info: Optional[Dict[str, str]]) -> bool:
+def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool:
     """
-    Store session context in SQLite database.
-    Uses WAL mode for better concurrency and falls back to file if DB is locked.
+    Record tool call with session, tool name, and inputs for precise session tracking.
     
     Args:
         session_id: Current session ID
-        project_info: Dict with project_id, project_path, project_name or None
+        tool_name: Name of the tool being called
+        tool_inputs: Input parameters for the tool
         
     Returns:
         True if successful
     """
     try:
+        logger.debug(f"Recording tool call: session={session_id}, tool={tool_name}")
+        
         # Database path - use environment config if available
         if USE_ENV_CONFIG:
             db_path = env_config.db_path
         else:
             db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
         
+        logger.debug(f"Using database: {db_path}")
+        
         # Ensure database directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Connect with short timeout to avoid blocking
-        conn = sqlite3.connect(str(db_path), timeout=1.0)
+        # Use connection helper for proper management
+        with connect(db_path, writer=True) as conn:
+            # Create hash of tool inputs for efficient matching
+            inputs_json = json.dumps(tool_inputs, sort_keys=True)
+            inputs_hash = hashlib.sha256(inputs_json.encode()).hexdigest()[:16]
+            
+            logger.debug(f"Tool inputs hash: {inputs_hash}")
+            
+            # Record the tool call
+            cursor = conn.execute("""
+                INSERT INTO tool_calls (session_id, tool_name, tool_inputs_hash, tool_inputs)
+                VALUES (?, ?, ?, ?)
+            """, (session_id, tool_name, inputs_hash, inputs_json))
+            
+            tool_call_id = cursor.lastrowid
+            logger.info(f"Recorded tool call with ID {tool_call_id}")
+            
+            # Also update session activity
+            cursor = conn.execute("""
+                UPDATE sessions
+                SET updated_at = datetime('now')
+                WHERE id=?
+            """, (session_id,))
+            
+            sessions_updated = cursor.rowcount
+            logger.debug(f"Updated {sessions_updated} session(s)")
         
-        # Enable WAL mode for better concurrency (only needs to be done once)
-        conn.execute("PRAGMA journal_mode=WAL")
-        
-        # Insert or update session context
-        conn.execute("""
-            INSERT OR REPLACE INTO sessions 
-            (id, project_id, project_path, project_name, transcript_path, scope, updated_at)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
-        """, (
-            session_id,
-            project_info.get('project_id') if project_info else None,
-            project_info.get('project_path') if project_info else None,
-            project_info.get('project_name') if project_info else None,
-            project_info.get('transcript_path') if project_info else None,
-            'project' if project_info else 'global'
-        ))
-        
-        conn.commit()
-        conn.close()
+        log_db_result(logger, 'record_tool_call', True, {
+            'session_id': session_id,
+            'tool': tool_name,
+            'hash': inputs_hash,
+            'sessions_updated': sessions_updated
+        })
         return True
         
     except sqlite3.OperationalError as e:
         # Database is locked or other operational error
-        # Fall back to file-based storage
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            print(f"Database unavailable, using file fallback: {e}", file=sys.stderr)
-        return set_session_context_file(session_id, project_info)
+        logger.warning(f"Database unavailable: {e}, falling back to file storage")
+        log_db_result(logger, 'record_tool_call', False, {'error': str(e), 'fallback': 'file'})
+        return update_session_context_file(session_id, tool_name, tool_inputs)
         
     except Exception as e:
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            print(f"Error writing session to database: {e}", file=sys.stderr)
+        logger.error(f"Error recording tool call: {e}\n{traceback.format_exc()}")
+        log_db_result(logger, 'record_tool_call', False, {'error': str(e), 'fallback': 'file'})
         # Fall back to file storage
-        return set_session_context_file(session_id, project_info)
+        return update_session_context_file(session_id, tool_name, tool_inputs)
 
-def set_session_context_file(session_id: str, project_info: Optional[Dict[str, str]]) -> bool:
+def update_session_context_file(session_id: str, tool_name: str = None, tool_inputs: dict = None) -> bool:
     """
-    Fallback: Write session context to a file if database is unavailable.
+    Fallback: Write session update to a file if database is unavailable.
     
     Args:
         session_id: Current session ID
-        project_info: Dict with project_id, project_path, project_name or None
+        tool_name: Name of the tool being called
+        tool_inputs: Input parameters for the tool
         
     Returns:
         True if successful
     """
     try:
+        logger.debug("Using file-based fallback for session storage")
+        
         # Create sessions directory - use environment config if available
         if USE_ENV_CONFIG:
             sessions_dir = env_config.sessions_dir
@@ -148,22 +182,21 @@ def set_session_context_file(session_id: str, project_info: Optional[Dict[str, s
             sessions_dir = Path(claude_config_dir) / 'data' / 'claude-slack-sessions'
         sessions_dir.mkdir(parents=True, exist_ok=True)
         
-        # Write session context file
+        # Write session context file with tool info
         session_file = sessions_dir / f"{session_id}.json"
         context = {
             'session_id': session_id,
-            'project_id': project_info.get('project_id') if project_info else None,
-            'project_path': project_info.get('project_path') if project_info else None,
-            'project_name': project_info.get('project_name') if project_info else None,
-            'scope': 'project' if project_info else 'global'
+            'tool_name': tool_name,
+            'tool_inputs': tool_inputs,
+            'updated_at': datetime.now().isoformat()
         }
         
         session_file.write_text(json.dumps(context, indent=2))
+        logger.info(f"Wrote session context to {session_file}")
         return True
         
     except Exception as e:
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            print(f"Error writing session context file: {e}", file=sys.stderr)
+        logger.error(f"Failed to write session file: {e}\n{traceback.format_exc()}")
         return False
 
 def main():
@@ -172,10 +205,11 @@ def main():
         # Read JSON payload from stdin
         input_data = sys.stdin.read()
         if not input_data:
-            # No input, might be testing
+            logger.debug("No input data received, exiting")
             return 0
             
         payload = json.loads(input_data)
+        log_json_data(logger, "Received payload", payload)
         
         # Extract fields from payload
         session_id = payload.get('session_id', '')
@@ -183,26 +217,11 @@ def main():
         tool_name = payload.get('tool_name', '')
         hook_event = payload.get('hook_event_name', '')
         transcript_path = payload.get('transcript_path', '')
-        
-        # Debug logging if enabled
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            if USE_ENV_CONFIG:
-                debug_file = env_config.logs_dir / 'slack_pre_tool_use.log'
-            else:
-                debug_file = Path(claude_config_dir) / 'logs' / 'slack_pre_tool_use.log'
-            debug_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(debug_file, 'a') as f:
-                f.write(f"\n--- PreToolUse Hook ---\n")
-                f.write(f"Session: {session_id}\n")
-                f.write(f"CWD: {cwd}\n")
-                f.write(f"Tool: {tool_name}\n")
-                f.write(f"Event: {hook_event}\n")
-                f.write(f"Transcript: {transcript_path}\n")
-        
-        # Only process for claude-slack MCP tools
-        # Check if this is a claude-slack tool invocation
         tool_input = payload.get('tool_input', {})
         
+        logger.info(f"PreToolUse Hook: session={session_id}, tool={tool_name}, cwd={cwd}")
+        logger.debug(f"Event: {hook_event}, Transcript: {transcript_path}")
+                
         # For MCP tools, the tool_name might be the MCP server name
         # and the actual tool would be in tool_input
         is_slack_tool = (
@@ -212,51 +231,31 @@ def main():
         )
         
         if not is_slack_tool:
-            # Not our tool, pass through
+            logger.debug(f"Not a slack tool, passing through: {tool_name}")
             return 0
+                
+        logger.info(f"Processing slack tool: {tool_name}")
         
-        # Find project root from cwd
-        project_path = find_project_root(cwd)
+        # Record the tool call with inputs for precise session tracking
+        success = record_tool_call(session_id, tool_name, tool_input)
         
-        # Prepare project info if in project
-        project_info = None
-        if project_path:
-            project_info = {
-                'project_id': get_project_id(project_path),
-                'project_path': project_path,
-                'project_name': os.path.basename(project_path),
-                'transcript_path': transcript_path
-            }
-            
-            if os.environ.get('CLAUDE_SLACK_DEBUG'):
-                with open(debug_file, 'a') as f:
-                    f.write(f"Project detected: {project_info['project_name']}\n")
-                    f.write(f"Project ID: {project_info['project_id']}\n")
+        if success:
+            logger.info("Tool call successfully recorded")
         else:
-            if os.environ.get('CLAUDE_SLACK_DEBUG'):
-                with open(debug_file, 'a') as f:
-                    f.write("No project detected, using global context\n")
-        
-        # Set session context in database (with file fallback)
-        success = set_session_context_db(session_id, project_info)
-        
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            with open(debug_file, 'a') as f:
-                f.write(f"Context set: {success}\n")
+            logger.warning("Tool call recording failed but continuing")
         
         # Always return 0 to allow tool to continue
         return 0
         
     except json.JSONDecodeError as e:
-        # Invalid JSON input, log if debug enabled
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            print(f"PreToolUse: Invalid JSON input: {e}", file=sys.stderr)
+        # Invalid JSON input
+        logger.error(f"Invalid JSON input: {e}")
+        logger.debug(f"Raw input: {input_data[:500]}...")  # Log first 500 chars
         return 0
         
     except Exception as e:
         # Any other error, log but don't fail
-        if os.environ.get('CLAUDE_SLACK_DEBUG'):
-            print(f"PreToolUse: Unexpected error: {e}", file=sys.stderr)
+        logger.error(f"Unexpected error in main: {e}\n{traceback.format_exc()}")
         return 0
 
 if __name__ == '__main__':

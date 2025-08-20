@@ -11,6 +11,8 @@ import sqlite3
 import hashlib
 import asyncio
 import aiosqlite
+import logging
+import traceback
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,9 +25,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from frontmatter import FrontmatterParser, FrontmatterUpdater
 from db.manager import DatabaseManager
+from db.db_helpers import aconnect
 from admin_operations import AdminOperations
 from transcript_parser import TranscriptParser
 from environment_config import env_config
+from sessions.manager import SessionManager
+from subscriptions.manager import SubscriptionManager
+from channels.manager import ChannelManager
 
 # Initialize server
 app = Server("claude-slack")
@@ -37,150 +43,39 @@ DB_PATH = str(env_config.db_path)
 # Global managers
 db_manager = None
 admin_ops = None
+subscription_manager = None
+channel_manager = None
 
-
-class SessionContextManager:
-    """
-    Manages session contexts for project isolation using SQLite database.
+# Set up logging - use new centralized logging system
+try:
+    from log_manager.manager import get_logger
+    logger = get_logger('server')
     
-    The PreToolUse hook writes session context to the database, and we read it here.
-    Falls back to file-based storage if database is unavailable.
-    """
+    # Helper functions for structured logging  
+    def log_json_data(logger, message, data, level=logging.DEBUG):
+        """Log data as JSON for structured logging"""
+        logger.log(level, f"{message}: {json.dumps(data, default=str)}")
     
-    def __init__(self):
-        self.db_path = env_config.db_path
-        self.sessions_dir = env_config.sessions_dir
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self.cache = {}  # In-memory cache for performance
-        self.cache_ttl = 60  # Cache for 60 seconds
-        self.cache_times = {}
-        self.current_session = None  # Track the most recent session
-    
-    async def get_context_for_session(self, session_id: str) -> Optional[dict]:
-        """
-        Get project context for a specific session from database.
-        Falls back to file if database is unavailable.
-        
-        Args:
-            session_id: Session ID to get context for
+    def log_db_result(logger, operation, success, data=None):
+        """Log database operation results"""
+        if success:
+            logger.info(f"DB {operation}: success")
+        else:
+            logger.error(f"DB {operation}: failed", extra={'data': data})
             
-        Returns:
-            Dict with project_id, project_path, project_name, transcript_path, scope or None
-        """
-        if not session_id:
-            return None
-        
-        # Check cache first
-        import time
-        if session_id in self.cache:
-            if time.time() - self.cache_times.get(session_id, 0) < self.cache_ttl:
-                return self.cache[session_id]
-        
-        # Try database first
-        try:
-            async with aiosqlite.connect(str(self.db_path)) as db:
-                async with db.execute("""
-                    SELECT project_id, project_path, project_name, transcript_path, scope
-                    FROM sessions 
-                    WHERE id = ?
-                """, (session_id,)) as cursor:
-                    row = await cursor.fetchone()
-                    
-                if row:
-                    context = {
-                        'project_id': row[0],
-                        'project_path': row[1],
-                        'project_name': row[2],
-                        'transcript_path': row[3],
-                        'scope': row[4]
-                    }
-                    # Update cache
-                    self.cache[session_id] = context
-                    self.cache_times[session_id] = time.time()
-                    self.current_session = session_id
-                    return context
-        except Exception:
-            # Database error, try file fallback
-            pass
-        
-        # Fall back to file
-        session_file = self.sessions_dir / f"{session_id}.json"
-        if session_file.exists():
-            try:
-                with open(session_file, 'r') as f:
-                    context = json.load(f)
-                    # Update cache
-                    self.cache[session_id] = context
-                    self.cache_times[session_id] = time.time()
-                    self.current_session = session_id
-                    return context
-            except Exception:
-                pass
-        
-        # No context found, return global context
-        return {
-            'project_id': None,
-            'project_path': None,
-            'project_name': None,
-            'transcript_path': None,
-            'scope': 'global'
-        }
+except ImportError:
+    # Fallback to null logging if system not available
+    import logging
+    logger = logging.getLogger('MCPServer')
+    logger.addHandler(logging.NullHandler())
+    log_json_data = lambda l, m, d, level=logging.DEBUG: pass
+    log_db_result = lambda l, o, s, d=None: pass
     
-    async def get_current_context(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """
-        Get the current session's project context.
-        This tries to use the most recent session ID from tool calls.
-        
-        Returns: (project_id, project_path, project_name, transcript_path)
-        """
-        # Try to get context from the most recent session
-        if self.current_session:
-            ctx = await self.get_context_for_session(self.current_session)
-            if ctx:
-                return ctx.get('project_id'), ctx.get('project_path'), ctx.get('project_name'), ctx.get('transcript_path')
-        
-        # Fall back to checking for any recent sessions in database
-        try:
-            async with aiosqlite.connect(str(self.db_path)) as db:
-                async with db.execute("""
-                    SELECT id FROM sessions 
-                    WHERE updated_at > datetime('now', '-5 minutes')
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                """) as cursor:
-                    row = await cursor.fetchone()
-                    
-                if row:
-                    session_id = row[0]
-                    ctx = await self.get_context_for_session(session_id)
-                    if ctx:
-                        return ctx.get('project_id'), ctx.get('project_path'), ctx.get('project_name'), ctx.get('transcript_path')
-        except Exception:
-            pass
-        
-        return None, None, None, None
-    
-    def cleanup_old_sessions(self):
-        """Remove old session files (database has automatic cleanup trigger)"""
-        import time
-        current_time = time.time()
-        max_age_seconds = 24 * 3600  # 24 hours
-        
-        for session_file in self.sessions_dir.glob("*.json"):
-            try:
-                if current_time - session_file.stat().st_mtime > max_age_seconds:
-                    session_file.unlink()
-            except Exception:
-                pass
-
-
-# Global session manager
-session_manager = SessionContextManager()
 
 
 async def initialize():
     """Initialize the server and database"""
-    global db_manager, admin_ops
+    global db_manager, admin_ops, subscription_manager, session_manager
     
     # Ensure data directory exists
     data_dir = os.path.dirname(DB_PATH)
@@ -192,24 +87,14 @@ async def initialize():
     # Initialize admin operations
     admin_ops = AdminOperations(DB_PATH)
     
-    # Create default global channels using AdminOperations
-    success, msg = await admin_ops.create_default_channels()
-    if not success:
-        print(f"Warning: Failed to create default channels: {msg}", file=sys.stderr)
-
-
-# create_default_channels function removed - now handled by AdminOperations
-
-
-async def ensure_project_registered(project_id: str, project_path: str, project_name: str):
-    """Ensure project is registered in database and create default channels"""
-    global admin_ops
+    # Initialize session manager
+    session_manager = SessionManager(DB_PATH)
     
-    # Use AdminOperations to register project and create channels
-    success, msg = await admin_ops.register_project(project_path, project_name)
-    if not success:
-        print(f"Warning: Failed to register project: {msg}", file=sys.stderr)
-
+    # Initialize subscription manager
+    subscription_manager = SubscriptionManager(DB_PATH)
+    
+    # Initialize channel manager
+    channel_manager = ChannelManager(DB_PATH)
 
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
@@ -498,46 +383,6 @@ def get_scoped_channel_id(channel_name: str, scope: str, project_id: Optional[st
             # Fallback to global if no project context
             return f"global:{channel_name}"
 
-
-async def get_agent_subscriptions(agent_name: str) -> Dict[str, List[str]]:
-    """
-    Get agent's channel subscriptions from frontmatter
-    Returns dict with 'global' and 'project' channel lists
-    """
-    # Try project-local agent file first
-    project_id, project_path, _ = await session_manager.get_current_context()
-    
-    # Check project agent file if in project context
-    if project_path:
-        project_claude = os.path.join(project_path, '.claude')
-        agent_data = await FrontmatterParser.parse_agent_file(
-            agent_name, project_claude
-        )
-        if agent_data:
-            return agent_data.get('channels', {'global': [], 'project': []})
-    
-    # Fall back to global agent file
-    agent_data = await FrontmatterParser.parse_agent_file(
-        agent_name, CLAUDE_DIR
-    )
-    
-    if agent_data:
-        channels = agent_data.get('channels', {'global': [], 'project': []})
-        # Handle old format (flat list)
-        if isinstance(channels, list):
-            return {
-                'global': channels,
-                'project': []
-            }
-        return channels
-    
-    # Default subscriptions if no agent file
-    return {
-        'global': ['general', 'announcements'],
-        'project': []
-    }
-
-
 @app.call_tool()
 async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
     """Handle tool calls"""
@@ -546,12 +391,13 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     if not db_manager:
         await initialize()
     
-    # Get session context from database (written by PreToolUse hook)
-    # The hook detects the session_id and cwd, then writes the context
-    # We read it here when needed for project-aware operations
-    
-    # Get current project context from session
-    project_id, project_path, project_name, transcript_path = await session_manager.get_current_context()
+    # Get current project context from session by matching tool call
+    session_id = await session_manager.match_tool_call_session(name, arguments)
+    session_data = await session_manager.get_session_context(name, arguments)
+    project_id = ctx.project_id
+    project_path = ctx.project_path
+    project_name = ctx.project_name
+    transcript_path = ctx.transcript_path
     
     # Determine caller
     # Use TranscriptParser to get caller info for the specific tool being called
@@ -567,24 +413,10 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         caller = {"agent": "unknown", "is_subagent": False, "confidence": "LOW"}
     
     # Handle get_current_project
-    if name == "get_current_project":
-        
-        if project_id:
-            result = {
-                "project_id": project_id,
-                "project_name": project_name,
-                "project_path": project_path
-            }
-        else:
-            result = {
-                "project_id": None,
-                "project_name": "Global Context",
-                "project_path": None
-            }
-        
+    if name == "get_current_project":        
         return [types.TextContent(
             type="text",
-            text=json.dumps(result, indent=2)
+            text=f'project_id: {project_id}\nproject_name: {project_name}\nscope: {scope}\nproject_path: {project_path}'
         )]
     
     # Handle get_messages with scoped structure
@@ -593,13 +425,9 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         since = arguments.get("since")
         limit = arguments.get("limit", 100)
         unread_only = arguments.get("unread_only", False)
-        
-        # If we have a project context, ensure it's registered
-        if project_id and project_path:
-            await ensure_project_registered(project_id, project_path, project_name)
-        
+                
         # Get agent's subscriptions
-        subscriptions = await get_agent_subscriptions(agent_name)
+        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
         
         # Build response structure
         response = {
@@ -1013,7 +841,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         include_archived = arguments.get("include_archived", False)
         
         # Get agent's subscriptions to show subscription status
-        subscriptions = await get_agent_subscriptions(agent_name)
+        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
         all_subscribed = subscriptions.get('global', []) + subscriptions.get('project', [])
         
         # Get channels based on scope
@@ -1093,35 +921,39 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         channel_id = arguments.get("channel_id")
         scope = arguments.get("scope")
         
+        logger.info(f"Subscribing {agent_name} to #{channel_id} (scope: {scope})")
+        
         # Auto-detect scope if not provided
         if not scope:
             if project_id:
                 # Check if channel exists in project scope first
-                project_channel_id = f"proj_{project_id}:{channel_id}"
-                if await db_manager.channel_exists(project_channel_id):
+                project_channel_id = f"proj_{project_id[:8]}:{channel_id}"
+                if await self.channel_manager.channel_exists(project_channel_id):
                     scope = 'project'
                 else:
+                    if not await self.channel_manager.channel_exists(f'global:{channel_id}')
+                    return [types.TextContent(
+                        type="text",
+                        text="❌ Channel could not be found in project or global channel lists"
+                    )]
                     scope = 'global'
             else:
                 scope = 'global'
         
-        # Update agent's frontmatter
-        # Determine which directory to use (project or global)
-        claude_dir = str(project_path) if project_path else CLAUDE_DIR
+        logger.info(f"Using scope: {scope}")
         
-        # Add channel to appropriate scope using static method
-        success = await FrontmatterUpdater.add_channel_subscription(
-            agent_name, channel_id, scope, claude_dir
-        )
+        if not subscription_manager:
+            return [types.TextContent(
+                type="text",
+                text="❌ Subscription manager not available"
+            )]
+            
+        success = await self.subscription_manager.subscribe(agent_name, project_id, channel_id, scope, "tool_call", project_path)
         
         if success:
             result_text = f"✅ Subscribed to #{channel_id} ({scope} scope)"
-            
-            # Also register the subscription in database for quick lookup
-            full_channel_id = get_scoped_channel_id(channel_id, scope, project_id)
-            await db_manager.add_subscription(agent_name, full_channel_id)
         else:
-            result_text = f"Failed to subscribe to #{channel_id} - may already be subscribed"
+            result_text = f"❌ Failed to subscribe to #{channel_id} - may already be subscribed or channel doesn't exist"
         
         return [types.TextContent(
             type="text",
@@ -1134,10 +966,18 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         channel_id = arguments.get("channel_id")
         scope = arguments.get("scope")
         
+        logger.info(f"Unsubscribing {agent_name} from #{channel_id} (scope: {scope})")
+        
+        if not subscription_manager:
+            return [types.TextContent(
+                type="text",
+                text="❌ Subscription manager not available"
+            )]
+        
         # Auto-detect scope if not provided
         if not scope:
             # Check current subscriptions to find which scope the channel is in
-            subscriptions = await get_agent_subscriptions(agent_name)
+            subscriptions = await subscription_manager.get_subscriptions(agent_name, project_id)
             if channel_id in subscriptions.get('global', []):
                 scope = 'global'
             elif channel_id in subscriptions.get('project', []):
@@ -1145,27 +985,19 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             else:
                 return [types.TextContent(
                     type="text",
-                    text=f"Not subscribed to #{channel_id} in any scope"
+                    text=f"❌ Not subscribed to #{channel_id} in any scope"
                 )]
         
-        # Update agent's frontmatter
-        # Determine which directory to use (project or global)
-        claude_dir = str(project_path) if project_path else CLAUDE_DIR
-        
-        # Remove channel from appropriate scope using static method
-        success = await FrontmatterUpdater.remove_channel_subscription(
-            agent_name, channel_id, scope, claude_dir
+        # Unsubscribe using the manager
+        success = await subscription_manager.unsubscribe(
+            agent_name, project_id, channel_id, scope
         )
         
         if success:
             result_text = f"✅ Unsubscribed from #{channel_id} ({scope} scope)"
-            
-            # Also remove from database
-            full_channel_id = get_scoped_channel_id(channel_id, scope, project_id)
-            await db_manager.remove_subscription(agent_name, full_channel_id)
         else:
-            result_text = f"Failed to unsubscribe from #{channel_id}"
-        
+            result_text = f"❌ Failed to unsubscribe from #{channel_id} - may not be subscribed"
+            
         return [types.TextContent(
             type="text",
             text=result_text
@@ -1176,7 +1008,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         
         # Get subscriptions from frontmatter
-        subscriptions = await get_agent_subscriptions(agent_name)
+        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
         
         result_text = f"Channel Subscriptions for {agent_name}:\n\n"
         
@@ -1231,7 +1063,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         # else: search all scopes
         
         # Get agent's accessible channels
-        subscriptions = await get_agent_subscriptions(agent_name)
+        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
         accessible_channels = []
         
         if scope_filter in ["all", "global"]:
@@ -1285,6 +1117,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle create_channel
     elif name == "create_channel":
+        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         channel_name = arguments.get("channel_id")  # Note: parameter is channel_id but it's the name
         description = arguments.get("description")
         scope = arguments.get("scope")
@@ -1305,24 +1138,9 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         full_channel_id = get_scoped_channel_id(channel_name, scope, project_id)
         
         # Check if channel already exists
-        if await db_manager.channel_exists(full_channel_id):
-            return [types.TextContent(
-                type="text",
-                text=f"Channel #{channel_name} already exists in {scope} scope"
-            )]
+        new_channel_id = self.channel_manager.creat_channel(channel_name, scope, project_id, description, agent_name)
         
-        # Create channel
-        success = await db_manager.create_channel(
-            channel_id=full_channel_id,
-            project_id=project_id if scope == 'project' else None,
-            scope=scope,
-            name=channel_name,
-            description=description,
-            created_by=caller.get('agent', 'unknown'),
-            is_default=is_default
-        )
-        
-        if success:
+        if new_channel_id:
             result_text = f"✅ Created channel #{channel_name} ({scope} scope)\n"
             result_text += f"Description: {description}\n"
             if is_default:
@@ -1419,24 +1237,35 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
 
 async def main():
     """Main entry point for the MCP server"""
-    await initialize()
+    logger.info("Starting Claude-Slack MCP server")
     
-    # Clean up old session files periodically
-    session_manager.cleanup_old_sessions()
-    
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    try:
+        await initialize()
+        
+        # Clean up old sessions periodically
+        await session_manager.cleanup_old_sessions()
+        
+        logger.info("MCP server initialized successfully")
+        
+        async with stdio_server() as (read_stream, write_stream):
+            logger.info("MCP server running on stdio transport")
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    except KeyboardInterrupt:
+        logger.info("MCP server stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error in MCP server: {e}")
+        import traceback
+        logger.debug(f"Traceback:\n{traceback.format_exc()}")
+        raise
 
 
 if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
     try:
+        logger.info("Starting MCP server from main")
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
