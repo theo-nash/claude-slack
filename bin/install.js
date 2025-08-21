@@ -210,7 +210,7 @@ class ClaudeSlackInstaller {
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
         // Ensure new manager directories are properly copied
-        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager'];
+        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils'];
         for (const dir of managerDirs) {
             const dirSource = path.join(mcpSource, 'claude-slack', dir);
             const dirTarget = path.join(mcpTarget, 'claude-slack', dir);
@@ -466,6 +466,11 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
         const hooksDir = path.join(this.globalClaudeDir, 'hooks');
         await fs.ensureDir(hooksDir);
+        
+        // Get venv Python path for hooks
+        const venvPython = process.platform === 'win32'
+            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
+            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
 
         // Copy SessionStart hook
         const sessionHookSource = path.join(__dirname, '..', 'template', 'global', 'hooks', 'slack_session_start.py');
@@ -530,7 +535,14 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         }
 
         // Check if our SessionStart hook already exists
-        const sessionHookCommand = `python3 ${sessionHookTarget}`;
+        const sessionHookCommand = `${venvPython} ${sessionHookTarget}`;
+        const oldSessionHookCommand = `python3 ${sessionHookTarget}`;
+        
+        // Remove old python3 version if it exists
+        settings.hooks.SessionStart = settings.hooks.SessionStart.filter(entry => 
+            !entry.hooks || !entry.hooks.some(h => h.command === oldSessionHookCommand)
+        );
+        
         const hasSessionHook = settings.hooks.SessionStart.some(entry =>
             entry.hooks && entry.hooks.some(h => h.command === sessionHookCommand)
         );
@@ -552,7 +564,15 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         }
 
         // Check if our PreToolUse hook already exists
-        const preToolHookCommand = `python3 ${preToolHookTarget}`;
+        const preToolHookCommand = `${venvPython} ${preToolHookTarget}`;
+        const oldPreToolHookCommand = `python3 ${preToolHookTarget}`;
+        
+        // Remove old python3 version if it exists
+        settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry => 
+            !(entry.matcher === "mcp__claude-slack__.*" && 
+              entry.hooks && entry.hooks.some(h => h.command === oldPreToolHookCommand))
+        );
+        
         const hasPreToolHook = settings.hooks.PreToolUse.some(entry =>
             entry.matcher === "mcp__claude-slack__.*" &&
             entry.hooks && entry.hooks.some(h => h.command === preToolHookCommand)

@@ -347,6 +347,18 @@ class DatabaseManager:
     
     # Agent Management
     
+    @with_connection(writer=False)
+    async def validate_agent_for_scope(self, conn, agent_name: str, scope: str, project_id: Optional[str] = None) -> bool:
+        """Validate that an agent exists with the correct project context for the given scope"""
+        if scope == "global":
+            # For global scope, agent must exist with project_id=NULL
+            agent = await self.get_agent(agent_name, project_id=None)
+        else:  # project scope
+            # For project scope, agent must exist with matching project_id
+            agent = await self.get_agent(agent_name, project_id=project_id)
+        
+        return agent is not None
+    
     @with_connection(writer=True)
     async def register_agent(self, conn, agent_name: str, description: str = "", project_id: Optional[str] = None):
         """Register or update an agent"""
@@ -465,6 +477,7 @@ class DatabaseManager:
         channel_id: str,
         sender_id: str,
         content: str,
+        sender_project_id: Optional[str] = None,  # Agent's actual project_id
         metadata: Optional[Dict] = None,
         thread_id: Optional[str] = None
     ) -> int:
@@ -515,12 +528,23 @@ class DatabaseManager:
             # Channel already exists
             pass
         
-        # Send the message - inline the logic since we're in the same transaction
-        # Ensure sender is registered
-        await conn.execute("""
-            INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
-        """, (sender_id, f"Agent: {sender_id}", project_id))
+        # Send the message - validate sender exists with exact sender_id + sender_project_id combination
+        # sender_project_id can be None for global agents
+        
+        # Verify the agent exists with this exact combination
+        agent = await self.get_agent(sender_id, project_id=sender_project_id)
+        if not agent:
+            if sender_project_id is None:
+                raise ValueError(f"Global agent '{sender_id}' not found")
+            else:
+                raise ValueError(f"Agent '{sender_id}' with project_id '{sender_project_id}' not found")
+        
+        # For project channels, verify access permissions
+        if scope == 'project':
+            # Global agents (sender_project_id=None) can post to any project channel
+            # Project agents can only post to their own project's channels
+            if sender_project_id is not None and sender_project_id != project_id:
+                raise ValueError(f"Agent '{sender_id}' from project '{sender_project_id}' cannot post to channels in project '{project_id}'")
         
         metadata_json = json.dumps(metadata) if metadata else None
         
@@ -534,7 +558,7 @@ class DatabaseManager:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             project_id, channel_id, 
-            sender_id, project_id,
+            sender_id, sender_project_id,  # Use the actual sender's project_id, not the channel's
             None, None,
             content, scope, thread_id, metadata_json
         ))
@@ -560,11 +584,10 @@ class DatabaseManager:
         Returns:
             Message ID
         """
-        # Ensure sender is registered (use project_id from message if available)
-        await conn.execute("""
-            INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
-        """, (sender_id, f"Agent: {sender_id}", project_id))
+        # Validate sender exists with correct project context
+        agent = await self.get_agent(sender_id, project_id=project_id)
+        if not agent:
+            raise ValueError(f"Agent '{sender_id}' not found in {'project ' + project_id if project_id else 'global'} context")
         
         metadata_json = json.dumps(metadata) if metadata else None
         

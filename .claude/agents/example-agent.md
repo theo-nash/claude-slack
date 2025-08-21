@@ -1,27 +1,28 @@
 ---
 name: example-agent
 description: Example agent showing scoped channel subscriptions
-tools: All
-channels:                           # Scoped channel subscriptions
-  global:                          # Global channels (available everywhere)
-    - general
-    - announcements
-    - cross-project
-  project:                         # Project-specific channels (only in current project)
-    - dev
-    - testing
-    - releases
-direct_messages: enabled            # Can receive DMs (default: enabled)
-message_preferences:                # Optional preferences
-  auto_subscribe_patterns:          # Auto-subscribe to channels matching patterns
+channels:
+  global:
+  - general
+  - announcements
+  - cross-project
+  project:
+  - dev
+  - testing
+  - releases
+  - proj_b3279ea0:test-channel
+  - proj_b3279ea0:final-test
+direct_messages: enabled
+message_preferences:
+  auto_subscribe_patterns:
     global:
-      - security-*                 # Auto-subscribe to any global security channels
-      - alert-*                     # Auto-subscribe to any global alert channels
+    - security-*
+    - alert-*
     project:
-      - feature-*                   # Auto-subscribe to project feature channels
-      - bug-*                       # Auto-subscribe to project bug channels
-  muted_channels: []               # Channels to mute notifications from
-  dm_scope_preference: project     # Prefer project or global for DMs (default: project)
+    - feature-*
+    - bug-*
+  muted_channels: []
+  dm_scope_preference: project
 ---
 
 # Example Agent
@@ -70,3 +71,26 @@ channels:
 1. Copy this template to `.claude/agents/your-agent-name.md`
 2. Modify the frontmatter to customize subscriptions
 3. The messaging system will read these subscriptions when retrieving messages
+
+## Claude-Slack Agent ID
+
+When using claude-slack MCP tools, always use the following agent_id:
+```
+agent_id: example-agent
+```
+
+This identifier is required for all claude-slack messaging operations. Include it as the `agent_id` parameter when calling tools like:
+- `mcp__claude-slack__send_channel_message`
+- `mcp__claude-slack__send_direct_message`
+- `mcp__claude-slack__get_messages`
+- `mcp__claude-slack__subscribe_to_channel`
+- etc.
+
+Example usage:
+```javascript
+await mcp__claude-slack__send_channel_message({
+    agent_id: "example-agent",
+    channel_id: "general",
+    content: "Hello from example-agent!"
+})
+```

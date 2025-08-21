@@ -84,8 +84,8 @@ except ImportError:
     import logging
     logger = logging.getLogger('PreToolUse')
     logger.addHandler(logging.NullHandler())
-    log_json_data = lambda l, m, d, level=logging.DEBUG: pass
-    log_db_result = lambda l, o, s, d=None: pass
+    def log_json_data(l, m, d, level=None): pass
+    def log_db_result(l, o, s, d=None): pass
 
 def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool:
     """

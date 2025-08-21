@@ -155,18 +155,21 @@ class TranscriptParser:
                 
                 if is_sidechain:
                     # Follow parentUuid chain to find Task invocation
-                    agent_type = self.get_subagent_type_from_parent_chain(entry, uuid_index)
+                    # Pass entries and index for prompt-matching fallback
+                    agent_type = self.get_subagent_type_from_parent_chain(
+                        entry, uuid_index, entries, i
+                    )
                     return CallerInfo(
                         agent=agent_type,
                         is_subagent=True,
-                        confidence="HIGH",
+                        confidence="HIGH" if agent_type != "unknown_subagent" else "MEDIUM",
                         tool_name=found_tool,
                         timestamp=timestamp
                     )
                 else:
                     # Main agent
                     return CallerInfo(
-                        agent="main",
+                        agent="assistant",
                         is_subagent=False,
                         confidence="HIGH",
                         tool_name=found_tool,
@@ -181,13 +184,61 @@ class TranscriptParser:
             error=f"No tool invocation found{f' for {tool_name}' if tool_name else ''}"
         )
     
-    def get_subagent_type_from_parent_chain(self, entry: Dict, uuid_index: Dict[str, Dict]) -> str:
+    def find_matching_task_by_prompt(self, entries: List[Dict], prompt: str, before_index: int) -> Optional[str]:
+        """
+        Find a Task invocation with matching prompt before the given index.
+        Returns the subagent_type if found.
+        """
+        # Search backwards from before_index
+        for entry in reversed(entries[:before_index]):
+            if entry.get("type") != "assistant":
+                continue
+                
+            message = entry.get("message", {})
+            if not isinstance(message.get("content"), list):
+                continue
+                
+            for content in message["content"]:
+                if content.get("type") == "tool_use" and content.get("name") == "Task":
+                    task_input = content.get("input", {})
+                    task_prompt = task_input.get("prompt", "")
+                    
+                    # Check if prompts match
+                    if task_prompt == prompt:
+                        return task_input.get("subagent_type", "unknown")
+        
+        return None
+    
+    def get_sidechain_prompt(self, entry: Dict) -> Optional[str]:
+        """
+        Get the prompt from a sidechain entry.
+        For sidechains with parentUuid: null, the entry itself contains the prompt.
+        """
+        if entry.get("parentUuid") is None and entry.get("type") == "user":
+            message = entry.get("message", {})
+            content = message.get("content")
+            
+            if isinstance(content, str):
+                return content
+            elif isinstance(content, list) and len(content) > 0:
+                # Handle structured content
+                if isinstance(content[0], dict):
+                    return content[0].get("text", "")
+                else:
+                    return str(content[0])
+        
+        return None
+    
+    def get_subagent_type_from_parent_chain(self, entry: Dict, uuid_index: Dict[str, Dict], entries: List[Dict] = None, entry_index: int = None) -> str:
         """
         Follow the parentUuid chain to find the Task invocation that launched this subagent.
+        Falls back to prompt matching if chain is broken.
         
         Args:
             entry: The current entry (tool invocation by subagent)
             uuid_index: Index mapping UUIDs to entries for fast lookup
+            entries: All entries (for prompt matching fallback)
+            entry_index: Index of current entry (for prompt matching fallback)
             
         Returns:
             Subagent type (e.g., "task-executor", "memory-manager") or "unknown_subagent"
@@ -195,7 +246,7 @@ class TranscriptParser:
         current_entry = entry
         visited = set()  # Prevent infinite loops
         
-        # Follow parent chain up to 20 levels (reasonable limit)
+        # Follow parent chain up to 50 levels (reasonable limit)
         for _ in range(50):
             parent_uuid = current_entry.get("parentUuid")
             
@@ -221,6 +272,22 @@ class TranscriptParser:
             
             # Move up the chain
             current_entry = parent_entry
+        
+        # If we couldn't follow the parent chain and we have entries for fallback
+        if entries and entry_index is not None:
+            # Try prompt-based matching
+            # Walk back to find the sidechain start (parentUuid: null)
+            for j in range(entry_index, -1, -1):
+                check_entry = entries[j]
+                if check_entry.get("isSidechain") and check_entry.get("parentUuid") is None:
+                    # Found the sidechain start - get its prompt
+                    prompt = self.get_sidechain_prompt(check_entry)
+                    if prompt:
+                        # Find matching task
+                        subagent_type = self.find_matching_task_by_prompt(entries, prompt, j)
+                        if subagent_type:
+                            return subagent_type
+                    break
         
         return "unknown_subagent"
     

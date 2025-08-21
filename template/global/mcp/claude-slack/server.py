@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from frontmatter import FrontmatterParser, FrontmatterUpdater
 from db.manager import DatabaseManager
+from utils.formatting import format_messages_concise, format_agents_concise, format_search_results_concise
 from db.db_helpers import aconnect
 from admin_operations import AdminOperations
 from transcript_parser import TranscriptParser
@@ -68,14 +69,14 @@ except ImportError:
     import logging
     logger = logging.getLogger('MCPServer')
     logger.addHandler(logging.NullHandler())
-    log_json_data = lambda l, m, d, level=logging.DEBUG: pass
-    log_db_result = lambda l, o, s, d=None: pass
+    def log_json_data(l, m, d, level=None): pass
+    def log_db_result(l, o, s, d=None): pass
     
 
 
 async def initialize():
     """Initialize the server and database"""
-    global db_manager, admin_ops, subscription_manager, session_manager
+    global db_manager, admin_ops, subscription_manager, session_manager, channel_manager
     
     # Ensure data directory exists
     data_dir = os.path.dirname(DB_PATH)
@@ -107,6 +108,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "channel_id": {
                         "type": "string",
                         "description": "Channel name (without #)",
@@ -127,7 +132,7 @@ async def list_tools() -> list[types.Tool]:
                         "default": False
                     }
                 },
-                "required": ["channel_id", "description"]
+                "required": ["agent_id", "channel_id", "description"]
             }
         ),
         types.Tool(
@@ -136,6 +141,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "scope": {
                         "type": "string",
                         "description": "Filter by scope: 'all', 'global', or 'project'",
@@ -148,7 +157,7 @@ async def list_tools() -> list[types.Tool]:
                         "default": False
                     }
                 },
-                "required": ["agent_name"]
+                "required": ["agent_id"]
             }
         ),
         
@@ -159,6 +168,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "channel_id": {
                         "type": "string",
                         "description": "Target channel (without #)"
@@ -181,7 +194,7 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Optional thread ID to reply to"
                     }
                 },
-                "required": ["agent_name", "channel_id", "content"]
+                "required": ["agent_id", "channel_id", "content"]
             }
         ),
         types.Tool(
@@ -190,6 +203,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "recipient_id": {
                         "type": "string",
                         "description": "Target agent's name (just the name, e.g., 'backend-engineer' or 'security-auditor')"
@@ -208,7 +225,7 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Optional metadata (links to documents, etc.)"
                     }
                 },
-                "required": ["sender_id", "recipient_id", "content"]
+                "required": ["agent_id", "recipient_id", "content"]
             }
         ),
         types.Tool(
@@ -217,6 +234,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "since": {
                         "type": "string",
                         "description": "ISO timestamp to get messages since"
@@ -232,7 +253,7 @@ async def list_tools() -> list[types.Tool]:
                         "default": False
                     }
                 },
-                "required": ["agent_name"]
+                "required": ["agent_id"]
             }
         ),
         
@@ -243,6 +264,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "channel_id": {
                         "type": "string",
                         "description": "Channel to subscribe to"
@@ -253,7 +278,7 @@ async def list_tools() -> list[types.Tool]:
                         "enum": ["global", "project"]
                     }
                 },
-                "required": ["agent_name", "channel_id"]
+                "required": ["agent_id", "channel_id"]
             }
         ),
         types.Tool(
@@ -262,6 +287,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "channel_id": {
                         "type": "string",
                         "description": "Channel to unsubscribe from"
@@ -272,7 +301,7 @@ async def list_tools() -> list[types.Tool]:
                         "enum": ["global", "project"]
                     }
                 },
-                "required": ["agent_name", "channel_id"]
+                "required": ["agent_id", "channel_id"]
             }
         ),
         types.Tool(
@@ -281,12 +310,12 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "agent_name": {
+                    "agent_id": {
                         "type": "string",
-                        "description": "Agent name"
-                    }
-                },
-                "required": ["agent_name"]
+                        "description": "Your unique agent identifier (REQUIRED)"
+                        }
+                    },
+                "required": ["agent_id"]
             }
         ),
         
@@ -297,6 +326,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "query": {
                         "type": "string",
                         "description": "Search query"
@@ -313,7 +346,7 @@ async def list_tools() -> list[types.Tool]:
                         "default": 50
                     }
                 },
-                "required": ["query", "agent_name"]
+                "required": ["agent_id", "query"]
             }
         ),
         
@@ -378,56 +411,143 @@ def get_scoped_channel_id(channel_name: str, scope: str, project_id: Optional[st
         return f"global:{channel_name}"
     else:
         if project_id:
-            return f"proj_{project_id}:{channel_name}"
+            # Use only first 8 characters of project_id to match database storage
+            return f"proj_{project_id[:8]}:{channel_name}"
         else:
             # Fallback to global if no project context
             return f"global:{channel_name}"
 
+async def validate_agent_and_provide_help(agent_id: Optional[str], project_id: Optional[str] = None) -> Tuple[bool, str, Optional[str]]:
+    """
+    Validate that an agent exists and provide helpful feedback if not.
+    Returns: (is_valid, error_message, validated_agent_name)
+    """
+    if not agent_id:
+        # Get list of available agents to help the user
+        available_agents = []
+        
+        # Get global agents
+        global_agents = await db_manager.get_agents_by_scope(None)
+        for agent in global_agents:
+            available_agents.append(f"  • {agent['name']} (global)")
+        
+        # Get project agents if in project context
+        if project_id:
+            project_agents = await db_manager.get_agents_by_scope(
+                project_id, 
+                all_projects=True,
+                current_project_id=project_id
+            )
+            for agent in project_agents:
+                available_agents.append(f"  • {agent['name']} (project)")
+        
+        error_msg = "❌ agent_id parameter is required. Please provide your agent identifier.\n\n"
+        if available_agents:
+            error_msg += "Available agents:\n" + "\n".join(available_agents[:10])
+            if len(available_agents) > 10:
+                error_msg += f"\n  ... and {len(available_agents) - 10} more"
+        else:
+            error_msg += "No registered agents found. Register your agent first."
+        
+        return False, error_msg, None
+    
+    # Check if agent exists
+    agent = await db_manager.get_agent(agent_id, project_id=project_id)
+    if not agent:
+        # Check if it exists in global scope
+        global_agent = await db_manager.get_agent(agent_id, project_id=None)
+        if global_agent and project_id:
+            return False, f"❌ Agent '{agent_id}' exists globally but not in the current project. Use the global agent or register a project-specific agent.", None
+        
+        # Get list of available agents for helpful suggestions
+        available_agents = []
+        
+        # Get all accessible agents
+        all_agents = await db_manager.get_agents_by_scope(
+            project_id,
+            all_projects=True,
+            current_project_id=project_id
+        )
+        
+        # Find similar names (typo detection)
+        agent_names = [a['name'] for a in all_agents]
+        similar_names = [name for name in agent_names if name.lower().startswith(agent_id[:3].lower()) if len(agent_id) >= 3]
+        
+        error_msg = f"❌ Agent '{agent_id}' not found.\n\n"
+        
+        if similar_names:
+            error_msg += "Did you mean one of these agents?\n"
+            for name in similar_names[:5]:
+                error_msg += f"  • {name}\n"
+        elif agent_names:
+            error_msg += "Available agents:\n"
+            for name in agent_names[:10]:
+                error_msg += f"  • {name}\n"
+            if len(agent_names) > 10:
+                error_msg += f"  ... and {len(agent_names) - 10} more\n"
+        else:
+            error_msg += "No registered agents found. Register your agent first."
+        
+        return False, error_msg, None
+    
+    return True, "", agent_id
+
 @app.call_tool()
 async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
     """Handle tool calls"""
+    
+    logger.debug(f"Tool {name} called with args: {arguments}")
     
     # Ensure database is initialized
     if not db_manager:
         await initialize()
     
     # Get current project context from session by matching tool call
-    session_id = await session_manager.match_tool_call_session(name, arguments)
-    session_data = await session_manager.get_session_context(name, arguments)
-    project_id = ctx.project_id
-    project_path = ctx.project_path
-    project_name = ctx.project_name
-    transcript_path = ctx.transcript_path
+    # The PreToolUse hook records the full MCP tool name, so we need to prepend it
+    full_tool_name = f"mcp__claude-slack__{name}"
+    session_id = await session_manager.match_tool_call_session(full_tool_name, arguments)
+    logger.debug(f"Session ID resolved: {session_id}")
     
-    # Determine caller
-    # Use TranscriptParser to get caller info for the specific tool being called
-    if transcript_path and os.path.exists(transcript_path):
-        parser = TranscriptParser(transcript_path)
-        caller_info = parser.get_caller_info(tool_name=name)  # Pass the actual tool name
-        caller = {
-            "agent": caller_info.agent,
-            "is_subagent": caller_info.is_subagent,
-            "confidence": caller_info.confidence
-        }
-    else:
-        caller = {"agent": "unknown", "is_subagent": False, "confidence": "LOW"}
+    ctx = await session_manager.get_session_context(session_id) if session_id else None
+    logger.debug(f"Session context resolved: project_id: {ctx.project_id}, project_path: {ctx.project_path}, project_name: {ctx.project_name}, transcript_path: {ctx.transcript_path}")
+    
+    project_id = ctx.project_id if ctx else None
+    project_path = ctx.project_path if ctx else None
+    project_name = ctx.project_name if ctx else None
+    transcript_path = ctx.transcript_path if ctx else None
+    
+    # List of tools that require agent_id validation
+    TOOLS_REQUIRING_AGENT = [
+        "create_channel", "list_channels", "send_channel_message", 
+        "send_direct_message", "get_messages", "subscribe_to_channel",
+        "unsubscribe_from_channel", "get_my_subscriptions", "search_messages"
+    ]
+    
+    # Validate agent_id for tools that require it
+    agent_name = None
+    if name in TOOLS_REQUIRING_AGENT:
+        agent_id = arguments.get("agent_id")
+        is_valid, error_msg, validated_agent = await validate_agent_and_provide_help(agent_id, project_id)
+        if not is_valid:
+            return [types.TextContent(type="text", text=error_msg)]
+        agent_name = validated_agent
+        logger.info(f'Tool: {name}, Agent: {agent_name} (from agent_id parameter)')
     
     # Handle get_current_project
     if name == "get_current_project":        
         return [types.TextContent(
             type="text",
-            text=f'project_id: {project_id}\nproject_name: {project_name}\nscope: {scope}\nproject_path: {project_path}'
+            text=f'project_id: {project_id}\nproject_name: {project_name}\nproject_path: {project_path}'
         )]
     
     # Handle get_messages with scoped structure
     if name == "get_messages":
-        agent_name = caller.get('agent', 'unknown')
         since = arguments.get("since")
         limit = arguments.get("limit", 100)
         unread_only = arguments.get("unread_only", False)
                 
-        # Get agent's subscriptions
-        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
+        # Get agent's subscriptions (agent_name already validated)
+        subscriptions = await subscription_manager.get_subscriptions(agent_name, project_id)
         
         # Build response structure
         response = {
@@ -464,7 +584,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             
             # Get project channel messages
             for channel in subscriptions['project']:
-                channel_id = f"proj_{project_id}:{channel}"
+                channel_id = f"proj_{project_id[:8]}:{channel}"  # Use truncated project_id to match database
                 messages = await db_manager.get_channel_messages(
                     channel_id, since=since, limit=limit//4
                 )
@@ -478,14 +598,14 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             )
             response["project_messages"]["direct_messages"] = project_dms
         
+        # Use concise format instead of JSON
         return [types.TextContent(
             type="text",
-            text=json.dumps(response, indent=2)
+            text=format_messages_concise(response, agent_name)
         )]
     
     # Handle send_channel_message
     if name == "send_channel_message":
-        agent_name = caller.get('agent', 'unknown')
         channel_name = arguments["channel_id"].lstrip('#')
         content = arguments["content"]
         scope = arguments.get("scope")
@@ -518,17 +638,24 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         # Check if channel exists (will be created if not, but we can note it)
         existing_channel = await db_manager.get_channel(channel_id)
         
-        # Register the sender agent if needed
-        await db_manager.register_agent(agent_name, project_id=project_id)
-        
         # Send message (will create channel if it doesn't exist)
-        message_id = await db_manager.send_channel_message(
-            channel_id=channel_id,
-            sender_id=agent_name,
-            content=content,
-            metadata=metadata,
-            thread_id=thread_id
-        )
+        # Agent already validated at top level
+        try:
+            # Pass the sender's actual project_id from validation
+            # This is the agent's project_id, not the channel's project_id
+            message_id = await db_manager.send_channel_message(
+                channel_id=channel_id,
+                sender_id=agent_name,
+                sender_project_id=project_id,  # The validated agent's project_id (None for global agents)
+                content=content,
+                metadata=metadata,
+                thread_id=thread_id
+            )
+        except ValueError as e:
+            return [types.TextContent(
+                type="text",
+                text=f"❌ Error sending message: {str(e)}"
+            )]
         
         # Provide feedback about channel creation
         if not existing_channel:
@@ -544,7 +671,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle send_direct_message
     elif name == "send_direct_message":
-        agent_name = caller.get('agent', 'unknown')
         recipient_id = arguments["recipient_id"]
         content = arguments["content"]
         scope = arguments.get("scope")
@@ -689,18 +815,21 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
                     text=f"⚠️ Multiple agents named '{recipient_id}' found in linked projects. Sending to agent in {recipient_project_name}. {error_msg}"
                 )]
         
-        # Register the sender if needed (for message tracking)
-        await db_manager.register_agent(sender_id, project_id=project_id)
-        
-        # Step 5: Send the direct message with validated recipient
-        message_id = await db_manager.send_message(
-            sender_id=sender_id,
-            recipient_id=recipient_id,
-            content=content,
-            project_id=project_id if scope == "project" else None,
-            scope=scope,
-            metadata=metadata
-        )
+        # Step 5: Send the direct message (sender already validated at top level)
+        try:
+            message_id = await db_manager.send_message(
+                sender_id=agent_name,
+                recipient_id=recipient_id,
+                content=content,
+                project_id=project_id if scope == "project" else None,
+                scope=scope,
+                metadata=metadata
+            )
+        except ValueError as e:
+            return [types.TextContent(
+                type="text",
+                text=f"❌ Error sending message: {str(e)}"
+            )]
         
         # Provide clear confirmation with recipient location
         confirmation = f"✅ Direct message sent to @{recipient_id}"
@@ -742,7 +871,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
                 # Pass current_project_id to respect project links
                 project_agents = await db_manager.get_agents_by_scope(
                     project_filter, 
-                    all_projects=(scope_filter == "project"),
+                    all_projects=(scope_filter in ["project", "all"]),  # Include for "all" scope too
                     current_project_id=project_id
                 )
                 
@@ -756,50 +885,10 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
                         "project": agent_project_name
                     })
         
-        # Format output
-        if not agents:
-            result_text = "No agents found for the specified scope."
-        else:
-            result_lines = [f"Found {len(agents)} agent(s):"]
-            result_lines.append("")
-            
-            # Group by scope for better readability
-            global_agents = [a for a in agents if a["scope"] == "global"]
-            project_agents = [a for a in agents if a["scope"] == "project"]
-            
-            if global_agents:
-                result_lines.append("🌍 Global Agents:")
-                for agent in global_agents:
-                    if include_descriptions:
-                        result_lines.append(f"  • {agent['name']}: {agent['description']}")
-                    else:
-                        result_lines.append(f"  • {agent['name']}")
-            
-            if project_agents:
-                if global_agents:
-                    result_lines.append("")
-                
-                # Group by project
-                projects = {}
-                for agent in project_agents:
-                    proj = agent['project'] or 'Unknown'
-                    if proj not in projects:
-                        projects[proj] = []
-                    projects[proj].append(agent)
-                
-                for proj_name, proj_agents in projects.items():
-                    result_lines.append(f"📁 Project: {proj_name}")
-                    for agent in proj_agents:
-                        if include_descriptions:
-                            result_lines.append(f"  • {agent['name']}: {agent['description']}")
-                        else:
-                            result_lines.append(f"  • {agent['name']}")
-            
-            result_text = "\n".join(result_lines)
-        
+        # Use concise format
         return [types.TextContent(
             type="text",
-            text=result_text
+            text=format_agents_concise(agents)
         )]
     
     # Handle get_linked_projects
@@ -836,12 +925,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle list_channels
     elif name == "list_channels":
-        agent_name = agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         scope_filter = arguments.get("scope", "all")
         include_archived = arguments.get("include_archived", False)
         
         # Get agent's subscriptions to show subscription status
-        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
+        subscriptions = await subscription_manager.get_subscriptions(agent_name, project_id)
         all_subscribed = subscriptions.get('global', []) + subscriptions.get('project', [])
         
         # Get channels based on scope
@@ -917,7 +1005,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle subscribe_to_channel
     elif name == "subscribe_to_channel":
-        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         channel_id = arguments.get("channel_id")
         scope = arguments.get("scope")
         
@@ -928,14 +1015,14 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             if project_id:
                 # Check if channel exists in project scope first
                 project_channel_id = f"proj_{project_id[:8]}:{channel_id}"
-                if await self.channel_manager.channel_exists(project_channel_id):
+                if await channel_manager.channel_exists(project_channel_id):
                     scope = 'project'
                 else:
-                    if not await self.channel_manager.channel_exists(f'global:{channel_id}')
-                    return [types.TextContent(
-                        type="text",
-                        text="❌ Channel could not be found in project or global channel lists"
-                    )]
+                    if not await channel_manager.channel_exists(f'global:{channel_id}'):
+                        return [types.TextContent(
+                            type="text",
+                            text="❌ Channel could not be found in project or global channel lists"
+                        )]
                     scope = 'global'
             else:
                 scope = 'global'
@@ -948,7 +1035,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
                 text="❌ Subscription manager not available"
             )]
             
-        success = await self.subscription_manager.subscribe(agent_name, project_id, channel_id, scope, "tool_call", project_path)
+        success = await subscription_manager.subscribe(agent_name, project_id, channel_id, scope, "tool_call", project_path)
         
         if success:
             result_text = f"✅ Subscribed to #{channel_id} ({scope} scope)"
@@ -962,7 +1049,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle unsubscribe_from_channel
     elif name == "unsubscribe_from_channel":
-        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         channel_id = arguments.get("channel_id")
         scope = arguments.get("scope")
         
@@ -1005,10 +1091,9 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle get_my_subscriptions
     elif name == "get_my_subscriptions":
-        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         
         # Get subscriptions from frontmatter
-        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
+        subscriptions = await subscription_manager.get_subscriptions(agent_name, project_id)
         
         result_text = f"Channel Subscriptions for {agent_name}:\n\n"
         
@@ -1044,7 +1129,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     
     # Handle search_messages
     elif name == "search_messages":
-        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         query = arguments.get("query")
         scope_filter = arguments.get("scope", "all")
         limit = arguments.get("limit", 50)
@@ -1063,7 +1147,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         # else: search all scopes
         
         # Get agent's accessible channels
-        subscriptions = await self.subscription_manager.get_subscriptions(agent_name, project_id)
+        subscriptions = await subscription_manager.get_subscriptions(agent_name, project_id)
         accessible_channels = []
         
         if scope_filter in ["all", "global"]:
@@ -1072,52 +1156,25 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         
         if scope_filter in ["all", "project"] and project_id:
             for ch in subscriptions.get('project', []):
-                accessible_channels.append(f"proj_{project_id}:{ch}")
+                accessible_channels.append(f"proj_{project_id[:8]}:{ch}")  # Use truncated project_id
         
         # Search messages
         results = await db_manager.search_messages(
             query=query,
-            channels=accessible_channels,
-            include_dms=True,
-            agent_name=agent_name,
+            agent_id=agent_name,
+            scope=scope_filter if scope_filter != "all" else None,
+            project_id=project_id if scope_filter in ["project", "all"] else None,
             limit=limit
         )
         
-        if not results:
-            result_text = f"No messages found matching '{query}'"
-        else:
-            result_text = f"Search Results for '{query}' ({len(results)} found):\n\n"
-            
-            for msg in results:
-                # Format each message
-                timestamp = msg.get('timestamp', 'unknown time')
-                sender = msg.get('sender_id', 'unknown')
-                content = msg.get('content', '')
-                channel = msg.get('channel_id', 'direct')
-                
-                # Truncate long content
-                if len(content) > 100:
-                    content = content[:97] + "..."
-                
-                # Determine location
-                if channel.startswith('global:'):
-                    location = f"#{channel.split(':', 1)[1]} (global)"
-                elif channel.startswith('proj_'):
-                    location = f"#{channel.split(':', 1)[1]} (project)"
-                else:
-                    location = "DM"
-                
-                result_text += f"[{timestamp}] {sender} in {location}:\n"
-                result_text += f"  {content}\n\n"
-        
+        # Use concise format
         return [types.TextContent(
             type="text",
-            text=result_text
+            text=format_search_results_concise(results, query, agent_name)
         )]
     
     # Handle create_channel
     elif name == "create_channel":
-        agent_name = arguments.get("agent_name", caller.get('agent', 'unknown'))
         channel_name = arguments.get("channel_id")  # Note: parameter is channel_id but it's the name
         description = arguments.get("description")
         scope = arguments.get("scope")
@@ -1138,7 +1195,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         full_channel_id = get_scoped_channel_id(channel_name, scope, project_id)
         
         # Check if channel already exists
-        new_channel_id = self.channel_manager.creat_channel(channel_name, scope, project_id, description, agent_name)
+        new_channel_id = await channel_manager.create_channel(channel_name, scope, project_id, description, agent_name)
         
         if new_channel_id:
             result_text = f"✅ Created channel #{channel_name} ({scope} scope)\n"
@@ -1232,8 +1289,6 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         type="text",
         text=f"Tool {name} not yet implemented"
     )]
-
-# Note: get_caller_from_transcript function has been replaced by TranscriptParser class
 
 async def main():
     """Main entry point for the MCP server"""

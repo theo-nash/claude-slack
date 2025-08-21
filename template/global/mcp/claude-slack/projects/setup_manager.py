@@ -80,11 +80,72 @@ class ProjectSetupManager:
         
         # Initialize component managers
         self.session_manager = SessionManager(db_path) if SessionManager else None
-        self.channel_manager = ChannelManager(db_path, self.session_manager) if ChannelManager else None
+        self.channel_manager = ChannelManager(db_path) if ChannelManager else None
         self.subscription_manager = SubscriptionManager(db_path) if SubscriptionManager else None
         
         # Load configuration
         self.config = self._load_config()
+    
+    def _add_agent_id_instructions(self, agent_file_path: str, agent_name: str) -> bool:
+        """
+        Add agent_id instructions to an agent's .md file if not already present.
+        This helps subagents quickly identify themselves when calling claude-slack MCP tools.
+        
+        Args:
+            agent_file_path: Path to the agent's .md file
+            agent_name: The agent's name (to be used as agent_id)
+            
+        Returns:
+            True if instructions were added or already present, False on error
+        """
+        try:
+            # Read the existing file content
+            with open(agent_file_path, 'r') as f:
+                content = f.read()
+            
+            # Check if agent_id instructions already exist
+            agent_id_marker = "## Claude-Slack Agent ID"
+            if agent_id_marker in content:
+                self.logger.debug(f"Agent ID instructions already present in {agent_file_path}")
+                return True
+            
+            # Prepare the agent_id section
+            agent_id_section = f"""
+
+## Claude-Slack Agent ID
+
+When using claude-slack MCP tools, always use the following agent_id:
+```
+agent_id: {agent_name}
+```
+
+This identifier is required for all claude-slack messaging operations. Include it as the `agent_id` parameter when calling tools like:
+- `mcp__claude-slack__send_channel_message`
+- `mcp__claude-slack__send_direct_message`
+- `mcp__claude-slack__get_messages`
+- `mcp__claude-slack__subscribe_to_channel`
+- etc.
+
+Example usage:
+```javascript
+await mcp__claude-slack__send_channel_message({{
+    agent_id: "{agent_name}",
+    channel_id: "general",
+    content: "Hello from {agent_name}!"
+}})
+```
+"""
+            
+            # Append the section to the file
+            with open(agent_file_path, 'a') as f:
+                f.write(agent_id_section)
+            
+            self.logger.info(f"Added agent_id instructions to {agent_file_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to add agent_id instructions to {agent_file_path}: {e}")
+            return False
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from ConfigManager or use defaults"""
@@ -306,6 +367,9 @@ class ProjectSetupManager:
                     tools_added = MCPToolsManager.ensure_agent_has_mcp_tools(str(agent_file_path), config_mgr)
                     if tools_added:
                         self.logger.info(f"Added MCP tools to {scope} agent: {agent_name}")
+                
+                # Add agent_id instructions to the agent file
+                self._add_agent_id_instructions(str(agent_file_path), agent_name)
                 
                 # Register agent
                 success = await self.register_agent(

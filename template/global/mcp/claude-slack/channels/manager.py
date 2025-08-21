@@ -176,7 +176,7 @@ class ChannelManager:
         channel_id = self.get_scoped_channel_id(name, scope, project_id)
         
         # Check if channel already exists
-        if self.channel_exists(channel_id):
+        if await self.channel_exists(channel_id):
             return channel_id
         
         if not description:
@@ -192,7 +192,7 @@ class ChannelManager:
                      created_at, is_default, is_archived)
                     VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, 0)
                 """, (channel_id, project_id, scope, name, description, 
-                     created_by, is_default, False))
+                     created_by, is_default))
                 
                 self.logger.info(f"Channel created successfully: {channel_id}")
                 return channel_id
@@ -506,7 +506,7 @@ class ChannelManager:
                 created_channels.append(created_id)
                 self.logger.debug(f"Created default channel: {created_id}")
         
-        self.logger.info(f"Created {len(created_channels)} default channels")
+        self.logger.info(f"Created {len(created_channels)} default {scope} channels")
         
         return created_channels
     
