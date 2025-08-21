@@ -45,11 +45,13 @@ def format_messages_concise(messages_data: Dict, agent_name: str) -> str:
     for channel_msgs in global_msgs.get("channel_messages", {}).values():
         total_count += len(channel_msgs)
     total_count += len(global_msgs.get("direct_messages", []))
+    total_count += len(global_msgs.get("notes", []))
     
     if project_msgs:
         for channel_msgs in project_msgs.get("channel_messages", {}).values():
             total_count += len(channel_msgs)
         total_count += len(project_msgs.get("direct_messages", []))
+        total_count += len(project_msgs.get("notes", []))
     
     output.append(f"=== Recent Messages ({total_count} total) ===")
     
@@ -59,7 +61,7 @@ def format_messages_concise(messages_data: Dict, agent_name: str) -> str:
         for channel_name, messages in global_msgs["channel_messages"].items():
             for msg in messages:
                 time_ago = format_time_ago(msg["timestamp"])
-                output.append(f'[global/#{channel_name}] {msg["sender_id"]}: "{msg["content"]}" ({time_ago})')
+                output.append(f'[global/{channel_name}] {msg["sender_id"]}: "{msg["content"]}" ({time_ago})')
     
     # Project messages
     if project_msgs:
@@ -69,7 +71,7 @@ def format_messages_concise(messages_data: Dict, agent_name: str) -> str:
             for channel_name, messages in project_msgs["channel_messages"].items():
                 for msg in messages:
                     time_ago = format_time_ago(msg["timestamp"])
-                    output.append(f'[project/#{channel_name}] {msg["sender_id"]}: "{msg["content"]}" ({time_ago})')
+                    output.append(f'[project/{channel_name}] {msg["sender_id"]}: "{msg["content"]}" ({time_ago})')
     
     # Direct messages (both global and project)
     all_dms = []
@@ -88,6 +90,30 @@ def format_messages_concise(messages_data: Dict, agent_name: str) -> str:
             else:
                 # Message received by the agent
                 output.append(f'[DM] {msg["sender_id"]} → You: "{msg["content"]}" ({time_ago})')
+    
+    # Agent notes (both global and project)
+    all_notes = []
+    if global_msgs.get("notes"):
+        for note in global_msgs["notes"]:
+            note["scope"] = "global"
+            all_notes.append(note)
+    if project_msgs and project_msgs.get("notes"):
+        for note in project_msgs["notes"]:
+            note["scope"] = "project"
+            all_notes.append(note)
+    
+    if all_notes:
+        output.append("\nMY NOTES:")
+        for note in all_notes:
+            time_ago = format_time_ago(note["timestamp"])
+            tags = note.get("tags", [])
+            tag_str = f" #{', #'.join(tags)}" if tags else ""
+            scope = note.get('scope', 'global')
+            
+            # Don't truncate - agents need full context
+            content = note["content"]
+            
+            output.append(f'[{scope}/note{tag_str}] "{content}" ({time_ago})')
     
     if total_count == 0:
         return "=== No messages found ==="
@@ -141,9 +167,7 @@ def format_search_results_concise(results: List[Dict], query: str, agent_name: s
         content = msg.get('content', '')
         channel = msg.get('channel_id')
         
-        # Truncate long content
-        if len(content) > 100:
-            content = content[:97] + "..."
+        # Don't truncate - agents need full context
         
         # Determine location and format appropriately
         if not channel:
@@ -157,9 +181,51 @@ def format_search_results_concise(results: List[Dict], query: str, agent_name: s
                 output.append(f'[DM] {sender} → You: "{content}" ({time_ago})')
         elif channel.startswith('global:'):
             channel_name = channel.split(':', 1)[1]
-            output.append(f'[global/#{channel_name}] {sender}: "{content}" ({time_ago})')
+            output.append(f'[global/{channel_name}] {sender}: "{content}" ({time_ago})')
         elif channel.startswith('proj_'):
             channel_name = channel.split(':', 1)[1]
-            output.append(f'[project/#{channel_name}] {sender}: "{content}" ({time_ago})')
+            output.append(f'[project/{channel_name}] {sender}: "{content}" ({time_ago})')
     
     return "\n".join(output)
+
+def format_notes_concise(notes: List[Dict], title: str = "Notes") -> str:
+    """Format notes in concise, readable format"""
+    if not notes:
+        return f"No {title.lower()} found"
+    
+    output = [f"=== {title} ===\n"]
+    
+    for note in notes:
+        time_ago = format_time_ago(note["timestamp"])
+        tags = note.get("tags", [])
+        tag_str = f" #{', #'.join(tags)}" if tags else ""
+        
+        # Don't truncate - agents need full context
+        content = note["content"]
+        
+        output.append(f'[note{tag_str}] "{content}" ({time_ago})')
+    
+    return "\n".join(output)
+
+def format_note_search_results(results: List[Dict], query: str = None, tags: List[str] = None) -> str:
+    """Format note search results"""
+    if not results:
+        search_desc = []
+        if query:
+            search_desc.append(f'query "{query}"')
+        if tags:
+            search_desc.append(f'tags {tags}')
+        search_str = " and ".join(search_desc) if search_desc else "all notes"
+        return f"No notes found matching {search_str}"
+    
+    title = f"Found {len(results)} note(s)"
+    return format_notes_concise(results, title)
+
+def format_peek_notes(notes: List[Dict], agent_name: str, query: str = None) -> str:
+    """Format peeking at another agent's notes"""
+    if not notes:
+        search_str = f' matching "{query}"' if query else ""
+        return f"No notes found for {agent_name}{search_str}"
+    
+    title = f"Peeking at {agent_name}'s notes ({len(notes)} found)"
+    return format_notes_concise(notes, title)

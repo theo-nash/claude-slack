@@ -361,11 +361,15 @@ class DatabaseManager:
     
     @with_connection(writer=True)
     async def register_agent(self, conn, agent_name: str, description: str = "", project_id: Optional[str] = None):
-        """Register or update an agent"""
+        """Register or update an agent and auto-provision notes channel"""
+        # Register the agent
         await conn.execute("""
             INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
         """, (agent_name, description or f"Agent: {agent_name}", project_id))
+        
+        # Auto-provision agent notes channel
+        await self._provision_agent_notes_channel(conn, agent_name, project_id)
     
     @with_connection(writer=True)
     async def update_agent_status(self, conn, agent_name: str, status: str, project_id: Optional[str] = None):
@@ -374,6 +378,17 @@ class DatabaseManager:
             UPDATE agents SET status = ?, last_active = CURRENT_TIMESTAMP
             WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
         """, (status, agent_name, project_id, project_id))
+    
+    @with_connection(writer=False)
+    async def agent_exists(self, conn, agent_name: str, project_id: Optional[str] = None) -> bool:
+        """Check if an agent exists in the database"""
+        cursor = await conn.execute("""
+            SELECT COUNT(*) FROM agents 
+            WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
+        """, (agent_name, project_id, project_id))
+        
+        row = await cursor.fetchone()
+        return row[0] > 0 if row else False
     
     @with_connection(writer=False)
     async def get_agent(self, conn, agent_name: str, project_id: Optional[str] = None) -> Optional[Dict]:
@@ -995,6 +1010,199 @@ class DatabaseManager:
                 'is_default': row[7],
                 'is_archived': row[8],
                 'project_name': row[9]
+            }
+            for row in rows
+        ]
+    
+    # Agent Notes Channel Management
+    
+    def _get_agent_notes_channel_id(self, agent_name: str, project_id: Optional[str] = None) -> str:
+        """Generate the channel ID for an agent's notes channel"""
+        if project_id:
+            return f"agent-notes:{agent_name}:proj_{project_id[:8]}"
+        return f"agent-notes:{agent_name}:global"
+    
+    async def _provision_agent_notes_channel(self, conn, agent_name: str, project_id: Optional[str] = None):
+        """Auto-provision a notes channel for an agent"""
+        channel_id = self._get_agent_notes_channel_id(agent_name, project_id)
+        channel_name = f"agent-notes-{agent_name}"
+        
+        # Check if channel already exists
+        cursor = await conn.execute("""
+            SELECT id FROM channels WHERE id = ?
+        """, (channel_id,))
+        
+        if await cursor.fetchone():
+            return  # Channel already exists
+        
+        # Create the notes channel
+        scope = 'project' if project_id else 'global'
+        await conn.execute("""
+            INSERT INTO channels (
+                id, project_id, scope, name, description, 
+                created_by, created_by_project_id, channel_type,
+                owner_agent_name, owner_agent_project_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            channel_id, project_id, scope, channel_name,
+            f"Private notes for {agent_name}",
+            agent_name, project_id, 'agent-notes',
+            agent_name, project_id
+        ))
+        
+        # Auto-subscribe the agent to their notes channel
+        await conn.execute("""
+            INSERT OR IGNORE INTO subscriptions (
+                agent_name, agent_project_id, channel_id, source
+            )
+            VALUES (?, ?, ?, 'auto_notes')
+        """, (agent_name, project_id, channel_id))
+    
+    @with_connection(writer=True)
+    async def write_note(self, conn, agent_name: str, agent_project_id: Optional[str], 
+                         content: str, tags: List[str] = None, session_id: Optional[str] = None,
+                         metadata: Optional[Dict] = None):
+        """Write a note to an agent's notes channel"""
+        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
+        scope = 'project' if agent_project_id else 'global'
+        
+        # Ensure notes channel exists
+        await self._provision_agent_notes_channel(conn, agent_name, agent_project_id)
+        
+        # Insert the note
+        cursor = await conn.execute("""
+            INSERT INTO messages (
+                channel_id, sender_id, sender_project_id, content, 
+                scope, tags, session_id, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+        """, (
+            channel_id, agent_name, agent_project_id, content,
+            scope, json.dumps(tags) if tags else None, session_id,
+            json.dumps(metadata) if metadata else None
+        ))
+        
+        row = await cursor.fetchone()
+        return row[0] if row else None
+    
+    @with_connection(writer=False)
+    async def search_notes(self, conn, agent_name: str, agent_project_id: Optional[str],
+                           query: Optional[str] = None, tags: Optional[List[str]] = None,
+                           since: Optional[datetime] = None, limit: int = 50) -> List[Dict]:
+        """Search an agent's own notes"""
+        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
+        
+        # Build query
+        sql_parts = ["SELECT id, content, tags, timestamp, session_id, metadata FROM messages WHERE channel_id = ?"]
+        params = [channel_id]
+        
+        if query:
+            sql_parts.append("AND content LIKE ?")
+            params.append(f"%{query}%")
+        
+        if tags:
+            # Search for any of the provided tags
+            tag_conditions = []
+            for tag in tags:
+                tag_conditions.append("tags LIKE ?")
+                params.append(f'%"{tag}"%')
+            sql_parts.append(f"AND ({' OR '.join(tag_conditions)})")
+        
+        if since:
+            sql_parts.append("AND timestamp >= ?")
+            params.append(since.isoformat())
+        
+        sql_parts.append("ORDER BY timestamp DESC LIMIT ?")
+        params.append(limit)
+        
+        cursor = await conn.execute(" ".join(sql_parts), params)
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'content': row[1],
+                'tags': json.loads(row[2]) if row[2] else [],
+                'timestamp': row[3],
+                'session_id': row[4],
+                'metadata': json.loads(row[5]) if row[5] else {}
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def get_recent_notes(self, conn, agent_name: str, agent_project_id: Optional[str],
+                               limit: int = 20, session_id: Optional[str] = None) -> List[Dict]:
+        """Get recent notes for an agent"""
+        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
+        
+        if session_id:
+            # Get notes from a specific session
+            cursor = await conn.execute("""
+                SELECT id, content, tags, timestamp, session_id, metadata
+                FROM messages
+                WHERE channel_id = ? AND session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (channel_id, session_id, limit))
+        else:
+            # Get most recent notes
+            cursor = await conn.execute("""
+                SELECT id, content, tags, timestamp, session_id, metadata
+                FROM messages
+                WHERE channel_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (channel_id, limit))
+        
+        rows = await cursor.fetchall()
+        return [
+            {
+                'id': row[0],
+                'content': row[1],
+                'tags': json.loads(row[2]) if row[2] else [],
+                'timestamp': row[3],
+                'session_id': row[4],
+                'metadata': json.loads(row[5]) if row[5] else {}
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def peek_agent_notes(self, conn, target_agent_name: str, target_project_id: Optional[str],
+                               query: Optional[str] = None, limit: int = 20) -> List[Dict]:
+        """Peek at another agent's notes (for META agents or debugging)"""
+        channel_id = self._get_agent_notes_channel_id(target_agent_name, target_project_id)
+        
+        if query:
+            cursor = await conn.execute("""
+                SELECT id, content, tags, timestamp, session_id, metadata
+                FROM messages
+                WHERE channel_id = ? AND content LIKE ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (channel_id, f"%{query}%", limit))
+        else:
+            cursor = await conn.execute("""
+                SELECT id, content, tags, timestamp, session_id, metadata
+                FROM messages
+                WHERE channel_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (channel_id, limit))
+        
+        rows = await cursor.fetchall()
+        return [
+            {
+                'id': row[0],
+                'content': row[1],
+                'tags': json.loads(row[2]) if row[2] else [],
+                'timestamp': row[3],
+                'session_id': row[4],
+                'metadata': json.loads(row[5]) if row[5] else {},
+                'agent': target_agent_name  # Include whose notes these are
             }
             for row in rows
         ]

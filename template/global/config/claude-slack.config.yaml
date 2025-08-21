@@ -56,6 +56,10 @@ default_mcp_tools:
   - list_agents
   - create_channel
   - get_linked_projects
+  - write_note
+  - search_my_notes
+  - get_recent_notes
+  - peek_agent_notes
 
 # Global settings
 settings:

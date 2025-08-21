@@ -210,7 +210,7 @@ class ClaudeSlackInstaller {
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
         // Ensure new manager directories are properly copied
-        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils'];
+        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils', 'db'];
         for (const dir of managerDirs) {
             const dirSource = path.join(mcpSource, 'claude-slack', dir);
             const dirTarget = path.join(mcpTarget, 'claude-slack', dir);

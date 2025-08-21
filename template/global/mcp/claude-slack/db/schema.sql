@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS agents (
     FOREIGN KEY (current_project_id) REFERENCES projects(id)
 );
 
--- Channels table (with project scoping)
+-- Channels table (with project scoping and agent notes support)
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,           -- Format: {scope}:{name} (e.g., "global:general" or "proj_abc123:dev")
     project_id TEXT,               -- NULL for global channels
@@ -44,9 +44,13 @@ CREATE TABLE IF NOT EXISTS channels (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_default BOOLEAN DEFAULT FALSE, -- Auto-subscribe new agents
     is_archived BOOLEAN DEFAULT FALSE,
+    channel_type TEXT DEFAULT 'standard', -- 'standard' or 'agent-notes'
+    owner_agent_name TEXT,         -- For agent-notes channels: owning agent name
+    owner_agent_project_id TEXT,   -- For agent-notes channels: owning agent project_id
     metadata JSON,
     FOREIGN KEY (project_id) REFERENCES projects(id),
     FOREIGN KEY (created_by, created_by_project_id) REFERENCES agents(name, project_id),
+    FOREIGN KEY (owner_agent_name, owner_agent_project_id) REFERENCES agents(name, project_id),
     UNIQUE(project_id, name)      -- Ensures unique channel names per scope
 );
 
@@ -67,7 +71,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE INDEX IF NOT EXISTS idx_subscriptions_agent ON subscriptions(agent_name, agent_project_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON subscriptions(channel_id);
 
--- Messages table (with project scoping)
+-- Messages table (with project scoping and notes support)
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT,               -- NULL for global messages
@@ -82,11 +86,14 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_edited BOOLEAN DEFAULT FALSE,
     edited_at TIMESTAMP,
-    metadata JSON,                 -- priority, tags, references, etc.
+    tags JSON,                     -- Tags for notes (e.g., ["learned", "solution", "debug"])
+    session_id TEXT,               -- Session context for notes
+    metadata JSON,                 -- priority, references, etc.
     FOREIGN KEY (channel_id) REFERENCES channels(id),
     FOREIGN KEY (sender_id, sender_project_id) REFERENCES agents(name, project_id),
     FOREIGN KEY (recipient_id, recipient_project_id) REFERENCES agents(name, project_id),
-    FOREIGN KEY (project_id) REFERENCES projects(id)
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
 -- Read receipts table
@@ -108,8 +115,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_channels_project ON channels(project_id);
 CREATE INDEX IF NOT EXISTS idx_channels_scope ON channels(scope);
+CREATE INDEX IF NOT EXISTS idx_channels_type ON channels(channel_type);
+CREATE INDEX IF NOT EXISTS idx_channels_owner ON channels(owner_agent_name, owner_agent_project_id);
 CREATE INDEX IF NOT EXISTS idx_read_receipts_agent ON read_receipts(agent_id);
 
 -- Full-text search virtual table

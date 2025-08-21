@@ -29,14 +29,17 @@ try:
     from channels.manager import ChannelManager
     from subscriptions.manager import SubscriptionManager
     from frontmatter.parser import FrontmatterParser
-    from db.db_helpers import aconnect
+    from db.manager import DatabaseManager
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
     print(f"Import error in ProjectSetupManager: {e}", file=sys.stderr)
     SessionManager = None
     ChannelManager = None
     SubscriptionManager = None
     FrontmatterParser = None
-    aconnect = None
+    DatabaseManager = None
+    DatabaseInitializer = None
+    ensure_db_initialized = None
 
 try:
     from log_manager import get_logger
@@ -57,7 +60,7 @@ except ImportError:
     MCPToolsManager = None
 
 
-class ProjectSetupManager:
+class ProjectSetupManager(DatabaseInitializer if DatabaseInitializer else object):
     """
     Orchestrates project setup and initialization.
     
@@ -75,10 +78,15 @@ class ProjectSetupManager:
         Args:
             db_path: Path to SQLite database
         """
+        # Initialize parent class if it exists
+        if DatabaseInitializer:
+            super().__init__()
+        
         self.db_path = db_path
         self.logger = get_logger('ProjectSetupManager', component='manager')
         
         # Initialize component managers
+        self.db_manager = DatabaseManager(db_path) if DatabaseManager else None
         self.session_manager = SessionManager(db_path) if SessionManager else None
         self.channel_manager = ChannelManager(db_path) if ChannelManager else None
         self.subscription_manager = SubscriptionManager(db_path) if SubscriptionManager else None
@@ -402,30 +410,34 @@ await mcp__claude-slack__send_channel_message({{
         
         return successful_agents
     
+    @ensure_db_initialized
     async def register_agent(self, agent_name: str, project_id: str, description: str, status: str = 'online') -> bool:
         """
-        Registers an agent in the database
+        Registers an agent in the database using DatabaseManager.
+        This ensures the agent gets their notes channel auto-provisioned.
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("DatabaseManager not available")
             return False
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT OR IGNORE INTO agents (name, project_id, description, status, last_active)
-                    VALUES (?, ?, ?, 'online', datetime('now'))
-                """, (agent_name, project_id, f"Agent {agent_name}"))
-                
-                # Update last_active if agent already exists
-                await conn.execute("""
-                    UPDATE agents 
-                    SET last_active = datetime('now'), status = 'online'
-                    WHERE name = ? AND project_id IS ?
-                """, (agent_name, project_id))
-                
-                self.logger.debug(f"Registered agent: {agent_name} (project_id: {project_id})")
-                return True
+            # Use DatabaseManager's register_agent which auto-provisions notes channel
+            await self.db_manager.register_agent(
+                agent_name=agent_name,
+                description=description,
+                project_id=project_id
+            )
+            
+            # Update status if needed (register_agent sets it to 'online' by default)
+            if status != 'online':
+                await self.db_manager.update_agent_status(
+                    agent_name=agent_name,
+                    status=status,
+                    project_id=project_id
+                )
+            
+            self.logger.debug(f"Registered agent: {agent_name} (project_id: {project_id}) with notes channel")
+            return True
                 
         except Exception as e:
             self.logger.error(f"Error registering agent: {e}")
@@ -499,6 +511,7 @@ await mcp__claude-slack__send_channel_message({{
         
         return results
     
+    @ensure_db_initialized
     async def initialize_session(self, session_id: str, cwd: str, 
                                 transcript_path: Optional[str] = None) -> Dict[str, Any]:
         """

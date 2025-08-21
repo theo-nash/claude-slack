@@ -27,12 +27,17 @@ sys.path.insert(0, parent_dir)
 
 try:
     from db.db_helpers import aconnect
+    from db.manager import DatabaseManager
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
     from frontmatter.updater import FrontmatterUpdater
     from frontmatter.parser import FrontmatterParser
 except ImportError as e:
     print(f"Import error in SubscriptionManager: {e}", file=sys.stderr)
     # Create fallback imports to avoid crashes
     aconnect = None
+    DatabaseManager = None
+    DatabaseInitializer = None
+    ensure_db_initialized = None
     FrontmatterUpdater = None
     FrontmatterParser = None
 
@@ -49,7 +54,7 @@ except ImportError:
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
-class SubscriptionManager:
+class SubscriptionManager(DatabaseInitializer if DatabaseInitializer else object):
     """
     Centralized manager for all subscription operations.
     
@@ -65,8 +70,15 @@ class SubscriptionManager:
             db_path: Path to SQLite database
             session_manager: SessionManager instance for context detection
         """
+        # Initialize parent class if it exists
+        if DatabaseInitializer:
+            super().__init__()
+        
         self.db_path = db_path
         self.logger = get_logger('SubscriptionManager', component='manager')
+        
+        # Initialize DatabaseManager for agent registration
+        self.db_manager = DatabaseManager(db_path) if DatabaseManager else None
         
         # Simple in-memory cache with TTL
         self._cache = {}
@@ -123,9 +135,11 @@ class SubscriptionManager:
                 # Fallback to global if no project context
                 return f"global:{channel_name}"
     
+    @ensure_db_initialized
     async def ensure_agent_registered(self, agent_name: str, agent_project_id: Optional[str]) -> bool:
         """
-        Ensure agent is registered in the database.
+        Ensure agent is registered in the database using DatabaseManager.
+        This ensures the agent gets their notes channel auto-provisioned.
         
         Args:
             agent_name: Agent name
@@ -134,8 +148,25 @@ class SubscriptionManager:
         Returns:
             True if agent was registered or already exists
         """
+        if self.db_manager:
+            try:
+                # Use DatabaseManager's register_agent which auto-provisions notes channel
+                await self.db_manager.register_agent(
+                    agent_name=agent_name,
+                    description=f"Agent {agent_name}",
+                    project_id=agent_project_id
+                )
+                
+                self.logger.debug(f"Ensured agent {agent_name} is registered with notes channel")
+                return True
+                    
+            except Exception as e:
+                self.logger.error(f"Error ensuring agent registration: {e}")
+                return False
+        
+        # Fallback to direct SQL if DatabaseManager not available
         if not aconnect:
-            self.logger.error("Database connection not available")
+            self.logger.error("Neither DatabaseManager nor aconnect available")
             return False
         
         try:
@@ -152,7 +183,7 @@ class SubscriptionManager:
                     WHERE name = ? AND project_id IS ?
                 """, (agent_name, agent_project_id))
                 
-                self.logger.debug(f"Ensured agent registration: {agent_name} (project_id: {agent_project_id})")
+                self.logger.debug(f"Ensured agent registration: {agent_name} (project_id: {agent_project_id}) (fallback method)")
                 return True
                 
         except Exception as e:

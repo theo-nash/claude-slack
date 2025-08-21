@@ -25,7 +25,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from frontmatter import FrontmatterParser, FrontmatterUpdater
 from db.manager import DatabaseManager
-from utils.formatting import format_messages_concise, format_agents_concise, format_search_results_concise
+from utils.formatting import (
+    format_messages_concise, format_agents_concise, format_search_results_concise, 
+    format_time_ago, format_notes_concise, format_note_search_results, format_peek_notes
+)
 from db.db_helpers import aconnect
 from admin_operations import AdminOperations
 from transcript_parser import TranscriptParser
@@ -401,6 +404,112 @@ async def list_tools() -> list[types.Tool]:
                 "required": []
             }
         ),
+        # Agent Notes Tools
+        types.Tool(
+            name="write_note",
+            description="Write a note to your private notes channel for future reference. This helps you remember important facts, lessons learned, findings, issues, etc. across sessions.  Use PROACTIVELY at the completion of a task or session.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Note content"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional tags (e.g., ['learned', 'solution', 'debug'])"
+                    },
+                    "session_context": {
+                        "type": "string",
+                        "description": "Optional session context or task description"
+                    }
+                },
+                "required": ["agent_id", "content"]
+            }
+        ),
+        types.Tool(
+            name="search_my_notes",
+            description="Search your own notes by content or tags",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for content"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by tags"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results",
+                        "default": 50
+                    }
+                },
+                "required": ["agent_id"]
+            }
+        ),
+        types.Tool(
+            name="get_recent_notes",
+            description="Get your most recent notes",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of notes to retrieve",
+                        "default": 20
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Filter by specific session ID"
+                    }
+                },
+                "required": ["agent_id"]
+            }
+        ),
+        types.Tool(
+            name="peek_agent_notes",
+            description="Peek at another agent's notes (for learning or debugging)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
+                    "target_agent": {
+                        "type": "string",
+                        "description": "Name of the agent whose notes to peek at"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results",
+                        "default": 20
+                    }
+                },
+                "required": ["agent_id", "target_agent"]
+            }
+        ),
     ]
 
 def get_scoped_channel_id(channel_name: str, scope: str, project_id: Optional[str] = None) -> str:
@@ -520,7 +629,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     TOOLS_REQUIRING_AGENT = [
         "create_channel", "list_channels", "send_channel_message", 
         "send_direct_message", "get_messages", "subscribe_to_channel",
-        "unsubscribe_from_channel", "get_my_subscriptions", "search_messages"
+        "unsubscribe_from_channel", "get_my_subscriptions", "search_messages",
+        "write_note", "search_my_notes", "get_recent_notes", "peek_agent_notes"
     ]
     
     # Validate agent_id for tools that require it
@@ -553,7 +663,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         response = {
             "global_messages": {
                 "direct_messages": [],
-                "channel_messages": {}
+                "channel_messages": {},
+                "notes": []  # Agent's own notes
             },
             "project_messages": None
         }
@@ -562,16 +673,23 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         for channel in subscriptions['global']:
             channel_id = f"global:{channel}"
             messages = await db_manager.get_channel_messages(
-                channel_id, since=since, limit=limit//4  # Divide limit
+                channel_id, since=since, limit=limit//5  # Divide limit to include notes
             )
             if messages:
                 response["global_messages"]["channel_messages"][channel] = messages
         
         # Get global DMs
         global_dms = await db_manager.get_direct_messages(
-            agent_name, scope='global', since=since, limit=limit//4
+            agent_name, scope='global', since=since, limit=limit//5
         )
         response["global_messages"]["direct_messages"] = global_dms
+        
+        # Get agent's own global notes
+        global_notes = await db_manager.get_recent_notes(
+            agent_name, None, limit=limit//5
+        )
+        if global_notes:
+            response["global_messages"]["notes"] = global_notes
         
         # Get project messages if in project context
         if project_id:
@@ -579,14 +697,15 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
                 "project_id": project_id,
                 "project_name": project_name,
                 "direct_messages": [],
-                "channel_messages": {}
+                "channel_messages": {},
+                "notes": []  # Agent's project notes
             }
             
             # Get project channel messages
             for channel in subscriptions['project']:
                 channel_id = f"proj_{project_id[:8]}:{channel}"  # Use truncated project_id to match database
                 messages = await db_manager.get_channel_messages(
-                    channel_id, since=since, limit=limit//4
+                    channel_id, since=since, limit=limit//5
                 )
                 if messages:
                     response["project_messages"]["channel_messages"][channel] = messages
@@ -594,9 +713,16 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             # Get project DMs
             project_dms = await db_manager.get_direct_messages(
                 agent_name, scope='project', project_id=project_id,
-                since=since, limit=limit//4
+                since=since, limit=limit//5
             )
             response["project_messages"]["direct_messages"] = project_dms
+            
+            # Get agent's own project notes
+            project_notes = await db_manager.get_recent_notes(
+                agent_name, project_id, limit=limit//5
+            )
+            if project_notes:
+                response["project_messages"]["notes"] = project_notes
         
         # Use concise format instead of JSON
         return [types.TextContent(
@@ -921,6 +1047,102 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
         return [types.TextContent(
             type="text",
             text=result_text
+        )]
+    
+    # Handle Agent Notes Tools
+    elif name == "write_note":
+        content = arguments["content"]
+        tags = arguments.get("tags", [])
+        session_context = arguments.get("session_context")
+        
+        # Get current session ID from context
+        session_id = ctx.session_id if ctx else None
+        
+        # Build metadata with session context
+        metadata = {}
+        if session_context:
+            metadata["context"] = session_context
+        
+        # Write the note (agent_name already validated)
+        note_id = await db_manager.write_note(
+            agent_name, project_id, content, 
+            tags=tags, session_id=session_id, metadata=metadata
+        )
+        
+        tag_str = f" with tags {tags}" if tags else ""
+        return [types.TextContent(
+            type="text",
+            text=f"✅ Note saved (ID: {note_id}){tag_str}"
+        )]
+    
+    elif name == "search_my_notes":
+        query = arguments.get("query")
+        tags = arguments.get("tags", [])
+        limit = arguments.get("limit", 50)
+        
+        # Search notes (agent_name already validated)
+        results = await db_manager.search_notes(
+            agent_name, project_id, 
+            query=query, tags=tags, limit=limit
+        )
+        
+        return [types.TextContent(
+            type="text",
+            text=format_note_search_results(results, query, tags)
+        )]
+    
+    elif name == "get_recent_notes":
+        limit = arguments.get("limit", 20)
+        session_id = arguments.get("session_id")
+        
+        # Get recent notes (agent_name already validated)
+        notes = await db_manager.get_recent_notes(
+            agent_name, project_id, 
+            limit=limit, session_id=session_id
+        )
+        
+        if not notes:
+            filter_desc = f" for session {session_id}" if session_id else ""
+            return [types.TextContent(
+                type="text",
+                text=f"No notes found{filter_desc}"
+            )]
+        
+        title = f"Your {len(notes)} most recent note(s)"
+        return [types.TextContent(
+            type="text",
+            text=format_notes_concise(notes, title)
+        )]
+    
+    elif name == "peek_agent_notes":
+        target_agent = arguments["target_agent"]
+        query = arguments.get("query")
+        limit = arguments.get("limit", 20)
+        
+        # Check if target agent exists
+        target_exists = await db_manager.agent_exists(target_agent, project_id)
+        if not target_exists:
+            # Try global scope
+            target_exists = await db_manager.agent_exists(target_agent, None)
+            target_project_id = None if target_exists else project_id
+        else:
+            target_project_id = project_id
+        
+        if not target_exists:
+            return [types.TextContent(
+                type="text",
+                text=f"❌ Agent '{target_agent}' not found"
+            )]
+        
+        # Peek at the agent's notes
+        notes = await db_manager.peek_agent_notes(
+            target_agent, target_project_id,
+            query=query, limit=limit
+        )
+        
+        return [types.TextContent(
+            type="text",
+            text=format_peek_notes(notes, target_agent, query)
         )]
     
     # Handle list_channels
