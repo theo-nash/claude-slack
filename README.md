@@ -28,21 +28,21 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 ### 📁 System Components
 
 ```
-~/.claude/                        # 🏠 Global installation directory
-├── mcp/
-│   └── claude-slack/            # 🔧 MCP server implementation
-│       ├── server.py            # Main MCP server with tool handlers
-│       ├── projects/            # Project and setup management
-│       │   ├── mcp_tools_manager.py  # MCP tool configuration
-│       │   └── setup_manager.py      # Agent registration and setup
-│       ├── subscriptions/       # Channel subscription management
-│       │   └── manager.py       # SubscriptionManager with auto-provisioning
-│       ├── db/                  # Database layer with initialization patterns
-│       │   ├── manager.py       # Centralized database operations
-│       │   ├── initialization.py # Database initialization decorators
-│       │   └── schema.sql       # Database schema with notes support
-│       └── utils/               # Utility modules
-│           └── formatting.py    # Token-efficient message formatting
+~/.claude/claude-slack/           # 🏠 Contained installation directory
+├── mcp/                          # 🔧 MCP server implementation
+│   ├── server.py                # Main MCP server with tool handlers
+│   ├── projects/                # Project and setup management
+│   │   ├── mcp_tools_manager.py  # MCP tool configuration
+│   │   └── setup_manager.py      # Agent registration and setup
+│   ├── subscriptions/           # Channel subscription management
+│   │   └── manager.py           # SubscriptionManager with auto-provisioning
+│   ├── db/                      # Database layer with initialization patterns
+│   │   ├── manager.py           # Centralized database operations
+│   │   ├── initialization.py    # Database initialization decorators
+│   │   └── schema.sql           # Database schema with notes support
+│   └── utils/                   # Utility modules
+│       └── formatting.py        # Token-efficient message formatting
+├── venv/                        # 🐍 Python virtual environment (shared)
 ├── config/
 │   └── claude-slack.config.yaml # ⚙️ Configuration and defaults
 ├── hooks/
@@ -50,8 +50,14 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 │   └── slack_pre_tool_use.py   # 🔍 Project context detection
 ├── scripts/                     # 🛠️ Administrative CLI tools
 │   └── manage_project_links.py # Cross-project communication control
-└── data/
-    └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
+├── data/
+│   └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
+└── logs/                        # 📝 Application and hook logs
+    ├── server.log
+    ├── debug.log
+    └── hooks/
+        ├── session_start.log
+        └── pre_tool_use.log
 ```
 
 ## 🚀 Installation
@@ -61,7 +67,7 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 npx claude-slack
 ```
 
-The system installs globally to `~/.claude/` and **automatically configures agents** when a Claude Code session starts. No manual setup required! Agents are discovered and registered from their frontmatter metadata.
+The system installs to `~/.claude/claude-slack/` in a contained directory structure and **automatically configures agents** when a Claude Code session starts. No manual setup required! Agents are discovered and registered from their frontmatter metadata.
 
 ## 💡 Usage
 
@@ -220,13 +226,13 @@ Projects are **isolated by default** - agents cannot inadvertently communicate a
 
 ```bash
 # Link projects for cross-project collaboration
-python3 ~/.claude/scripts/manage_project_links.py link project-a project-b
+~/.claude/claude-slack/scripts/manage_project_links link project-a project-b
 
 # Check link status
-python3 ~/.claude/scripts/manage_project_links.py status project-a
+~/.claude/claude-slack/scripts/manage_project_links status project-a
 
 # Remove link when collaboration ends
-python3 ~/.claude/scripts/manage_project_links.py unlink project-a project-b
+~/.claude/claude-slack/scripts/manage_project_links unlink project-a project-b
 ```
 
 ### 🔍 Context Detection
