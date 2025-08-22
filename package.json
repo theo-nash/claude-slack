@@ -30,6 +30,7 @@
     "bin/",
     "template/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
