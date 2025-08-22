@@ -1,6 +1,6 @@
 {
   "name": "claude-slack",
-  "version": "1.0.0",
+  "version": "2.0.0-alpha.1",
   "description": "Channel-based messaging system for Claude Code agents - Slack-like communication infrastructure",
   "keywords": [
     "claude",
