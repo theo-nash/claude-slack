@@ -265,10 +265,9 @@ class ClaudeSlackInstaller {
         this.spinner = ora('Setting up Python environment...').start();
 
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
-        const mcpDir = path.join(claudeSlackDir, 'mcp');
 
-        // First, create requirements.txt if it doesn't exist
-        const requirementsPath = path.join(mcpDir, 'requirements.txt');
+        // First, create requirements.txt if it doesn't exist at the claude-slack level
+        const requirementsPath = path.join(claudeSlackDir, 'requirements.txt');
         if (!fs.existsSync(requirementsPath)) {
             const requirements = `# Claude-Slack MCP Server Requirements
 mcp>=0.1.0
@@ -279,9 +278,9 @@ pyyaml>=6.0
         }
 
         try {
-            // Create virtual environment
+            // Create virtual environment at claude-slack level
             execSync('python3 -m venv venv', {
-                cwd: mcpDir,
+                cwd: claudeSlackDir,
                 stdio: 'pipe'
             });
 
@@ -292,12 +291,12 @@ pyyaml>=6.0
                 : path.join('venv', 'bin', 'pip');
 
             execSync(`${pipCmd} install --upgrade pip`, {
-                cwd: mcpDir,
+                cwd: claudeSlackDir,
                 stdio: 'pipe'
             });
 
             execSync(`${pipCmd} install -r requirements.txt`, {
-                cwd: mcpDir,
+                cwd: claudeSlackDir,
                 stdio: 'pipe'
             });
 
@@ -325,8 +324,8 @@ pyyaml>=6.0
         const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
         // Handle platform-specific Python executable location
         const pythonPath = process.platform === 'win32'
-            ? path.join(mcpDir, 'venv', 'Scripts', 'python.exe')
-            : path.join(mcpDir, 'venv', 'bin', 'python');
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
         const schemaPath = path.join(mcpDir, 'db', 'schema.sql');
 
         const initScript = `
@@ -386,7 +385,6 @@ print('Database initialized successfully')
         const venvPython = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
-
         const mcpDir = path.join(claudeSlackDir, 'mcp');
         claudeConfig.mcpServers['claude-slack'] = {
             "command": venvPython,
@@ -658,13 +656,13 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
         console.log(chalk.cyan('📚 Installation Summary:'));
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, MCP_SERVER_DIR)}`);
-        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
         console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
         console.log(`  • ${chalk.bold('Managers')}: SessionManager, ChannelManager, SubscriptionManager, ProjectSetupManager`);
 
         console.log(chalk.cyan('\n🐛 Debug Logging:'));
         console.log('  • Enable debug logs: export CLAUDE_SLACK_DEBUG=1');
-        console.log(`  • Log files: ${path.join(this.globalClaudeDir, 'logs')}/*.log`);
+        console.log(`  • Log files: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'logs')}/*.log`);
         console.log('  • Logs show hook execution, database operations, and errors');
 
         console.log(chalk.cyan('\n🚀 Quick Start Guide:'));
@@ -682,7 +680,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log(chalk.cyan('🔧 Project Linking (Optional):'));
         console.log(chalk.gray('  (Only needed for cross-project communication)'));
         const scriptExt = process.platform === 'win32' ? '.bat' : '';
-        console.log(`  • Manage project links: ${path.join(this.globalClaudeDir, 'scripts', `manage_project_links${scriptExt}`)} [command]`);
+        console.log(`  • Manage project links: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'scripts', `manage_project_links${scriptExt}`)} [command]`);
         console.log('  • Projects are isolated by default');
         console.log('  • Link projects to enable agent discovery between them\n');
 
