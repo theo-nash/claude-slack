@@ -31,7 +31,8 @@ function getClaudeConfigDir() {
 
 // Configuration
 const GLOBAL_CLAUDE_DIR = getClaudeConfigDir();
-const MCP_SERVER_DIR = 'mcp/claude-slack';
+const CLAUDE_SLACK_DIR = 'claude-slack';  // Main container directory
+const MCP_SERVER_DIR = path.join(CLAUDE_SLACK_DIR, 'mcp');  // Now inside claude-slack
 const PYTHON_MIN_VERSION = '3.8';
 const DB_NAME = 'claude-slack.db';
 
@@ -171,10 +172,10 @@ class ClaudeSlackInstaller {
             console.log(chalk.blue(`  ℹ️  Using custom config directory from CLAUDE_CONFIG_DIR`));
         }
 
-        console.log(`  • ${chalk.bold('Global Installation')}: ${this.globalClaudeDir}`);
-        console.log(`  • ${chalk.bold('MCP Server')}: Always global`);
-        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('Hook')}: Global PreToolUse hook for project detection`);
+        console.log(`  • ${chalk.bold('Installation Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR)}`);
+        console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
+        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('Hooks')}: Registered in settings.json`);
 
         if (this.hasProject) {
             console.log(`  • ${chalk.bold('Project')}: ${this.projectDir}`);
@@ -202,50 +203,56 @@ class ClaudeSlackInstaller {
 
         const templateDir = path.join(__dirname, '..', 'template');
         const globalTemplateDir = path.join(templateDir, 'global');
+        
+        // Main claude-slack container directory
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        await fs.ensureDir(claudeSlackDir);
 
-        // Copy MCP server with new manager architecture
-        const mcpSource = path.join(globalTemplateDir, 'mcp');
-        const mcpTarget = path.join(this.globalClaudeDir, 'mcp');
+        // Copy MCP server into claude-slack/mcp
+        const mcpSource = path.join(globalTemplateDir, 'mcp', 'claude-slack');
+        const mcpTarget = path.join(claudeSlackDir, 'mcp');
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
-        // Ensure new manager directories are properly copied
-        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils', 'db'];
+        // Ensure all manager directories are properly copied
+        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils', 'db', 'frontmatter'];
         for (const dir of managerDirs) {
-            const dirSource = path.join(mcpSource, 'claude-slack', dir);
-            const dirTarget = path.join(mcpTarget, 'claude-slack', dir);
+            const dirSource = path.join(globalTemplateDir, 'mcp', 'claude-slack', dir);
+            const dirTarget = path.join(mcpTarget, dir);
             if (fs.existsSync(dirSource)) {
                 await fs.copy(dirSource, dirTarget, { overwrite: false });
-                this.spinner.info(`Copied ${dir} manager module`);
             }
         }
 
         // Make server.py executable on Unix-like systems
         if (process.platform !== 'win32') {
-            const serverPath = path.join(mcpTarget, 'claude-slack', 'server.py');
+            const serverPath = path.join(mcpTarget, 'server.py');
             if (fs.existsSync(serverPath)) {
                 await fs.chmod(serverPath, '755');
             }
         }
 
-        // Commands directory removed - agents use MCP tools directly
-
-        // Copy config file
+        // Copy config file into claude-slack/config
         const configSource = path.join(globalTemplateDir, 'config');
-        const configTarget = path.join(this.globalClaudeDir, 'config');
+        const configTarget = path.join(claudeSlackDir, 'config');
         await fs.copy(configSource, configTarget, { overwrite: false });
 
-        // Copy scripts (including manage_project_links.py)
+        // Copy scripts into claude-slack/scripts
         const scriptsSource = path.join(globalTemplateDir, 'scripts');
-        const scriptsTarget = path.join(this.globalClaudeDir, 'scripts');
+        const scriptsTarget = path.join(claudeSlackDir, 'scripts');
         await fs.copy(scriptsSource, scriptsTarget, { overwrite: false });
 
-        // Ensure data directory exists
-        const dataDir = path.join(this.globalClaudeDir, 'data');
+        // Copy hooks into claude-slack/hooks
+        const hooksSource = path.join(globalTemplateDir, 'hooks');
+        const hooksTarget = path.join(claudeSlackDir, 'hooks');
+        await fs.copy(hooksSource, hooksTarget, { overwrite: false });
+
+        // Ensure data directory exists in claude-slack/data
+        const dataDir = path.join(claudeSlackDir, 'data');
         await fs.ensureDir(dataDir);
         await fs.ensureDir(path.join(dataDir, 'backups'));
         
-        // Ensure log directories exist
-        const logDir = path.join(this.globalClaudeDir, 'logs', 'claude-slack');
+        // Ensure log directories exist in claude-slack/logs
+        const logDir = path.join(claudeSlackDir, 'logs');
         await fs.ensureDir(logDir);
         await fs.ensureDir(path.join(logDir, 'hooks'));
         await fs.ensureDir(path.join(logDir, 'managers'));
@@ -257,7 +264,8 @@ class ClaudeSlackInstaller {
     async setupPythonEnvironment() {
         this.spinner = ora('Setting up Python environment...').start();
 
-        const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const mcpDir = path.join(claudeSlackDir, 'mcp');
 
         // First, create requirements.txt if it doesn't exist
         const requirementsPath = path.join(mcpDir, 'requirements.txt');
@@ -303,7 +311,8 @@ pyyaml>=6.0
     async initializeDatabase() {
         this.spinner = ora('Initializing SQLite database...').start();
 
-        const dataDir = path.join(this.globalClaudeDir, 'data');
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const dataDir = path.join(claudeSlackDir, 'data');
         const dbPath = path.join(dataDir, DB_NAME);
 
         // Check if database already exists
@@ -373,19 +382,21 @@ print('Database initialized successfully')
         // Add claude-slack MCP server configuration
         // Use the venv Python to ensure dependencies are available
         // Handle platform-specific Python executable location
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const venvPython = process.platform === 'win32'
-            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
-            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
-        const mcpDir = path.join(this.globalClaudeDir, MCP_SERVER_DIR);
+        const mcpDir = path.join(claudeSlackDir, 'mcp');
         claudeConfig.mcpServers['claude-slack'] = {
             "command": venvPython,
             "args": [path.join(mcpDir, "server.py")],
             "cwd": mcpDir,
             "env": {
                 "PYTHONPATH": mcpDir,
-                "DB_PATH": path.join(this.globalClaudeDir, 'data', DB_NAME),
-                "CLAUDE_CONFIG_DIR": this.globalClaudeDir  // Pass config dir to Python
+                "DB_PATH": path.join(claudeSlackDir, 'data', DB_NAME),
+                "CLAUDE_CONFIG_DIR": this.globalClaudeDir,  // Pass config dir to Python
+                "CLAUDE_SLACK_DIR": claudeSlackDir  // Pass claude-slack dir to Python
             }
         };
 
@@ -397,9 +408,10 @@ print('Database initialized successfully')
     async createWrapperScripts(scriptsDir) {
         // Create wrapper scripts that use the venv Python
         // Handle platform-specific paths
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const venvPython = process.platform === 'win32'
-            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
-            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
         if (process.platform === 'win32') {
             // Windows batch files
@@ -426,25 +438,21 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
     }
 
     async installHooks() {
-        this.spinner = ora('Installing hooks...').start();
+        this.spinner = ora('Configuring hooks...').start();
 
-        const hooksDir = path.join(this.globalClaudeDir, 'hooks');
-        await fs.ensureDir(hooksDir);
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        
+        // Hooks are already copied to claude-slack/hooks in installGlobalComponents
+        // Now we just need to register them in settings.json
         
         // Get venv Python path for hooks
         const venvPython = process.platform === 'win32'
-            ? path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'Scripts', 'python.exe')
-            : path.join(this.globalClaudeDir, MCP_SERVER_DIR, 'venv', 'bin', 'python');
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
-        // Copy SessionStart hook
-        const sessionHookSource = path.join(__dirname, '..', 'template', 'global', 'hooks', 'slack_session_start.py');
-        const sessionHookTarget = path.join(hooksDir, 'slack_session_start.py');
-        await fs.copy(sessionHookSource, sessionHookTarget, { overwrite: true });
-
-        // Copy PreToolUse hook
-        const preToolHookSource = path.join(__dirname, '..', 'template', 'global', 'hooks', 'slack_pre_tool_use.py');
-        const preToolHookTarget = path.join(hooksDir, 'slack_pre_tool_use.py');
-        await fs.copy(preToolHookSource, preToolHookTarget, { overwrite: true });
+        // Hook paths in claude-slack directory
+        const sessionHookTarget = path.join(claudeSlackDir, 'hooks', 'slack_session_start.py');
+        const preToolHookTarget = path.join(claudeSlackDir, 'hooks', 'slack_pre_tool_use.py');
 
         // Make hook scripts executable on Unix-like systems
         if (process.platform !== 'win32') {
@@ -452,24 +460,8 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
             await fs.chmod(preToolHookTarget, '755');
         }
 
-        // Copy scripts
-        const scriptsDir = path.join(this.globalClaudeDir, 'scripts');
-        await fs.ensureDir(scriptsDir);
-
-        // Note: configure_agents and register_project_agents removed - setup is now automatic via session_start hook
-        // Only manage_project_links remains for manual cross-project linking
-        
-        // Copy manage_project_links script
-        const linksSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'manage_project_links.py');
-        const linksTarget = path.join(scriptsDir, 'manage_project_links.py');
-        await fs.copy(linksSource, linksTarget, { overwrite: true });
-
-        // Make Python scripts executable on Unix-like systems
-        if (process.platform !== 'win32') {
-            await fs.chmod(linksTarget, '755');
-        }
-
-        // Create wrapper scripts that use venv Python
+        // Create wrapper scripts for admin tools
+        const scriptsDir = path.join(claudeSlackDir, 'scripts');
         await this.createWrapperScripts(scriptsDir);
 
         // Update settings.json to register the hooks

@@ -96,19 +96,28 @@ class EnvironmentConfig:
         return self.claude_config_dir
     
     @property
+    def claude_slack_dir(self) -> Path:
+        """Get the claude-slack container directory"""
+        # Check for environment variable first (set by install.js)
+        claude_slack_dir = os.environ.get('CLAUDE_SLACK_DIR')
+        if claude_slack_dir:
+            return Path(claude_slack_dir)
+        return self.global_claude_dir / 'claude-slack'
+    
+    @property
     def db_path(self) -> Path:
         """Get path to the claude-slack database"""
-        return self.global_claude_dir / 'data' / 'claude-slack.db'
+        return self.claude_slack_dir / 'data' / 'claude-slack.db'
     
     @property
     def config_path(self) -> Path:
         """Get path to the claude-slack configuration file"""
-        return self.global_claude_dir / 'config' / 'claude-slack.config.yaml'
+        return self.claude_slack_dir / 'config' / 'claude-slack.config.yaml'
     
     @property
     def mcp_dir(self) -> Path:
         """Get path to the MCP server directory"""
-        return self.global_claude_dir / 'mcp' / 'claude-slack'
+        return self.claude_slack_dir / 'mcp'
     
     @property
     def global_agents_dir(self) -> Path:
@@ -118,7 +127,7 @@ class EnvironmentConfig:
     @property
     def logs_dir(self) -> Path:
         """Get path to logs directory"""
-        return self.global_claude_dir / 'logs'
+        return self.claude_slack_dir / 'logs'
     
     @property
     def sessions_dir(self) -> Path:

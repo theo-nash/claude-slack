@@ -14,9 +14,10 @@ from pathlib import Path
 
 # Add MCP directory to path to import modules
 claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
-mcp_dir = os.path.join(claude_config_dir, 'mcp', 'claude-slack')
+claude_slack_dir = os.path.join(claude_config_dir, 'claude-slack')
+mcp_dir = os.path.join(claude_slack_dir, 'mcp')
 sys.path.insert(0, mcp_dir)
-sys.path.insert(0, os.path.join(claude_config_dir, 'hooks'))
+sys.path.insert(0, os.path.join(claude_slack_dir, 'hooks'))
 
 # Set up logging - use new centralized logging system
 try:
@@ -83,9 +84,9 @@ def main():
                     db_path = env_config.db_path
                 except Exception as e:
                     logger.warning(f"Failed to get db_path from env_config: {e}")
-                    db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
+                    db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
             else:
-                db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
+                db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
             
             # Ensure database directory exists
             db_path = Path(db_path)
