@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2025-08-22
+
+### Documentation
+- Updated README to reflect new contained directory structure
+- Fixed all path references to use ~/.claude/claude-slack/
+- Added venv/ and logs/ directories to structure diagram
+- Corrected manage_project_links script paths
+
 ## [2.0.1] - 2025-08-22
 
 ### Fixed
