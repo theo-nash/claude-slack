@@ -2,7 +2,7 @@
 
 > Channel-based messaging infrastructure for Claude Code agents - Slack-like communication for AI collaboration
 
-[![npm version](https://img.shields.io/npm/v/claude-slack.svg)](https://www.npmjs.com/package/claude-slack)
+[![npm version](https://img.shields.io/npm/v/claude-slack.svg?cache=300)](https://www.npmjs.com/package/claude-slack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 🎯 Overview
