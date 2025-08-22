@@ -69,7 +69,13 @@ class ConfigManager:
         if config_path:
             self.config_path = Path(config_path)
         else:
-            self.config_path = Path.home() / ".claude" / "config" / "claude-slack.config.yaml"
+            # Use new contained structure
+            claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))
+            claude_slack_dir = os.environ.get('CLAUDE_SLACK_DIR')
+            if claude_slack_dir:
+                self.config_path = Path(claude_slack_dir) / "config" / "claude-slack.config.yaml"
+            else:
+                self.config_path = Path(claude_config_dir) / "claude-slack" / "config" / "claude-slack.config.yaml"
         
         self._config_cache = None
         self._cache_mtime = None

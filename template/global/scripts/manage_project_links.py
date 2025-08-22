@@ -40,7 +40,10 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 
 # Add MCP directory to path
-sys.path.insert(0, str(Path.home() / '.claude' / 'mcp' / 'claude-slack'))
+claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))
+claude_slack_dir = os.path.join(claude_config_dir, 'claude-slack')
+mcp_dir = os.path.join(claude_slack_dir, 'mcp')
+sys.path.insert(0, mcp_dir)
 
 from db.manager import DatabaseManager
 from db.initialization import initialized_db_manager
@@ -61,7 +64,9 @@ def get_db_path() -> str:
     try:
         return env_config.db_path
     except:
-        return str(Path.home() / '.claude' / 'data' / 'claude-slack.db')
+        claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))
+        claude_slack_dir = os.path.join(claude_config_dir, 'claude-slack')
+        return os.path.join(claude_slack_dir, 'data', 'claude-slack.db')
 
 async def list_all_projects(db_manager: DatabaseManager) -> List[dict]:
     """List all registered projects"""

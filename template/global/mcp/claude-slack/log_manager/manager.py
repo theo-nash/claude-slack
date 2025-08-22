@@ -40,7 +40,12 @@ class LoggingManager:
         """Initialize the logging manager (singleton)"""
         if not self._initialized:
             self.claude_dir = Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude'))
-            self.log_dir = self.claude_dir / 'logs' / 'claude-slack'
+            # Use CLAUDE_SLACK_DIR if set (new structure), otherwise fall back to old structure
+            claude_slack_dir = os.environ.get('CLAUDE_SLACK_DIR')
+            if claude_slack_dir:
+                self.log_dir = Path(claude_slack_dir) / 'logs'
+            else:
+                self.log_dir = self.claude_dir / 'claude-slack' / 'logs'
             self.debug_mode = os.environ.get('CLAUDE_SLACK_DEBUG', '').lower() in ('1', 'true', 'yes')
             self.loggers = {}
             self._initialized = True
