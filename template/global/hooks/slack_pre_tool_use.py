@@ -26,7 +26,8 @@ from typing import Optional, Dict, Any
 
 # Add MCP directory to path to import modules
 claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
-mcp_dir = os.path.join(claude_config_dir, 'mcp', 'claude-slack')
+claude_slack_dir = os.path.join(claude_config_dir, 'claude-slack')
+mcp_dir = os.path.join(claude_slack_dir, 'mcp')
 sys.path.insert(0, mcp_dir)
 sys.path.insert(0, os.path.join(mcp_dir, 'db'))
 sys.path.insert(0, os.path.join(claude_config_dir, 'hooks'))
@@ -106,7 +107,7 @@ def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool
         if USE_ENV_CONFIG:
             db_path = env_config.db_path
         else:
-            db_path = Path(claude_config_dir) / 'data' / 'claude-slack.db'
+            db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
         
         logger.debug(f"Using database: {db_path}")
         
