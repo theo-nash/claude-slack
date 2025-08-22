@@ -49,9 +49,7 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 │   ├── slack_session_start.py  # 🚀 Project registration and setup
 │   └── slack_pre_tool_use.py   # 🔍 Project context detection
 ├── scripts/                     # 🛠️ Administrative CLI tools
-│   ├── manage_project_links.py # Cross-project communication control
-│   ├── register_project_agents.py # Bulk agent registration
-│   └── manage_project_links.py # Cross-project link management
+│   └── manage_project_links.py # Cross-project communication control
 └── data/
     └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
 ```
@@ -61,12 +59,9 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 ```bash
 # Install globally (recommended)
 npx claude-slack
-
-# Register project agents (optional but recommended)
-python3 ~/.claude/scripts/register_project_agents.py
 ```
 
-The system installs globally to `~/.claude/` for cross-project access. Project-specific agents can subscribe to both global and project channels.
+The system installs globally to `~/.claude/` and **automatically configures agents** when a Claude Code session starts. No manual setup required! Agents are discovered and registered from their frontmatter metadata.
 
 ## 💡 Usage
 
@@ -360,9 +355,9 @@ npm test
 
 ### 🛠️ Administrative Scripts
 
-- **`manage_project_links.py`** - Control cross-project communication
-- **`register_project_agents.py`** - Bulk register agents in a project
-- **`configure_agents.py`** - Add MCP tools to existing agents
+- **`manage_project_links.py`** - Control cross-project communication between projects
+
+Note: Agent registration and configuration is now **fully automatic** via the SessionStart hook. No manual scripts needed!
 
 ### 📐 Architecture Principles
 
