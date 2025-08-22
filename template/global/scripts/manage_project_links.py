@@ -39,10 +39,12 @@ import argparse
 from pathlib import Path
 from typing import List, Tuple, Optional
 
-# Add MCP directory to path to import admin_operations
+# Add MCP directory to path
 sys.path.insert(0, str(Path.home() / '.claude' / 'mcp' / 'claude-slack'))
 
-from admin_operations import AdminOperations
+from db.manager import DatabaseManager
+from db.initialization import initialized_db_manager
+from environment_config import env_config
 
 # Colors for terminal output
 class Colors:
@@ -54,18 +56,38 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
 
-def get_admin_ops() -> AdminOperations:
-    """Get AdminOperations instance"""
-    return AdminOperations()
+def get_db_path() -> str:
+    """Get database path from environment config"""
+    try:
+        return env_config.db_path
+    except:
+        return str(Path.home() / '.claude' / 'data' / 'claude-slack.db')
 
-async def list_all_projects(ops: AdminOperations) -> List[dict]:
+async def list_all_projects(db_manager: DatabaseManager) -> List[dict]:
     """List all registered projects"""
-    return await ops.list_all_projects()
+    async with initialized_db_manager(db_manager) as dm:
+        async with dm.get_connection() as conn:
+            return await dm.list_projects(conn)
 
-async def get_project_links_with_names(ops: AdminOperations, project_id: str) -> List[Tuple[str, str]]:
+async def get_project_by_identifier(db_manager: DatabaseManager, identifier: str) -> Optional[dict]:
+    """Find project by name, ID, or path"""
+    projects = await list_all_projects(db_manager)
+    
+    for project in projects:
+        if (project['name'] == identifier or 
+            project['id'] == identifier or 
+            project['path'] == identifier or
+            project['id'].startswith(identifier)):  # Allow partial ID match
+            return project
+    
+    return None
+
+async def get_project_links_with_names(db_manager: DatabaseManager, project_id: str) -> List[Tuple[str, str]]:
     """Get links for a project with names"""
-    linked_ids = await ops.get_project_links(project_id)
-    all_projects = await ops.list_all_projects()
+    async with initialized_db_manager(db_manager) as dm:
+        async with dm.get_connection() as conn:
+            linked_ids = await dm.get_linked_projects(conn, project_id)
+            all_projects = await dm.list_projects(conn)
     
     # Map IDs to names
     id_to_name = {p['id']: p['name'] for p in all_projects}
@@ -77,14 +99,14 @@ async def get_project_links_with_names(ops: AdminOperations, project_id: str) ->
     
     return result
 
-def cmd_list(args):
+async def cmd_list_async(args):
     """List all projects and their links"""
-    ops = get_admin_ops()
+    db_manager = DatabaseManager(get_db_path())
     
     print(f"{Colors.HEADER}{Colors.BOLD}📊 Project Communication Links{Colors.ENDC}")
     print("=" * 60)
     
-    projects = asyncio.run(ops.list_all_projects())
+    projects = await list_all_projects(db_manager)
     
     if not projects:
         print(f"{Colors.YELLOW}No projects registered yet{Colors.ENDC}")
@@ -99,7 +121,7 @@ def cmd_list(args):
         print(f"   ID: {proj_id[:8]}...")
         print(f"   Path: {proj_path}")
         
-        links = asyncio.run(get_project_links_with_names(ops, proj_id))
+        links = await get_project_links_with_names(db_manager, proj_id)
         
         if links:
             print(f"   {Colors.GREEN}Links:{Colors.ENDC}")
@@ -111,52 +133,92 @@ def cmd_list(args):
         else:
             print(f"   {Colors.YELLOW}No links configured{Colors.ENDC}")
 
-def cmd_link(args):
-    """Create a link between two projects"""
-    ops = get_admin_ops()
-    
-    # Create link using AdminOperations
-    success, message = ops.sync_link_projects(
-        args.project_a,
-        args.project_b,
-        args.type
-    )
-    
-    if success:
-        print(f"{Colors.GREEN}✅ {message}{Colors.ENDC}")
-        print(f"\n{Colors.BLUE}ℹ️ Agents in these projects can now discover each other{Colors.ENDC}")
-    else:
-        print(f"{Colors.RED}❌ {message}{Colors.ENDC}")
+def cmd_list(args):
+    """Sync wrapper for list command"""
+    asyncio.run(cmd_list_async(args))
 
-def cmd_unlink(args):
-    """Remove a link between two projects"""
-    ops = get_admin_ops()
+async def cmd_link_async(args):
+    """Create a link between two projects"""
+    db_manager = DatabaseManager(get_db_path())
     
-    # Remove link using AdminOperations
-    success, message = ops.sync_unlink_projects(
-        args.project_a,
-        args.project_b
-    )
+    # Find projects by identifier
+    project_a = await get_project_by_identifier(db_manager, args.project_a)
+    project_b = await get_project_by_identifier(db_manager, args.project_b)
+    
+    if not project_a:
+        print(f"{Colors.RED}❌ Project '{args.project_a}' not found{Colors.ENDC}")
+        return
+    
+    if not project_b:
+        print(f"{Colors.RED}❌ Project '{args.project_b}' not found{Colors.ENDC}")
+        return
+    
+    # Create link using DatabaseManager
+    async with initialized_db_manager(db_manager) as dm:
+        async with dm.get_connection() as conn:
+            success = await dm.link_projects(
+                conn,
+                project_a['id'],
+                project_b['id'],
+                args.type
+            )
     
     if success:
-        print(f"{Colors.GREEN}✅ {message}{Colors.ENDC}")
+        print(f"{Colors.GREEN}✅ Successfully linked {project_a['name']} and {project_b['name']}{Colors.ENDC}")
+        if args.type == 'bidirectional':
+            print(f"\n{Colors.BLUE}ℹ️ Agents in these projects can now discover each other{Colors.ENDC}")
+        elif args.type == 'a_to_b':
+            print(f"\n{Colors.BLUE}ℹ️ Agents in {project_a['name']} can now discover agents in {project_b['name']}{Colors.ENDC}")
+        else:  # b_to_a
+            print(f"\n{Colors.BLUE}ℹ️ Agents in {project_b['name']} can now discover agents in {project_a['name']}{Colors.ENDC}")
+    else:
+        print(f"{Colors.YELLOW}⚠️ Projects may already be linked or an error occurred{Colors.ENDC}")
+
+def cmd_link(args):
+    """Sync wrapper for link command"""
+    asyncio.run(cmd_link_async(args))
+
+async def cmd_unlink_async(args):
+    """Remove a link between two projects"""
+    db_manager = DatabaseManager(get_db_path())
+    
+    # Find projects by identifier
+    project_a = await get_project_by_identifier(db_manager, args.project_a)
+    project_b = await get_project_by_identifier(db_manager, args.project_b)
+    
+    if not project_a:
+        print(f"{Colors.RED}❌ Project '{args.project_a}' not found{Colors.ENDC}")
+        return
+    
+    if not project_b:
+        print(f"{Colors.RED}❌ Project '{args.project_b}' not found{Colors.ENDC}")
+        return
+    
+    # Remove link using DatabaseManager
+    async with initialized_db_manager(db_manager) as dm:
+        async with dm.get_connection() as conn:
+            success = await dm.unlink_projects(
+                conn,
+                project_a['id'],
+                project_b['id']
+            )
+    
+    if success:
+        print(f"{Colors.GREEN}✅ Successfully unlinked {project_a['name']} and {project_b['name']}{Colors.ENDC}")
         print(f"\n{Colors.YELLOW}⚠️ Agents in these projects can no longer discover each other{Colors.ENDC}")
     else:
-        print(f"{Colors.YELLOW}⚠️ {message}{Colors.ENDC}")
+        print(f"{Colors.YELLOW}⚠️ Projects were not linked or an error occurred{Colors.ENDC}")
 
-def cmd_status(args):
+def cmd_unlink(args):
+    """Sync wrapper for unlink command"""
+    asyncio.run(cmd_unlink_async(args))
+
+async def cmd_status_async(args):
     """Show link status for a specific project"""
-    ops = get_admin_ops()
+    db_manager = DatabaseManager(get_db_path())
     
-    # Get all projects to find the target
-    projects = asyncio.run(ops.list_all_projects())
-    
-    # Find project by name or ID
-    project = None
-    for p in projects:
-        if p['name'] == args.project or p['id'] == args.project or p['path'] == args.project:
-            project = p
-            break
+    # Find project by identifier
+    project = await get_project_by_identifier(db_manager, args.project)
     
     if not project:
         print(f"{Colors.RED}❌ Project '{args.project}' not found{Colors.ENDC}")
@@ -171,7 +233,7 @@ def cmd_status(args):
     print(f"ID: {proj_id[:8]}...")
     print(f"Path: {proj_path}")
     
-    links = asyncio.run(get_project_links_with_names(ops, proj_id))
+    links = await get_project_links_with_names(db_manager, proj_id)
     
     if not links:
         print(f"\n{Colors.YELLOW}No links configured for this project{Colors.ENDC}")
@@ -190,6 +252,10 @@ def cmd_status(args):
         print(f"  • Can see linked project agents: Yes ({len(links)} linked project(s))")
     else:
         print(f"  • Can see linked project agents: None (no links)")
+
+def cmd_status(args):
+    """Sync wrapper for status command"""
+    asyncio.run(cmd_status_async(args))
 
 def main():
     parser = argparse.ArgumentParser(

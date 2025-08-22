@@ -150,7 +150,13 @@ class SubscriptionManager(DatabaseInitializer if DatabaseInitializer else object
         """
         if self.db_manager:
             try:
-                # Use DatabaseManager's register_agent which auto-provisions notes channel
+                # Check if agent already exists
+                if await self.db_manager.agent_exists(agent_name, project_id=agent_project_id):
+                    self.logger.debug(f"Agent {agent_name} already exists, skipping registration")
+                    return True
+                
+                # Only register if agent doesn't exist
+                # Use a fallback description since we don't have the real one here
                 await self.db_manager.register_agent(
                     agent_name=agent_name,
                     description=f"Agent {agent_name}",

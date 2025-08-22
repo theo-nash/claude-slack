@@ -8,10 +8,9 @@ npx claude-slack
 
 # 2. In your project
 cd your-project
-mkdir -p .claude/agents    # This "links" your project!
+mkdir -p .claude/agents    # This makes it a Claude Code project!
 
-# 3. Verify connection
-/slack-status              # Should show "Project: your-project"
+# 3. Start Claude Code - everything else is automatic!
 ```
 
 ## 📝 Agent Setup (in `.claude/agents/agent-name.md`)
@@ -29,24 +28,45 @@ channels:
 ---
 ```
 
-## 💬 Essential Commands
+## 🤖 How Agents Communicate
 
-| Command | What it does | Example |
-|---------|-------------|---------|
-| `/slack-status` | Check context & subscriptions | `/slack-status` |
-| `/slack-send` | Send message to channel | `/slack-send #dev "Code review needed"` |
-| `/slack-inbox` | Check unread messages | `/slack-inbox` |
-| `/slack-dm` | Send direct message | `/slack-dm @frontend "API ready"` |
-| `/slack-subscribe` | Join a channel | `/slack-subscribe #bugs` |
-| `/slack-create` | Create new channel | `/slack-create #feature-x "New feature"` |
+Agents use MCP tools programmatically - no manual commands needed:
 
-## 🎯 Scope Shortcuts
+```python
+# Send to channel
+await send_channel_message(
+    agent_id="backend-engineer",
+    channel_id="dev",
+    content="API ready for testing"
+)
 
-| Syntax | Behavior | Example |
-|--------|----------|---------|
-| `#channel` | Auto-detect (project first) | `/slack-send #dev "Hello"` |
-| `#global:channel` | Force global | `/slack-send #global:general "Hello all"` |
-| `#project:channel` | Force project | `/slack-send #project:dev "Team update"` |
+# Send direct message
+await send_direct_message(
+    agent_id="backend-engineer",
+    recipient_id="frontend-engineer",
+    content="Can you review the API?"
+)
+
+# Check messages
+messages = await get_messages(
+    agent_id="backend-engineer"
+)
+
+# Persist learnings
+await write_note(
+    agent_id="backend-engineer",
+    content="Redis caching improved response time by 60%",
+    tags=["performance", "learned"]
+)
+```
+
+## 🎯 Scope Resolution
+
+| Parameter | Behavior | Example |
+|-----------|----------|---------|
+| `channel_id="dev"` | Auto-detect (project first) | Sends to project's #dev if exists |
+| `scope="global"` | Force global | Always sends to global channel |
+| `scope="project"` | Force project | Always sends to project channel |
 
 ## 📁 Directory Structure
 
@@ -63,31 +83,74 @@ your-project/
 ~/.claude/                    # Global installation
 ├── mcp/claude-slack/        # MCP server (always here)
 ├── data/claude-slack.db     # Database (always here)
-└── hooks/                   # Hooks (always here)
+├── hooks/                   # Hooks (always here)
+└── scripts/                 # Only manage_project_links.py remains
 ```
 
-## 🔄 Common Workflows
+## 🔄 Common Agent Workflows
 
 ### Starting a New Feature
-```bash
-/slack-create #feature-auth "Authentication implementation"
-/slack-send #feature-auth "Starting OAuth2 integration"
+
+```python
+# Agent creates feature channel (auto-created on first use)
+await send_channel_message(
+    agent_id="developer",
+    channel_id="feature-auth",
+    content="Starting OAuth2 implementation"
+)
 ```
 
 ### Reporting a Bug
-```bash
-/slack-send #bugs "Critical: Payment processing fails for amounts > $1000"
+
+```python
+# Agent reports bug
+await send_channel_message(
+    agent_id="qa-tester",
+    channel_id="bugs",
+    content="Critical: Payment processing fails for amounts > $1000"
+)
 ```
 
-### Coordinating Agents
-```bash
-/slack-send #dev "Frontend needs user profile endpoint"
-# Backend agent responds in #dev channel
+### Coordinating Between Agents
+
+```python
+# Backend agent announces
+await send_channel_message(
+    agent_id="backend-engineer",
+    channel_id="dev",
+    content="User profile endpoint ready at /api/users/:id"
+)
+
+# Frontend agent sees it (subscribed to #dev) and responds
+await send_direct_message(
+    agent_id="frontend-engineer",
+    recipient_id="backend-engineer",
+    content="Thanks! Integrating now. Need CORS headers added."
+)
 ```
 
-### Project-Wide Announcement
-```bash
-/slack-send #project:general "Deploying to production at 3pm"
+### Knowledge Persistence
+
+```python
+# Agent learns something
+await write_note(
+    agent_id="backend-engineer",
+    content="Database indexes on (user_id, created_at) reduced query time from 2s to 50ms",
+    tags=["performance", "database", "optimization"]
+)
+
+# Later, agent recalls
+notes = await search_my_notes(
+    agent_id="backend-engineer",
+    query="database performance"
+)
+
+# Another agent learns from it
+notes = await peek_agent_notes(
+    agent_id="frontend-engineer",
+    target_agent="backend-engineer",
+    query="optimization"
+)
 ```
 
 ## 🎨 Channel Naming Patterns
@@ -100,14 +163,21 @@ your-project/
 | `env-*` | Environments | `env-prod`, `env-staging` |
 | `release-*` | Releases | `release-v2`, `release-2024-01` |
 
-## 🤖 Auto-Subscribe Patterns
+## 🤖 Agent Configuration
 
 ```yaml
-# Agent auto-subscribes to matching channels
-message_preferences:
-  auto_subscribe_patterns:
-    global: [security-*, alert-*]
-    project: [feature-*, bug-*]
+---
+name: backend-engineer
+channels:
+  global:              # Subscribe to global channels
+    - general
+    - announcements
+    - security-alerts
+  project:             # Subscribe to project channels
+    - dev
+    - api
+    - testing
+---
 ```
 
 ## ⚡ Quick Fixes
@@ -115,42 +185,52 @@ message_preferences:
 | Problem | Solution |
 |---------|----------|
 | "No project context" | Create `.claude/` directory in project |
-| "Channel not found" | Channel created on first use, just send |
+| "Channel not found" | Channels created automatically on first use |
 | "Not receiving messages" | Check agent subscriptions in frontmatter |
-| "Wrong scope" | Use explicit prefix: `#global:` or `#project:` |
+| "Wrong scope" | Use explicit `scope="global"` or `scope="project"` |
+| "Can't message other project" | Projects need to be linked (see below) |
 
-## 📊 Check System State
+## 🔗 Project Linking (Optional)
+
+By default, projects are isolated. To enable cross-project communication:
 
 ```bash
-# What's my context?
-/slack-status
+# Link two projects
+python3 ~/.claude/scripts/manage_project_links.py link project-a project-b
 
-# What messages do I have?
-/slack-inbox
+# Check status
+python3 ~/.claude/scripts/manage_project_links.py status project-a
 
-# What channels exist?
-/slack-channels
+# List all projects
+python3 ~/.claude/scripts/manage_project_links.py list
 
-# Who's in this project?
-/slack-list-agents
+# Unlink projects
+python3 ~/.claude/scripts/manage_project_links.py unlink project-a project-b
 ```
 
-## 💡 Pro Tips
+## 💡 Key MCP Tools
 
-1. **Start simple**: Just use `#dev` and `#general` initially
-2. **Let channels emerge**: Don't pre-create everything
-3. **Use prefixes consistently**: `feature-`, `bug-`, etc.
-4. **Subscribe broadly initially**: You can unsubscribe later
-5. **Use DMs for sensitive info**: `/slack-dm @security "Found vulnerability"`
+| Tool | Purpose |
+|------|---------|
+| `send_channel_message` | Send to channel |
+| `send_direct_message` | Send DM to agent |
+| `get_messages` | Retrieve all messages |
+| `write_note` | Persist learning |
+| `search_my_notes` | Search knowledge |
+| `get_recent_notes` | Review recent notes |
+| `peek_agent_notes` | Learn from others |
+| `list_agents` | Discover agents |
+| `list_channels` | See channels |
+| `search_messages` | Find discussions |
 
-## 🔗 Integration Examples
+## 🔗 Integration Patterns
 
 ### With Testing
 ```yaml
 # test-runner agent subscribes to:
 channels:
   project: [dev, bugs, testing]
-# Runs tests when bugs are reported
+# Automatically runs tests when bugs are reported
 ```
 
 ### With Documentation
@@ -172,4 +252,4 @@ channels:
 
 ---
 
-**Remember**: The system works automatically once agents are subscribed. You mainly interact through slash commands when you need to send messages or check status!
+**Remember**: The system is fully automatic! Agents communicate naturally through MCP tools without any manual intervention needed.

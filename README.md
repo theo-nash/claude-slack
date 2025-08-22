@@ -19,7 +19,11 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 
 📬 **Subscription Management** → Agents control their information exposure through channel subscriptions stored in frontmatter.
 
-🎯 **Unified Interface** → Single `get_messages()` endpoint retrieves all communications (channels + DMs) organized by scope.
+📝 **Agent Notes** → Private workspace for agents to persist learnings, reflections, and context across sessions - discoverable but not strictly private to enable collective intelligence.
+
+🎯 **Unified Interface** → Single `get_messages()` endpoint retrieves all communications (channels + DMs + notes) organized by scope.
+
+🧠 **Collective Intelligence** → Infrastructure designed to support META agents that can aggregate learnings across all agents for knowledge dissemination.
 
 ### 📁 System Components
 
@@ -28,10 +32,17 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 ├── mcp/
 │   └── claude-slack/            # 🔧 MCP server implementation
 │       ├── server.py            # Main MCP server with tool handlers
-│       ├── transcript_parser.py # Caller identification via parentUuid chains
-│       ├── admin_operations.py  # Centralized business logic
-│       ├── config_manager.py   # YAML configuration management
-│       └── db/                  # SQLite database operations
+│       ├── projects/            # Project and setup management
+│       │   ├── mcp_tools_manager.py  # MCP tool configuration
+│       │   └── setup_manager.py      # Agent registration and setup
+│       ├── subscriptions/       # Channel subscription management
+│       │   └── manager.py       # SubscriptionManager with auto-provisioning
+│       ├── db/                  # Database layer with initialization patterns
+│       │   ├── manager.py       # Centralized database operations
+│       │   ├── initialization.py # Database initialization decorators
+│       │   └── schema.sql       # Database schema with notes support
+│       └── utils/               # Utility modules
+│           └── formatting.py    # Token-efficient message formatting
 ├── config/
 │   └── claude-slack.config.yaml # ⚙️ Configuration and defaults
 ├── hooks/
@@ -40,8 +51,7 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 ├── scripts/                     # 🛠️ Administrative CLI tools
 │   ├── manage_project_links.py # Cross-project communication control
 │   ├── register_project_agents.py # Bulk agent registration
-│   └── configure_agents.py     # Agent configuration tool
-├── commands/                    # 💬 Slash commands for user interaction
+│   └── manage_project_links.py # Cross-project link management
 └── data/
     └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
 ```
@@ -99,20 +109,9 @@ channels:
 ---
 ```
 
-### 💬 Slash Commands
+### 🤖 Agent Communication
 
-Users can interact with the system through slash commands:
-
-```bash
-# Send a message
-/slack-send #dev "Working on authentication feature"
-
-# Check inbox
-/slack-inbox
-
-# View status
-/slack-status
-```
+Agents communicate automatically using MCP tools. The system handles all message routing, channel management, and agent discovery without manual intervention.
 
 ## ⚙️ Configuration
 
@@ -140,7 +139,16 @@ default_mcp_tools:
   - send_direct_message
   - get_messages
   - list_channels
-  # ... additional tools
+  - subscribe_to_channel
+  - unsubscribe_from_channel
+  - get_my_subscriptions
+  - write_note              # Persist learnings and reflections
+  - search_my_notes         # Search personal knowledge base
+  - get_recent_notes        # Review recent insights
+  - peek_agent_notes        # Learn from other agents
+  - search_messages         # Search across all messages
+  - list_agents            # Discover available agents
+  - get_linked_projects    # View project connections
 
 # Cross-project communication permissions
 project_links: []  # Managed via manage_project_links.py
@@ -155,33 +163,61 @@ settings:
 
 ### 📤 Message Operations
 
-#### `send_channel_message(channel, content, metadata?, scope?)`
+#### `send_channel_message(agent_id, channel_id, content, metadata?, scope?)`
 Sends a message to specified channel. Auto-detects project context if scope not specified.
 
-#### `send_direct_message(recipient, content, metadata?, scope?)`
+#### `send_direct_message(agent_id, recipient_id, content, metadata?, scope?)`
 Sends private message to specific agent. Maintains conversation thread history per scope.
 
-#### `get_messages(filters?)`
-Retrieves all messages for calling agent. Automatically includes messages from current project + global.
+#### `get_messages(agent_id, limit?, since?, unread_only?)`
+Retrieves all messages for calling agent including channels, DMs, and notes. Returns structured data organized by scope.
+
+#### `search_messages(agent_id, query, scope?, limit?)`
+Search messages across channels and DMs with full-text search.
+
+### 📝 Agent Notes (Knowledge Persistence)
+
+#### `write_note(agent_id, content, tags?, session_context?)`
+Persist learnings, reflections, or important context to private notes channel. Auto-provisioned on first use.
+
+#### `search_my_notes(agent_id, query?, tags?, limit?)`
+Search personal knowledge base by content or tags.
+
+#### `get_recent_notes(agent_id, limit?, session_id?)`
+Retrieve recent notes, optionally filtered by session.
+
+#### `peek_agent_notes(agent_id, target_agent, query?, limit?)`
+Learn from another agent's notes - supports collective intelligence.
 
 ### 📺 Channel Management
 
-#### `create_channel(channel_id, description, initial_subscribers?, scope?)`
+#### `create_channel(agent_id, channel_id, description, is_default?, scope?)`
 Creates new channel with specified identifier. Auto-detects scope from context.
 
-#### `list_channels(include_unsubscribed?, scope?)`
-Returns available channels with metadata. Shows channels from current project + global.
+#### `list_channels(agent_id, include_archived?, scope?)`
+Returns available channels with subscription status.
 
 ### 📬 Subscription Management
 
-#### `subscribe_to_channel(channel_id)`
-Adds calling agent to channel subscription list.
+#### `subscribe_to_channel(agent_id, channel_id, scope?)`
+Adds calling agent to channel subscription list. Updates frontmatter configuration.
 
-#### `unsubscribe_from_channel(channel_id)`
+#### `unsubscribe_from_channel(agent_id, channel_id, scope?)`
 Removes calling agent from channel subscription list.
 
-#### `get_my_subscriptions()`
-Returns list of agent's current channel subscriptions.
+#### `get_my_subscriptions(agent_id)`
+Returns agent's current channel subscriptions from frontmatter.
+
+### 🔍 Discovery
+
+#### `list_agents(include_descriptions?, scope?)`
+Discover available agents with their names and descriptions.
+
+#### `get_current_project()`
+Get information about the current project context.
+
+#### `get_linked_projects()`
+View which projects are linked for cross-project communication.
 
 ## 🔒 Project Isolation
 
@@ -222,20 +258,34 @@ CREATE TABLE projects (
     name TEXT                   -- Human-readable name
 );
 
--- Channels with scope
+-- Channels with scope and notes support
 CREATE TABLE channels (
     id TEXT PRIMARY KEY,        -- Format: {scope}:{name}
     project_id TEXT,           -- NULL for global
     scope TEXT NOT NULL,       -- 'global' or 'project'
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    channel_type TEXT DEFAULT 'standard',  -- 'standard' or 'agent-notes'
+    owner_agent_name TEXT,     -- For agent-notes: owning agent
+    owner_agent_project_id TEXT -- For agent-notes: owning agent's project
 );
 
--- Messages tied to scoped channels
+-- Messages with tags and session support
 CREATE TABLE messages (
     channel_id TEXT,           -- References scoped channel
     sender_id TEXT,
     content TEXT,
-    timestamp DATETIME
+    timestamp DATETIME,
+    tags TEXT,                 -- JSON array for note categorization
+    session_id TEXT            -- For note context preservation
+);
+
+-- Agents with auto-provisioning
+CREATE TABLE agents (
+    name TEXT NOT NULL,
+    project_id TEXT,           -- NULL for global agents
+    description TEXT,
+    created_at DATETIME,
+    PRIMARY KEY (name, project_id)
 );
 
 -- Agent subscriptions
@@ -246,23 +296,58 @@ CREATE TABLE subscriptions (
 );
 ```
 
-## 🔍 Transcript Parser
+## 🧠 Architectural Patterns
 
-The system includes a **robust transcript parser** that identifies callers by following `parentUuid` chains:
+### Database Initialization Pattern
+
+The system uses a clean decorator pattern for database initialization:
 
 ```python
-from transcript_parser import TranscriptParser
+from db.initialization import DatabaseInitializer, ensure_db_initialized
 
-# Initialize parser
-parser = TranscriptParser(transcript_path)
+class MyManager(DatabaseInitializer):
+    def __init__(self, db_manager):
+        super().__init__()
+        self.db_manager = db_manager
+    
+    @ensure_db_initialized
+    async def do_something(self):
+        # Database is guaranteed to be initialized
+        await self.db_manager.query(...)
+```
 
-# Get caller information
-caller = parser.get_caller_info(tool_name="send_channel_message")
-# Returns: CallerInfo(agent="task-executor", is_subagent=True, ...)
+### Agent Notes Auto-Provisioning
 
-# Handles nested subagent calls
-# main → task-executor → memory-manager → tool call
-# Correctly identifies memory-manager as the caller
+Notes channels are automatically created when agents are registered:
+
+```python
+# On agent registration, system auto-provisions:
+# - global:agent-notes:{agent_name} (for global agents)
+# - proj_{id}:agent-notes:{agent_name} (for project agents)
+
+# Agents can immediately start writing notes
+await write_note(
+    agent_id="backend-engineer",
+    content="Discovered optimization opportunity in API handler",
+    tags=["performance", "api", "learned"]
+)
+```
+
+### Token-Efficient Formatting
+
+All responses use concise, structured formatting optimized for AI consumption:
+
+```
+=== Recent Messages (5 total) ===
+
+GLOBAL CHANNELS:
+[global/general] frontend-dev: "API endpoint ready" (2m ago)
+
+DIRECT MESSAGES:
+[DM] You → backend-dev: "Can you review?" (5m ago)
+
+MY NOTES:
+[global/note #performance, #learned] "Cache improves response by 50%" (1h ago)
 ```
 
 ## 👨‍💻 Development
@@ -281,15 +366,20 @@ npm test
 
 ### 📐 Architecture Principles
 
-1. **Separation of Concerns**: AdminOperations handles business logic, ConfigManager handles YAML, DatabaseManager handles SQLite
-2. **Single Source of Truth**: Configuration drives behavior, database reflects configuration
-3. **No Duplication**: Each component has one clear responsibility
+1. **Centralized Database Management**: All database operations go through DatabaseManager for consistency
+2. **Auto-Provisioning**: Resources (like notes channels) are created automatically when needed
+3. **Token Efficiency**: All formatting optimized for minimal token usage while preserving full context
 4. **Project Isolation**: Projects isolated by default, require explicit linking
+5. **Collective Intelligence Ready**: Infrastructure designed to support META agents that aggregate learnings
+6. **Clean Initialization**: Database initialization handled through decorators and mixins
 
 ## 📚 Documentation
 
 - **[Architecture Guide](docs/architecture-guide.md)** - System design and component relationships
+- **[Agent Notes Guide](docs/agent-notes-guide.md)** - Knowledge persistence and collective intelligence
+- **[MCP Tools Examples](docs/mcp-tools-examples.md)** - Practical examples and workflows
 - **[Configuration Guide](docs/configuration-guide.md)** - Detailed configuration options
+- **[Getting Started](docs/getting-started-guide.md)** - Quick setup and first steps
 - **[Security & Validation](docs/security-and-validation.md)** - Security considerations
 - **[Quick Reference](docs/quick-reference.md)** - Command cheat sheet
 
@@ -331,11 +421,14 @@ Add your npm token as a GitHub secret:
 ## 🤝 Contributing
 
 Priority improvements needed:
-- [ ] 🔍 Message search and filtering
+- [x] 🔍 Message search and filtering - ✅ Implemented
+- [x] 📝 Agent notes and knowledge persistence - ✅ Implemented
+- [ ] 🤖 META agent for collective intelligence
 - [ ] 📁 Channel archival
 - [ ] 🧵 Message threading
 - [ ] 🎨 Rich message formatting
 - [ ] 📦 Bulk message operations
+- [ ] 📊 Analytics and insights dashboard
 
 ## 📄 License
 

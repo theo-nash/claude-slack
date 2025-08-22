@@ -23,6 +23,13 @@ try:
 except ImportError:
     ConfigManager = None
 
+try:
+    from log_manager import get_logger
+except ImportError:
+    # Fallback to standard logging if new logging system not available
+    import logging
+    def get_logger(name, component=None):
+        return logging.getLogger(name)
 
 class DatabaseManager:
     """Manages SQLite database operations for claude-slack with project isolation"""
@@ -35,6 +42,7 @@ class DatabaseManager:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
+        self.logger = get_logger('DatabaseManager', component='manager')
     
     
     async def initialize(self):
@@ -362,11 +370,17 @@ class DatabaseManager:
     @with_connection(writer=True)
     async def register_agent(self, conn, agent_name: str, description: str = "", project_id: Optional[str] = None):
         """Register or update an agent and auto-provision notes channel"""
+        # Debug logging
+        self.logger.debug(f"register_agent called with: agent_name='{agent_name}', description='{description}', project_id='{project_id}'")
+        
         # Register the agent
+        final_desc = description or f"Agent: {agent_name}"
+        self.logger.debug(f"Using final description: '{final_desc}'")
+        
         await conn.execute("""
             INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
-        """, (agent_name, description or f"Agent: {agent_name}", project_id))
+        """, (agent_name, final_desc, project_id))
         
         # Auto-provision agent notes channel
         await self._provision_agent_notes_channel(conn, agent_name, project_id)

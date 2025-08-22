@@ -151,24 +151,37 @@ CREATE TABLE project_links (
     PRIMARY KEY (project_a_id, project_b_id),
     CHECK (project_a_id < project_b_id)  -- Ensures consistent ordering
 );
+
+-- Agents table with project scoping
+CREATE TABLE agents (
+    name TEXT NOT NULL,
+    project_id TEXT,           -- NULL for global agents
+    description TEXT,
+    created_at DATETIME,
+    PRIMARY KEY (name, project_id)
+);
 ```
 
 ### Validation Flow for Direct Messages
 
+The validation is handled by the DatabaseManager and related managers:
+
 ```python
+# Simplified validation flow in the system
 async def validate_and_send_dm(sender, recipient, content, project_id):
     # 1. Check if recipient exists globally
-    if await get_global_agent(recipient):
+    if await db_manager.get_agent(conn, recipient, project_id=None):
         return send_message()  # Global agents always accessible
     
     # 2. Check current project
-    if await get_project_agent(recipient, project_id):
+    if await db_manager.get_agent(conn, recipient, project_id):
         return send_message()  # Same project always allowed
     
     # 3. Check linked projects
-    for linked_project in get_linked_projects(project_id):
-        if await get_project_agent(recipient, linked_project):
-            if can_communicate(project_id, linked_project):
+    linked_projects = await db_manager.get_linked_projects(conn, project_id)
+    for linked_project in linked_projects:
+        if await db_manager.get_agent(conn, recipient, linked_project):
+            if await db_manager.can_projects_communicate(conn, project_id, linked_project):
                 return send_message()  # Linked project, allowed
             else:
                 return error("Projects not linked for this direction")
@@ -185,38 +198,26 @@ async def validate_and_send_dm(sender, recipient, content, project_id):
 
 ### Project Link Management
 
-Project links are managed through both configuration file and database. The `manage_project_links.py` script updates both:
+Project links are managed through the `manage_project_links.py` script which directly updates the database:
 
 ```bash
-# Link projects (updates config & database)
+# Link projects (updates database)
 python3 ~/.claude/scripts/manage_project_links.py link project-a project-b
 
 # Check current links
 python3 ~/.claude/scripts/manage_project_links.py status project-a
 
-# Remove links (updates config & database)
+# Remove links (updates database)
 python3 ~/.claude/scripts/manage_project_links.py unlink project-a project-b
 ```
 
-### Configuration File Management
+### Database as Source of Truth
 
-Project links are stored in `~/.claude/config/claude-slack.config.yaml`:
-
-```yaml
-project_links:
-  - source: "project-a"
-    target: "project-b"
-    type: "bidirectional"
-    enabled: true
-    created_by: "admin"
-    created_at: "2025-01-18T10:00:00Z"
-```
-
-The configuration is:
-- **Source of Truth** - Config file defines all project links
-- **Synced on Start** - SessionStart hook syncs config to database
-- **Version Controlled** - Can be tracked in git for audit trail
-- **Backup Friendly** - Easy to backup and restore
+The new architecture uses the database as the primary source:
+- **DatabaseManager** handles all project link operations
+- **No config file syncing** - Links are managed directly in database
+- **Real-time updates** - Changes take effect immediately
+- **Audit trail** - All changes tracked with timestamps
 
 ### No Agent-Level Link Control
 
@@ -230,6 +231,40 @@ Agents **can only**:
 - View their current links (read-only)
 - Send messages within permitted boundaries
 - List agents they can communicate with
+
+## Automatic Setup and Security
+
+### SessionStart Hook Security
+
+The SessionStart hook automatically:
+1. **Registers projects** with unique IDs (SHA256 hash of path)
+2. **Discovers agents** in `.claude/agents/` directory
+3. **Configures MCP tools** with proper agent_id validation
+4. **Creates channels** with appropriate scoping
+5. **Provisions notes channels** for each agent automatically
+
+This automatic setup ensures:
+- Consistent configuration across all agents
+- No manual configuration errors
+- Proper agent identification for all operations
+- Secure channel isolation by default
+
+### Agent ID Validation
+
+Every MCP tool requires an `agent_id` parameter:
+```python
+# Agent must identify itself
+await send_channel_message(
+    agent_id="backend-engineer",  # Required - validated against registered agents
+    channel_id="dev",
+    content="Message"
+)
+```
+
+The system validates that:
+- The agent_id corresponds to a registered agent
+- The agent has appropriate permissions for the operation
+- The agent is in the correct scope for the target
 
 ## Error Messages Guide
 
@@ -259,6 +294,12 @@ Agents **can only**:
    Use global channels or work within a project.
    ```
 
+5. **Invalid Agent ID**
+   ```
+   ❌ Agent 'fake-agent' is not registered. 
+   Ensure agent exists in .claude/agents/ and session has started.
+   ```
+
 ## Best Practices
 
 ### For Administrators
@@ -266,7 +307,7 @@ Agents **can only**:
 1. **Link Projects Sparingly** - Only link projects that need to collaborate
 2. **Use Unidirectional Links** - When only one-way communication is needed
 3. **Regular Audits** - Review and remove unnecessary links
-4. **Document Links** - Keep track of why projects are linked
+4. **Unique Agent Names** - Avoid duplicate names across linked projects
 
 ### For Agent Developers
 
@@ -274,6 +315,7 @@ Agents **can only**:
 2. **Handle Errors Gracefully** - Expect and handle validation errors
 3. **Respect Boundaries** - Don't try to work around security measures
 4. **Check Context** - Verify project context before using project features
+5. **Always Include agent_id** - Every MCP tool call must identify the calling agent
 
 ## Testing Validation
 
@@ -281,27 +323,44 @@ Agents **can only**:
 
 1. **Test Invalid Recipient**
    ```python
-   result = await send_direct_message("me", "nonexistent-agent", "test")
+   result = await send_direct_message(
+       agent_id="test-agent",
+       recipient_id="nonexistent-agent",
+       content="test"
+   )
    # Should return error with suggestions
    ```
 
 2. **Test Unlinked Project**
    ```python
    # From Project A, try to message Project B (not linked)
-   result = await send_direct_message("agent-a", "agent-b", "test")
+   result = await send_direct_message(
+       agent_id="agent-a",
+       recipient_id="agent-b",
+       content="test"
+   )
    # Should return permission error
    ```
 
 3. **Test Typo Detection**
    ```python
-   result = await send_direct_message("me", "backen-eng", "test")
+   result = await send_direct_message(
+       agent_id="test-agent",
+       recipient_id="backen-eng",
+       content="test"
+   )
    # Should suggest "backend-engineer"
    ```
 
 4. **Test Project Channel Without Context**
    ```python
    # From global context
-   result = await send_channel_message("me", "project:dev", "test")
+   result = await send_channel_message(
+       agent_id="global-agent",
+       channel_id="dev",
+       content="test",
+       scope="project"  # Force project scope
+   )
    # Should return context error
    ```
 
@@ -310,10 +369,12 @@ Agents **can only**:
 The validation and security system in Claude-Slack ensures:
 
 - ✅ **Correct Recipients** - Messages only go to valid, accessible agents
-- ✅ **Project Isolation** - Project boundaries are enforced
+- ✅ **Project Isolation** - Project boundaries are enforced by default
 - ✅ **Clear Errors** - Agents understand why messages fail
-- ✅ **Administrative Control** - Only admins can modify permissions
-- ✅ **Audit Trail** - All actions are tracked and logged
+- ✅ **Automatic Setup** - Security configured automatically via SessionStart hook
+- ✅ **Administrative Control** - Only admins can modify project links
+- ✅ **Agent Identification** - Every operation requires validated agent_id
+- ✅ **Audit Trail** - All actions are tracked in database
 - ✅ **User-Friendly** - Helpful suggestions and clear feedback
 
 This multi-layered approach prevents both accidental mistakes and intentional boundary violations, making the messaging system safe and reliable for multi-project environments.

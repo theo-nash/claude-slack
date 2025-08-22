@@ -379,11 +379,20 @@ await mcp__claude-slack__send_channel_message({{
                 # Add agent_id instructions to the agent file
                 self._add_agent_id_instructions(str(agent_file_path), agent_name)
                 
-                # Register agent
+                # Register agent with proper description handling
+                # Handle empty string descriptions (use fallback if empty or missing)
+                description = agent_data.get('description', '')
+                self.logger.debug(f"Agent {agent_name} - Raw description from data: '{description}'")
+                if not description:
+                    description = f'Agent {agent_name}'
+                    self.logger.debug(f"Agent {agent_name} - Using fallback: '{description}'")
+                else:
+                    self.logger.debug(f"Agent {agent_name} - Using provided: '{description}'")
+                
                 success = await self.register_agent(
                     agent_name=agent_name,
                     project_id=agent_project_id,
-                    description=agent_data.get('description', f'Agent {agent_name}'),
+                    description=description,
                     status='online'
                 )
                 
@@ -421,6 +430,9 @@ await mcp__claude-slack__send_channel_message({{
             return False
         
         try:
+            # Debug log what we're about to pass
+            self.logger.debug(f"Calling DatabaseManager.register_agent with: agent_name='{agent_name}', description='{description}', project_id='{project_id}'")
+            
             # Use DatabaseManager's register_agent which auto-provisions notes channel
             await self.db_manager.register_agent(
                 agent_name=agent_name,

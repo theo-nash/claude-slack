@@ -30,8 +30,6 @@ from utils.formatting import (
     format_time_ago, format_notes_concise, format_note_search_results, format_peek_notes
 )
 from db.db_helpers import aconnect
-from admin_operations import AdminOperations
-from transcript_parser import TranscriptParser
 from environment_config import env_config
 from sessions.manager import SessionManager
 from subscriptions.manager import SubscriptionManager
@@ -46,7 +44,6 @@ DB_PATH = str(env_config.db_path)
 
 # Global managers
 db_manager = None
-admin_ops = None
 subscription_manager = None
 channel_manager = None
 
@@ -79,7 +76,7 @@ except ImportError:
 
 async def initialize():
     """Initialize the server and database"""
-    global db_manager, admin_ops, subscription_manager, session_manager, channel_manager
+    global db_manager, subscription_manager, session_manager, channel_manager
     
     # Ensure data directory exists
     data_dir = os.path.dirname(DB_PATH)
@@ -88,8 +85,6 @@ async def initialize():
     db_manager = DatabaseManager(DB_PATH)
     await db_manager.initialize()
     
-    # Initialize admin operations
-    admin_ops = AdminOperations(DB_PATH)
     
     # Initialize session manager
     session_manager = SessionManager(DB_PATH)

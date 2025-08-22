@@ -174,7 +174,6 @@ class ClaudeSlackInstaller {
         console.log(`  • ${chalk.bold('Global Installation')}: ${this.globalClaudeDir}`);
         console.log(`  • ${chalk.bold('MCP Server')}: Always global`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('Commands')}: Global slash commands`);
         console.log(`  • ${chalk.bold('Hook')}: Global PreToolUse hook for project detection`);
 
         if (this.hasProject) {
@@ -228,10 +227,7 @@ class ClaudeSlackInstaller {
             }
         }
 
-        // Copy commands
-        const commandsSource = path.join(globalTemplateDir, 'commands');
-        const commandsTarget = path.join(this.globalClaudeDir, 'commands');
-        await fs.copy(commandsSource, commandsTarget, { overwrite: false });
+        // Commands directory removed - agents use MCP tools directly
 
         // Copy config file
         const configSource = path.join(globalTemplateDir, 'config');
@@ -407,22 +403,7 @@ print('Database initialized successfully')
 
         if (process.platform === 'win32') {
             // Windows batch files
-            const configureBat = `@echo off
-REM Wrapper script for configure_agents.py using venv Python
-set SCRIPT_DIR=%~dp0
-set VENV_PYTHON="${venvPython}"
-"%VENV_PYTHON%" "%SCRIPT_DIR%configure_agents.py" %*
-`;
-            await fs.writeFile(path.join(scriptsDir, 'configure_agents.bat'), configureBat);
-
-            const registerBat = `@echo off
-REM Wrapper script for register_project_agents.py using venv Python
-set SCRIPT_DIR=%~dp0
-set VENV_PYTHON="${venvPython}"
-"%VENV_PYTHON%" "%SCRIPT_DIR%register_project_agents.py" %*
-`;
-            await fs.writeFile(path.join(scriptsDir, 'register_project_agents.bat'), registerBat);
-
+            // Note: configure_agents and register_project_agents removed - setup is now automatic
             const linksBat = `@echo off
 REM Wrapper script for manage_project_links.py using venv Python
 set SCRIPT_DIR=%~dp0
@@ -432,24 +413,7 @@ set VENV_PYTHON="${venvPython}"
             await fs.writeFile(path.join(scriptsDir, 'manage_project_links.bat'), linksBat);
         } else {
             // Unix/Linux/Mac shell scripts
-            const configureWrapper = `#!/bin/bash
-# Wrapper script for configure_agents.py using venv Python
-SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
-VENV_PYTHON="${venvPython}"
-exec "$VENV_PYTHON" "$SCRIPT_DIR/configure_agents.py" "$@"
-`;
-            await fs.writeFile(path.join(scriptsDir, 'configure_agents'), configureWrapper);
-            await fs.chmod(path.join(scriptsDir, 'configure_agents'), '755');
-
-            const registerWrapper = `#!/bin/bash
-# Wrapper script for register_project_agents.py using venv Python
-SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
-VENV_PYTHON="${venvPython}"
-exec "$VENV_PYTHON" "$SCRIPT_DIR/register_project_agents.py" "$@"
-`;
-            await fs.writeFile(path.join(scriptsDir, 'register_project_agents'), registerWrapper);
-            await fs.chmod(path.join(scriptsDir, 'register_project_agents'), '755');
-
+            // Note: configure_agents and register_project_agents removed - setup is now automatic
             const linksWrapper = `#!/bin/bash
 # Wrapper script for manage_project_links.py using venv Python
 SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
@@ -492,16 +456,9 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         const scriptsDir = path.join(this.globalClaudeDir, 'scripts');
         await fs.ensureDir(scriptsDir);
 
-        // Copy configure_agents script
-        const configureSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'configure_agents.py');
-        const configureTarget = path.join(scriptsDir, 'configure_agents.py');
-        await fs.copy(configureSource, configureTarget, { overwrite: true });
-
-        // Copy register_project_agents script
-        const registerSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'register_project_agents.py');
-        const registerTarget = path.join(scriptsDir, 'register_project_agents.py');
-        await fs.copy(registerSource, registerTarget, { overwrite: true });
-
+        // Note: configure_agents and register_project_agents removed - setup is now automatic via session_start hook
+        // Only manage_project_links remains for manual cross-project linking
+        
         // Copy manage_project_links script
         const linksSource = path.join(__dirname, '..', 'template', 'global', 'scripts', 'manage_project_links.py');
         const linksTarget = path.join(scriptsDir, 'manage_project_links.py');
@@ -509,8 +466,6 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
         // Make Python scripts executable on Unix-like systems
         if (process.platform !== 'win32') {
-            await fs.chmod(configureTarget, '755');
-            await fs.chmod(registerTarget, '755');
             await fs.chmod(linksTarget, '755');
         }
 
@@ -712,7 +667,6 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log(chalk.cyan('📚 Installation Summary:'));
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, MCP_SERVER_DIR)}`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('Commands')}: ${path.join(this.globalClaudeDir, 'commands', 'slack-*.md')}`);
         console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
         console.log(`  • ${chalk.bold('Managers')}: SessionManager, ChannelManager, SubscriptionManager, ProjectSetupManager`);
 
@@ -733,14 +687,12 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log('  • ChannelManager: Handles channel CRUD operations');
         console.log('  • SubscriptionManager: Manages agent-channel relationships\n');
 
-        console.log(chalk.cyan('🔧 Configuration Scripts:'));
-        console.log(chalk.gray('  (Scripts automatically use the virtual environment)'));
+        console.log(chalk.cyan('🔧 Project Linking (Optional):'));
+        console.log(chalk.gray('  (Only needed for cross-project communication)'));
         const scriptExt = process.platform === 'win32' ? '.bat' : '';
-        console.log(`  • Configure agents: ${path.join(this.globalClaudeDir, 'scripts', `configure_agents${scriptExt}`)}`);
-        console.log(`  • Register project agents: ${path.join(this.globalClaudeDir, 'scripts', `register_project_agents${scriptExt}`)} [path]`);
         console.log(`  • Manage project links: ${path.join(this.globalClaudeDir, 'scripts', `manage_project_links${scriptExt}`)} [command]`);
-        console.log('  • Project links control cross-project agent discovery and communication');
-        console.log('  • Agents auto-configured on SessionStart hook\n');
+        console.log('  • Projects are isolated by default');
+        console.log('  • Link projects to enable agent discovery between them\n');
 
         console.log(chalk.cyan('💬 Basic Commands:'));
         console.log('  • /slack-send #general "Hello, world!" - Send to global channel');
