@@ -595,6 +595,193 @@ class DatabaseManagerV3:
         """, (agent_name, agent_project_id, channel_id))
     
     # ============================================================================
+    # Agent Discovery
+    # ============================================================================
+    
+    @with_connection(writer=False)
+    async def get_discoverable_agents(self, conn,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str] = None,
+                                     include_unavailable: bool = False) -> List[Dict]:
+        """
+        Get all agents discoverable by a given agent using the agent_discovery view.
+        
+        Args:
+            agent_name: Agent doing the discovery
+            agent_project_id: Agent's project ID
+            include_unavailable: Include agents with closed DM policy
+            
+        Returns:
+            List of discoverable agents with their DM availability
+        """
+        query = """
+            SELECT 
+                discoverable_agent as name,
+                discoverable_project_id as project_id,
+                discoverable_project_name as project_name,
+                discoverable_description as description,
+                discoverable_status as status,
+                discoverable_setting,
+                dm_policy,
+                dm_availability,
+                has_existing_dm
+            FROM agent_discovery
+            WHERE discovering_agent = ?
+              AND discovering_project_id IS NOT DISTINCT FROM ?
+              AND can_discover = 1
+        """
+        
+        params = [agent_name, agent_project_id]
+        
+        if not include_unavailable:
+            query += " AND dm_availability != 'unavailable'"
+        
+        query += """
+            ORDER BY 
+                -- Existing DMs first
+                has_existing_dm DESC,
+                -- Then by availability
+                CASE dm_availability
+                    WHEN 'available' THEN 1
+                    WHEN 'requires_permission' THEN 2
+                    WHEN 'blocked' THEN 3
+                    WHEN 'unavailable' THEN 4
+                END,
+                -- Then by name
+                name
+        """
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'name': row[0],
+                'project_id': row[1],
+                'project_name': row[2],
+                'description': row[3],
+                'status': row[4],
+                'discoverable': row[5],
+                'dm_policy': row[6],
+                'dm_availability': row[7],
+                'has_existing_dm': bool(row[8]),
+                'can_dm': row[7] in ['available', 'requires_permission']
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def check_can_discover_agent(self, conn,
+                                      discovering_agent: str,
+                                      discovering_project_id: Optional[str],
+                                      target_agent: str,
+                                      target_project_id: Optional[str]) -> bool:
+        """
+        Check if one agent can discover another using the agent_discovery view.
+        
+        Args:
+            discovering_agent: Agent trying to discover
+            discovering_project_id: Discovering agent's project
+            target_agent: Agent to be discovered
+            target_project_id: Target agent's project
+            
+        Returns:
+            True if target agent is discoverable by discovering agent
+        """
+        cursor = await conn.execute("""
+            SELECT can_discover
+            FROM agent_discovery
+            WHERE discovering_agent = ?
+              AND discovering_project_id IS NOT DISTINCT FROM ?
+              AND discoverable_agent = ?
+              AND discoverable_project_id IS NOT DISTINCT FROM ?
+        """, (discovering_agent, discovering_project_id, 
+              target_agent, target_project_id))
+        
+        row = await cursor.fetchone()
+        return bool(row[0]) if row else False
+    
+    # ============================================================================
+    # Mention Validation
+    # ============================================================================
+    
+    @with_connection(writer=False)
+    async def check_agent_can_access_channel(self, conn,
+                                            agent_name: str,
+                                            agent_project_id: Optional[str],
+                                            channel_id: str) -> bool:
+        """
+        Check if an agent can access a specific channel.
+        Used for @mention validation - ensures mentioned agent can see the message.
+        
+        Simply checks if the agent appears in agent_channels view for this channel.
+        """
+        cursor = await conn.execute("""
+            SELECT 1
+            FROM agent_channels
+            WHERE agent_name = ?
+            AND agent_project_id IS NOT DISTINCT FROM ?
+            AND channel_id = ?
+        """, (agent_name, agent_project_id, channel_id))
+        
+        result = await cursor.fetchone()
+        return result is not None
+    
+    @with_connection(writer=False)
+    async def validate_mentions_batch(self, conn,
+                                     channel_id: str,
+                                     mentions: List[Dict[str, Optional[str]]]) -> Dict[str, List]:
+        """
+        Validate multiple @mentions for a channel.
+        
+        Args:
+            channel_id: The channel where the message will be posted
+            mentions: List of dicts with 'name' and 'project_id' keys
+        
+        Returns:
+            Dict with:
+            - 'valid': List of agents who can access the channel
+            - 'invalid': List of agents who cannot access the channel  
+            - 'unknown': List of agents who don't exist
+        """
+        if not mentions:
+            return {'valid': [], 'invalid': [], 'unknown': []}
+        
+        result = {'valid': [], 'invalid': [], 'unknown': []}
+        
+        # Check each mention
+        for mention in mentions:
+            agent_name = mention.get('name')
+            agent_project_id = mention.get('project_id')
+            
+            # Check if agent exists
+            cursor = await conn.execute("""
+                SELECT 1 FROM agents
+                WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+            """, (agent_name, agent_project_id))
+            
+            exists = await cursor.fetchone()
+            if not exists:
+                result['unknown'].append(mention)
+                continue
+            
+            # Check if agent can access the channel
+            cursor = await conn.execute("""
+                SELECT 1 FROM agent_channels
+                WHERE agent_name = ?
+                AND agent_project_id IS NOT DISTINCT FROM ?
+                AND channel_id = ?
+            """, (agent_name, agent_project_id, channel_id))
+            
+            can_access = await cursor.fetchone()
+            if can_access:
+                result['valid'].append(mention)
+            else:
+                result['invalid'].append(mention)
+        
+        return result
+    
+    # ============================================================================
     # Search and Query
     # ============================================================================
     

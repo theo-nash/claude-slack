@@ -302,6 +302,111 @@ FROM agents a1
 CROSS JOIN agents a2
 WHERE a1.name != a2.name OR a1.project_id != a2.project_id;
 
+-- View: Agent discovery - who can discover whom for DMs
+CREATE VIEW IF NOT EXISTS agent_discovery AS
+WITH project_relationships AS (
+    -- Get all project relationships (bidirectional)
+    SELECT project_a_id as project1, project_b_id as project2
+    FROM project_links
+    WHERE enabled = TRUE
+    UNION
+    SELECT project_b_id as project1, project_a_id as project2
+    FROM project_links
+    WHERE enabled = TRUE
+)
+SELECT 
+    a1.name as discovering_agent,
+    a1.project_id as discovering_project_id,
+    a2.name as discoverable_agent,
+    a2.project_id as discoverable_project_id,
+    a2.description as discoverable_description,
+    a2.status as discoverable_status,
+    a2.dm_policy as dm_policy,
+    a2.discoverable as discoverable_setting,
+    p2.name as discoverable_project_name,
+    
+    -- Can this agent be discovered?
+    CASE
+        -- Can't discover yourself
+        WHEN a1.name = a2.name AND a1.project_id IS NOT DISTINCT FROM a2.project_id THEN 0
+        
+        -- Public agents are always discoverable
+        WHEN a2.discoverable = 'public' THEN 1
+        
+        -- Private agents are never discoverable (except already have DM channel)
+        WHEN a2.discoverable = 'private' THEN 0
+        
+        -- Project-scoped agents
+        WHEN a2.discoverable = 'project' THEN
+            CASE
+                -- Same project
+                WHEN a1.project_id = a2.project_id AND a1.project_id IS NOT NULL THEN 1
+                
+                -- Global agent can discover project agents
+                WHEN a1.project_id IS NULL THEN 1
+                
+                -- Linked projects
+                WHEN EXISTS (
+                    SELECT 1 FROM project_relationships pr
+                    WHERE pr.project1 = a1.project_id 
+                    AND pr.project2 = a2.project_id
+                ) THEN 1
+                
+                ELSE 0
+            END
+        
+        ELSE 0
+    END as can_discover,
+    
+    -- Can actually DM? (for UI hints)
+    CASE
+        WHEN a2.dm_policy = 'closed' THEN 'unavailable'
+        WHEN a2.dm_policy = 'restricted' THEN 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM dm_permissions dp
+                    WHERE dp.agent_name = a2.name
+                    AND dp.agent_project_id IS NOT DISTINCT FROM a2.project_id
+                    AND dp.other_agent_name = a1.name
+                    AND dp.other_agent_project_id IS NOT DISTINCT FROM a1.project_id
+                    AND dp.permission = 'allow'
+                ) THEN 'available'
+                ELSE 'requires_permission'
+            END
+        WHEN a2.dm_policy = 'open' THEN 
+            CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM dm_permissions dp
+                    WHERE dp.agent_name = a2.name
+                    AND dp.agent_project_id IS NOT DISTINCT FROM a2.project_id
+                    AND dp.other_agent_name = a1.name
+                    AND dp.other_agent_project_id IS NOT DISTINCT FROM a1.project_id
+                    AND dp.permission = 'block'
+                ) THEN 'blocked'
+                ELSE 'available'
+            END
+        ELSE 'unknown'
+    END as dm_availability,
+    
+    -- Does a DM channel already exist?
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM channels c
+            JOIN channel_members cm1 ON c.id = cm1.channel_id
+            JOIN channel_members cm2 ON c.id = cm2.channel_id
+            WHERE c.channel_type = 'direct'
+            AND cm1.agent_name = a1.name 
+            AND cm1.agent_project_id IS NOT DISTINCT FROM a1.project_id
+            AND cm2.agent_name = a2.name
+            AND cm2.agent_project_id IS NOT DISTINCT FROM a2.project_id
+        ) THEN 1
+        ELSE 0
+    END as has_existing_dm
+
+FROM agents a1
+CROSS JOIN agents a2
+LEFT JOIN projects p2 ON a2.project_id = p2.id;
+
 -- View: Shared channels between projects
 CREATE VIEW IF NOT EXISTS shared_channels AS
 SELECT DISTINCT

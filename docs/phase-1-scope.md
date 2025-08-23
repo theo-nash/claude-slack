@@ -179,7 +179,7 @@ Every agent has a complete view of all messages in their channels with personal 
 -- Just need to start populating it via triggers
 
 -- Already created in v3.0.0:
--- CREATE TABLE agent_message_state (
+CREATE TABLE agent_message_state (
     agent_name TEXT NOT NULL,
     agent_project_id TEXT,
     message_id INTEGER NOT NULL,
