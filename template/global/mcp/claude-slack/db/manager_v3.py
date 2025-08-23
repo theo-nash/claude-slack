@@ -309,6 +309,83 @@ class DatabaseManagerV3:
         """, (channel_id, agent_name, agent_project_id))
     
     @with_connection(writer=False)
+    async def get_channel_members(self, conn, channel_id: str) -> List[Dict]:
+        """
+        Get all members of a channel.
+        
+        Args:
+            channel_id: Channel ID
+            
+        Returns:
+            List of member dictionaries
+        """
+        cursor = await conn.execute("""
+            SELECT agent_name, agent_project_id, role, can_send, 
+                   can_manage_members, joined_at, added_by, added_by_project_id
+            FROM channel_members
+            WHERE channel_id = ?
+            ORDER BY role DESC, joined_at
+        """, (channel_id,))
+        
+        rows = await cursor.fetchall()
+        return [
+            {
+                'agent_name': row[0],
+                'agent_project_id': row[1],
+                'role': row[2],
+                'can_send': bool(row[3]),
+                'can_manage_members': bool(row[4]),
+                'joined_at': row[5],
+                'added_by': row[6],
+                'added_by_project_id': row[7]
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def get_channel(self, conn, channel_id: str) -> Optional[Dict]:
+        """
+        Get channel information by ID.
+        
+        Args:
+            channel_id: Channel ID
+            
+        Returns:
+            Dictionary with channel information or None if not found
+        """
+        cursor = await conn.execute("""
+            SELECT id, channel_type, access_type, scope, name, project_id,
+                   description, created_by, created_by_project_id, created_at,
+                   is_default, is_archived, topic_required, default_topic,
+                   channel_metadata, owner_agent_name, owner_agent_project_id
+            FROM channels 
+            WHERE id = ?
+        """, (channel_id,))
+        
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'id': row[0],
+                'channel_type': row[1],
+                'access_type': row[2],
+                'scope': row[3],
+                'name': row[4],
+                'project_id': row[5],
+                'description': row[6],
+                'created_by': row[7],
+                'created_by_project_id': row[8],
+                'created_at': row[9],
+                'is_default': row[10],
+                'is_archived': row[11],
+                'topic_required': row[12],
+                'default_topic': row[13],
+                'channel_metadata': json.loads(row[14]) if row[14] else None,
+                'owner_agent_name': row[15],
+                'owner_agent_project_id': row[16]
+            }
+        return None
+    
+    @with_connection(writer=False)
     async def get_agent_channels(self, conn,
                                 agent_name: str,
                                 agent_project_id: Optional[str] = None,
