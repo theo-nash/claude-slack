@@ -107,13 +107,32 @@ class DatabaseManagerV3:
     async def register_agent(self, conn, name: str, project_id: Optional[str] = None,
                             description: Optional[str] = None,
                             dm_policy: str = 'open',
-                            discoverable: str = 'public'):
-        """Register an agent with DM policies"""
+                            discoverable: str = 'public',
+                            status: str = 'offline',
+                            current_project_id: Optional[str] = None,
+                            metadata: Optional[Dict] = None):
+        """
+        Register an agent with DM policies and initial settings.
+        
+        Args:
+            name: Agent name
+            project_id: Project the agent belongs to
+            description: Agent description
+            dm_policy: DM policy ('open', 'restricted', 'closed')
+            discoverable: Discoverability ('public', 'project', 'private')
+            status: Initial status ('online', 'offline', 'busy')
+            current_project_id: Currently active project
+            metadata: Additional agent metadata as dict
+        """
+        metadata_str = json.dumps(metadata) if metadata else None
+        
         await conn.execute("""
             INSERT OR REPLACE INTO agents 
-            (name, project_id, description, dm_policy, discoverable, last_active)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (name, project_id, description, dm_policy, discoverable))
+            (name, project_id, description, dm_policy, discoverable, 
+             status, current_project_id, metadata, last_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (name, project_id, description, dm_policy, discoverable,
+              status, current_project_id, metadata_str))
     
     @with_connection(writer=False)
     async def get_agent(self, conn, name: str, project_id: Optional[str] = None) -> Optional[Dict]:
@@ -553,6 +572,87 @@ class DatabaseManagerV3:
             WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
         """, (dm_policy, agent_name, agent_project_id))
     
+    @with_connection(writer=True)
+    async def remove_dm_permission(self, conn,
+                                  agent_name: str,
+                                  agent_project_id: Optional[str],
+                                  other_agent_name: str,
+                                  other_agent_project_id: Optional[str]):
+        """Remove a DM permission between two agents"""
+        await conn.execute("""
+            DELETE FROM dm_permissions
+            WHERE agent_name = ? 
+              AND agent_project_id IS NOT DISTINCT FROM ?
+              AND other_agent_name = ?
+              AND other_agent_project_id IS NOT DISTINCT FROM ?
+        """, (agent_name, agent_project_id, other_agent_name, other_agent_project_id))
+    
+    @with_connection(writer=True)
+    async def update_agent(self, conn,
+                         agent_name: str,
+                         agent_project_id: Optional[str],
+                         **fields):
+        """Update agent fields"""
+        allowed_fields = {
+            'description', 'status', 'current_project_id',
+            'dm_policy', 'discoverable', 'metadata'
+        }
+        
+        update_fields = []
+        values = []
+        
+        for field, value in fields.items():
+            if field in allowed_fields:
+                if field == 'metadata' and not isinstance(value, str):
+                    value = json.dumps(value)
+                update_fields.append(f"{field} = ?")
+                values.append(value)
+        
+        if not update_fields:
+            return
+        
+        values.extend([agent_name, agent_project_id])
+        
+        await conn.execute(f"""
+            UPDATE agents
+            SET {', '.join(update_fields)},
+                last_active = CURRENT_TIMESTAMP
+            WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+        """, values)
+    
+    @with_connection(writer=False)
+    async def get_dm_permission_stats(self, conn,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str]) -> Dict[str, int]:
+        """Get DM permission statistics for an agent"""
+        cursor = await conn.execute("""
+            SELECT 
+                SUM(CASE WHEN permission = 'block' THEN 1 ELSE 0 END) as blocked_count,
+                SUM(CASE WHEN permission = 'allow' THEN 1 ELSE 0 END) as allowed_count
+            FROM dm_permissions
+            WHERE agent_name = ?
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (agent_name, agent_project_id))
+        row = await cursor.fetchone()
+        blocked_count = row[0] or 0 if row else 0
+        allowed_count = row[1] or 0 if row else 0
+        
+        # Get agents that blocked this agent
+        cursor = await conn.execute("""
+            SELECT COUNT(*)
+            FROM dm_permissions
+            WHERE other_agent_name = ?
+              AND other_agent_project_id IS NOT DISTINCT FROM ?
+              AND permission = 'block'
+        """, (agent_name, agent_project_id))
+        blocked_by_count = (await cursor.fetchone())[0] or 0
+        
+        return {
+            'agents_blocked': blocked_count,
+            'agents_allowed': allowed_count,
+            'blocked_by_others': blocked_by_count
+        }
+    
     # ============================================================================
     # Subscription Management (for open channels)
     # ============================================================================
@@ -782,6 +882,294 @@ class DatabaseManagerV3:
         return result
     
     # ============================================================================
+    # Session Management
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def register_session(self, conn,
+                              session_id: str,
+                              project_id: Optional[str] = None,
+                              project_path: Optional[str] = None,
+                              project_name: Optional[str] = None,
+                              transcript_path: Optional[str] = None,
+                              scope: str = 'global',
+                              metadata: Optional[Dict] = None) -> str:
+        """
+        Register or update a Claude session.
+        
+        Args:
+            session_id: Unique session identifier
+            project_id: Associated project ID
+            project_path: Path to project (if applicable)
+            project_name: Human-readable project name
+            transcript_path: Path to transcript file
+            scope: 'global' or 'project'
+            metadata: Additional session metadata
+        
+        Returns:
+            session_id
+        """
+        metadata_str = json.dumps(metadata) if metadata else None
+        
+        await conn.execute("""
+            INSERT OR REPLACE INTO sessions 
+            (id, project_id, project_path, project_name, transcript_path, 
+             scope, updated_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        """, (session_id, project_id, project_path, project_name, 
+              transcript_path, scope, metadata_str))
+        
+        self.logger.info(f"Registered session: {session_id} (scope={scope})")
+        return session_id
+    
+    @with_connection(writer=True)
+    async def update_session(self, conn,
+                           session_id: str,
+                           **fields) -> bool:
+        """
+        Update session fields.
+        
+        Args:
+            session_id: Session ID to update
+            **fields: Fields to update (project_id, project_path, project_name,
+                     transcript_path, scope, metadata)
+        
+        Returns:
+            True if updated, False if session not found
+        """
+        allowed_fields = {
+            'project_id', 'project_path', 'project_name',
+            'transcript_path', 'scope', 'metadata'
+        }
+        
+        update_fields = []
+        values = []
+        
+        for field, value in fields.items():
+            if field in allowed_fields:
+                if field == 'metadata' and not isinstance(value, str):
+                    value = json.dumps(value)
+                update_fields.append(f"{field} = ?")
+                values.append(value)
+        
+        if not update_fields:
+            return False
+        
+        # Add session_id for WHERE clause
+        values.append(session_id)
+        
+        result = await conn.execute(f"""
+            UPDATE sessions
+            SET {', '.join(update_fields)},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, values)
+        
+        return result.rowcount > 0
+    
+    @with_connection(writer=False)
+    async def get_session(self, conn, session_id: str) -> Optional[Dict]:
+        """
+        Get session information.
+        
+        Args:
+            session_id: Session ID
+        
+        Returns:
+            Session dictionary or None if not found
+        """
+        cursor = await conn.execute("""
+            SELECT id, project_id, project_path, project_name, 
+                   transcript_path, scope, updated_at, metadata
+            FROM sessions
+            WHERE id = ?
+        """, (session_id,))
+        
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'id': row[0],
+                'project_id': row[1],
+                'project_path': row[2],
+                'project_name': row[3],
+                'transcript_path': row[4],
+                'scope': row[5],
+                'updated_at': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {}
+            }
+        return None
+    
+    @with_connection(writer=False)
+    async def get_active_sessions(self, conn,
+                                 project_id: Optional[str] = None,
+                                 hours: int = 24) -> List[Dict]:
+        """
+        Get recently active sessions.
+        
+        Args:
+            project_id: Optional filter by project
+            hours: Number of hours to look back (default 24)
+        
+        Returns:
+            List of active session dictionaries
+        """
+        query = """
+            SELECT id, project_id, project_path, project_name,
+                   transcript_path, scope, updated_at, metadata
+            FROM sessions
+            WHERE updated_at > datetime('now', ? || ' hours')
+        """
+        params = [-hours]
+        
+        if project_id is not None:
+            query += " AND project_id = ?"
+            params.append(project_id)
+        
+        query += " ORDER BY updated_at DESC"
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'project_id': row[1],
+                'project_path': row[2],
+                'project_name': row[3],
+                'transcript_path': row[4],
+                'scope': row[5],
+                'updated_at': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {}
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=True)
+    async def cleanup_old_sessions(self, conn, hours: int = 24) -> int:
+        """
+        Clean up sessions older than specified hours.
+        
+        Args:
+            hours: Number of hours after which to clean up sessions
+        
+        Returns:
+            Number of sessions deleted
+        """
+        result = await conn.execute("""
+            DELETE FROM sessions
+            WHERE updated_at < datetime('now', ? || ' hours')
+        """, (-hours,))
+        
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            self.logger.info(f"Cleaned up {deleted_count} old sessions")
+        
+        return deleted_count
+    
+    # ============================================================================
+    # Tool Call Deduplication
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def record_tool_call(self, conn,
+                              session_id: str,
+                              tool_name: str,
+                              tool_inputs: Dict,
+                              dedup_window_minutes: int = 10) -> bool:
+        """
+        Record a tool call for deduplication.
+        
+        Args:
+            session_id: Session ID
+            tool_name: Name of the tool called
+            tool_inputs: Tool input parameters
+            dedup_window_minutes: Minutes to look back for duplicates
+        
+        Returns:
+            True if this is a new tool call, False if duplicate detected
+        """
+        # Generate hash of tool inputs for comparison
+        inputs_str = json.dumps(tool_inputs, sort_keys=True)
+        inputs_hash = hashlib.sha256(inputs_str.encode()).hexdigest()
+        
+        # Check for recent duplicate
+        cursor = await conn.execute("""
+            SELECT id FROM tool_calls
+            WHERE session_id = ?
+              AND tool_name = ?
+              AND tool_inputs_hash = ?
+              AND called_at > datetime('now', ? || ' minutes')
+        """, (session_id, tool_name, inputs_hash, -dedup_window_minutes))
+        
+        if await cursor.fetchone():
+            self.logger.debug(f"Duplicate tool call detected: {tool_name} in session {session_id}")
+            return False
+        
+        # Record new tool call
+        await conn.execute("""
+            INSERT INTO tool_calls 
+            (session_id, tool_name, tool_inputs_hash, tool_inputs, called_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (session_id, tool_name, inputs_hash, inputs_str))
+        
+        return True
+    
+    @with_connection(writer=False)
+    async def get_recent_tool_calls(self, conn,
+                                   session_id: str,
+                                   minutes: int = 10) -> List[Dict]:
+        """
+        Get recent tool calls for a session.
+        
+        Args:
+            session_id: Session ID
+            minutes: Number of minutes to look back
+        
+        Returns:
+            List of recent tool calls
+        """
+        cursor = await conn.execute("""
+            SELECT id, tool_name, tool_inputs, called_at
+            FROM tool_calls
+            WHERE session_id = ?
+              AND called_at > datetime('now', ? || ' minutes')
+            ORDER BY called_at DESC
+        """, (session_id, -minutes))
+        
+        rows = await cursor.fetchall()
+        return [
+            {
+                'id': row[0],
+                'tool_name': row[1],
+                'tool_inputs': json.loads(row[2]),
+                'called_at': row[3]
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=True)
+    async def cleanup_old_tool_calls(self, conn, minutes: int = 10) -> int:
+        """
+        Clean up tool calls older than specified minutes.
+        
+        Args:
+            minutes: Number of minutes after which to clean up tool calls
+        
+        Returns:
+            Number of tool calls deleted
+        """
+        result = await conn.execute("""
+            DELETE FROM tool_calls
+            WHERE called_at < datetime('now', ? || ' minutes')
+        """, (-minutes,))
+        
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            self.logger.debug(f"Cleaned up {deleted_count} old tool calls")
+        
+        return deleted_count
+    
+    # ============================================================================
     # Search and Query
     # ============================================================================
     
@@ -818,3 +1206,179 @@ class DatabaseManagerV3:
             }
             for row in rows
         ]
+    
+    # ============================================================================
+    # Message CRUD Operations
+    # ============================================================================
+    
+    @with_connection(writer=False)
+    async def get_message(self, conn,
+                         message_id: int,
+                         agent_name: Optional[str] = None,
+                         agent_project_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get a specific message by ID.
+        
+        Args:
+            message_id: The message ID
+            agent_name: Optional agent requesting (for permission check)
+            agent_project_id: Optional agent's project ID
+        
+        Returns:
+            Message dict or None if not found/not accessible
+        """
+        if agent_name:
+            # Check permissions using agent_channels view
+            cursor = await conn.execute("""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.topic_name, m.ai_metadata, m.confidence, m.model_version,
+                       m.intent_type, m.is_edited, m.edited_at,
+                       c.channel_type, c.access_type, c.scope, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+                WHERE m.id = ?
+                  AND ac.agent_name = ?
+                  AND ac.agent_project_id IS NOT DISTINCT FROM ?
+            """, (message_id, agent_name, agent_project_id))
+        else:
+            # No permission check - return any message
+            cursor = await conn.execute("""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.topic_name, m.ai_metadata, m.confidence, m.model_version,
+                       m.intent_type, m.is_edited, m.edited_at,
+                       c.channel_type, c.access_type, c.scope, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                WHERE m.id = ?
+            """, (message_id,))
+        
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        
+        return {
+            'id': row[0],
+            'channel_id': row[1],
+            'sender_id': row[2],
+            'sender_project_id': row[3],
+            'content': row[4],
+            'timestamp': row[5],
+            'thread_id': row[6],
+            'metadata': row[7],
+            'topic_name': row[8],
+            'ai_metadata': row[9],
+            'confidence': row[10],
+            'model_version': row[11],
+            'intent_type': row[12],
+            'is_edited': row[13],
+            'edited_at': row[14],
+            'channel_type': row[15],
+            'access_type': row[16],
+            'scope': row[17],
+            'channel_name': row[18]
+        }
+    
+    @with_connection(writer=True)
+    async def update_message(self, conn,
+                           message_id: int,
+                           content: str,
+                           agent_name: str,
+                           agent_project_id: Optional[str] = None) -> bool:
+        """
+        Update a message's content.
+        
+        Args:
+            message_id: The message ID to update
+            content: New content
+            agent_name: Agent requesting the update
+            agent_project_id: Agent's project ID
+        
+        Returns:
+            True if updated, False if not found or not authorized
+        """
+        # Verify the agent is the sender
+        cursor = await conn.execute("""
+            SELECT sender_id, sender_project_id
+            FROM messages
+            WHERE id = ?
+        """, (message_id,))
+        
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        
+        sender_id, sender_project_id = row
+        if sender_id != agent_name or sender_project_id != agent_project_id:
+            return False  # Not authorized to edit
+        
+        # Update the message
+        await conn.execute("""
+            UPDATE messages
+            SET content = ?,
+                is_edited = TRUE,
+                edited_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (content, message_id))
+        
+        return True
+    
+    @with_connection(writer=True)
+    async def delete_message(self, conn,
+                           message_id: int,
+                           agent_name: str,
+                           agent_project_id: Optional[str] = None) -> bool:
+        """
+        Delete a message (soft delete by default).
+        
+        Args:
+            message_id: The message ID to delete
+            agent_name: Agent requesting deletion
+            agent_project_id: Agent's project ID
+        
+        Returns:
+            True if deleted, False if not found or not authorized
+        """
+        # Verify the agent is the sender or has admin rights
+        cursor = await conn.execute("""
+            SELECT m.sender_id, m.sender_project_id, m.channel_id,
+                   cm.role
+            FROM messages m
+            LEFT JOIN channel_members cm ON 
+                m.channel_id = cm.channel_id
+                AND cm.agent_name = ?
+                AND cm.agent_project_id IS NOT DISTINCT FROM ?
+            WHERE m.id = ?
+        """, (agent_name, agent_project_id, message_id))
+        
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        
+        sender_id, sender_project_id, channel_id, member_role = row
+        
+        # Check authorization: sender or channel admin
+        is_sender = (sender_id == agent_name and sender_project_id == agent_project_id)
+        is_admin = member_role in ('owner', 'admin')
+        
+        if not (is_sender or is_admin):
+            return False
+        
+        # Perform soft delete by updating content
+        await conn.execute("""
+            UPDATE messages
+            SET content = '[Message deleted]',
+                is_edited = TRUE,
+                edited_at = CURRENT_TIMESTAMP,
+                metadata = json_set(
+                    COALESCE(metadata, '{}'),
+                    '$.deleted', true,
+                    '$.deleted_by', ?,
+                    '$.deleted_at', datetime('now')
+                )
+            WHERE id = ?
+        """, (agent_name, message_id))
+        
+        return True
