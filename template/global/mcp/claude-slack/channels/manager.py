@@ -259,11 +259,12 @@ class ChannelManager(DatabaseInitializer):
                     channel_id=created_id,
                     agent_name=created_by,
                     agent_project_id=created_by_project_id,
-                    role='owner',
+                    invited_by='system',  # System adds creator
+                    source='system',
+                    can_leave=(access_type != 'private'),  # Can't leave private channels
                     can_send=True,
-                    can_manage_members=True,
-                    added_by=created_by,
-                    added_by_project_id=created_by_project_id
+                    can_invite=(access_type == 'members'),  # Can invite in members channels
+                    can_manage=True  # Creator can manage
                 )
             
             return created_id
@@ -385,147 +386,8 @@ class ChannelManager(DatabaseInitializer):
             self.logger.error(f"Error listing channels: {e}")
             return []
     
-    @ensure_db_initialized
-    async def add_channel_member(self,
-                                channel_id: str,
-                                agent_name: str,
-                                agent_project_id: Optional[str] = None,
-                                role: str = 'member',
-                                can_send: bool = True,
-                                can_manage_members: bool = False,
-                                added_by: Optional[str] = None,
-                                added_by_project_id: Optional[str] = None) -> bool:
-        """
-        Add a member to a channel.
-        
-        Args:
-            channel_id: Channel ID
-            agent_name: Agent to add
-            agent_project_id: Agent's project ID
-            role: Member role (owner/admin/member)
-            can_send: Whether member can send messages
-            can_manage_members: Whether member can manage other members
-            added_by: Agent who added this member
-            added_by_project_id: Adder's project ID
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.db:
-            return False
-        
-        try:
-            await self.db.add_channel_member(
-                channel_id=channel_id,
-                agent_name=agent_name,
-                agent_project_id=agent_project_id,
-                role=role,
-                can_send=can_send,
-                can_manage_members=can_manage_members,
-                added_by=added_by,
-                added_by_project_id=added_by_project_id
-            )
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error adding channel member: {e}")
-            return False
-    
-    @ensure_db_initialized
-    async def remove_channel_member(self,
-                                   channel_id: str,
-                                   agent_name: str,
-                                   agent_project_id: Optional[str] = None) -> bool:
-        """
-        Remove a member from a channel.
-        
-        Args:
-            channel_id: Channel ID
-            agent_name: Agent to remove
-            agent_project_id: Agent's project ID
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.db:
-            return False
-        
-        try:
-            await self.db.remove_channel_member(
-                channel_id=channel_id,
-                agent_name=agent_name,
-                agent_project_id=agent_project_id
-            )
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error removing channel member: {e}")
-            return False
-    
-    @ensure_db_initialized
-    async def subscribe_to_channel(self,
-                                  agent_name: str,
-                                  agent_project_id: Optional[str],
-                                  channel_id: str) -> bool:
-        """
-        Subscribe an agent to an open channel.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID
-            channel_id: Channel to subscribe to
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.db:
-            return False
-        
-        try:
-            await self.db.subscribe_to_channel(
-                agent_name=agent_name,
-                agent_project_id=agent_project_id,
-                channel_id=channel_id
-            )
-            return True
-            
-        except ValueError as e:
-            self.logger.error(f"Cannot subscribe: {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Error subscribing to channel: {e}")
-            return False
-    
-    @ensure_db_initialized
-    async def unsubscribe_from_channel(self,
-                                      agent_name: str,
-                                      agent_project_id: Optional[str],
-                                      channel_id: str) -> bool:
-        """
-        Unsubscribe an agent from a channel.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID
-            channel_id: Channel to unsubscribe from
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self.db:
-            return False
-        
-        try:
-            await self.db.unsubscribe_from_channel(
-                agent_name=agent_name,
-                agent_project_id=agent_project_id,
-                channel_id=channel_id
-            )
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error unsubscribing from channel: {e}")
-            return False
+    # Note: Old add_channel_member, remove_channel_member, subscribe_to_channel, 
+    # and unsubscribe_from_channel methods removed in favor of unified API below
     
     @ensure_db_initialized
     async def get_channel_members(self, channel_id: str) -> List[Dict[str, Any]]:
@@ -565,12 +427,14 @@ class ChannelManager(DatabaseInitializer):
         Returns:
             True if agent is a member, False otherwise
         """
-        members = await self.get_channel_members(channel_id)
-        for member in members:
-            if (member['agent_name'] == agent_name and 
-                member['agent_project_id'] == agent_project_id):
-                return True
-        return False
+        if not self.db:
+            return False
+        
+        try:
+            return await self.db.is_channel_member(channel_id, agent_name, agent_project_id)
+        except Exception as e:
+            self.logger.error(f"Error checking membership: {e}")
+            return False
     
     @ensure_db_initialized
     async def send_message_to_channel(self,
@@ -614,3 +478,265 @@ class ChannelManager(DatabaseInitializer):
         except Exception as e:
             self.logger.error(f"Error sending message: {e}")
             return None
+    
+    # ============================================================================
+    # Unified Membership API (Phase 2)
+    # ============================================================================
+    
+    @ensure_db_initialized
+    async def join_channel(self,
+                          agent_name: str,
+                          agent_project_id: Optional[str],
+                          channel_id: str) -> bool:
+        """
+        Join an open channel (self-service subscription).
+        
+        This is the unified API for subscribing to open channels.
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            channel_id: Channel to join
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            return False
+        
+        try:
+            # Get channel info to verify it's open
+            channel = await self.db.get_channel(channel_id)
+            if not channel:
+                self.logger.error(f"Channel {channel_id} not found")
+                return False
+            
+            if channel['access_type'] != 'open':
+                self.logger.error(f"Channel {channel_id} is not open for self-service joining")
+                return False
+            
+            # Add as member with invited_by='self'
+            await self.db.add_channel_member(
+                channel_id=channel_id,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                invited_by='self',
+                source='manual',
+                can_leave=True,
+                can_send=True,
+                can_invite=True,  # Open channels allow invites
+                can_manage=False
+            )
+            
+            self.logger.info(f"Agent {agent_name} joined channel {channel_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error joining channel: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def invite_to_channel(self,
+                              channel_id: str,
+                              invitee_name: str,
+                              invitee_project_id: Optional[str],
+                              inviter_name: str,
+                              inviter_project_id: Optional[str]) -> bool:
+        """
+        Invite an agent to a members channel.
+        
+        Args:
+            channel_id: Target channel
+            invitee_name: Agent to invite
+            invitee_project_id: Invitee's project ID
+            inviter_name: Agent doing the inviting
+            inviter_project_id: Inviter's project ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            return False
+        
+        try:
+            # Get channel info
+            channel = await self.db.get_channel(channel_id)
+            if not channel:
+                self.logger.error(f"Channel {channel_id} not found")
+                return False
+            
+            # Check if inviter can invite
+            if channel['access_type'] == 'private':
+                self.logger.error("Cannot invite to private channels")
+                return False
+            
+            # For members channels, check if inviter has permission
+            if channel['access_type'] == 'members':
+                members = await self.db.get_channel_members(channel_id)
+                inviter_member = None
+                for member in members:
+                    if (member['agent_name'] == inviter_name and
+                        member['agent_project_id'] == inviter_project_id):
+                        inviter_member = member
+                        break
+                
+                if not inviter_member:
+                    self.logger.error(f"{inviter_name} is not a member of {channel_id}")
+                    return False
+                
+                if not inviter_member.get('can_invite', False):
+                    self.logger.error(f"{inviter_name} cannot invite to {channel_id}")
+                    return False
+            
+            # Add invitee as member
+            await self.db.add_channel_member(
+                channel_id=channel_id,
+                agent_name=invitee_name,
+                agent_project_id=invitee_project_id,
+                invited_by=inviter_name,
+                source='manual',
+                can_leave=True,
+                can_send=True,
+                can_invite=(channel['access_type'] == 'open'),
+                can_manage=False
+            )
+            
+            self.logger.info(f"{inviter_name} invited {invitee_name} to {channel_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error inviting to channel: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def leave_channel(self,
+                           agent_name: str,
+                           agent_project_id: Optional[str],
+                           channel_id: str) -> bool:
+        """
+        Leave a channel (unified for all channel types).
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            channel_id: Channel to leave
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            return False
+        
+        try:
+            # Check if agent can leave
+            members = await self.db.get_channel_members(channel_id)
+            member = None
+            for m in members:
+                if (m['agent_name'] == agent_name and
+                    m['agent_project_id'] == agent_project_id):
+                    member = m
+                    break
+            
+            if not member:
+                self.logger.error(f"{agent_name} is not a member of {channel_id}")
+                return False
+            
+            if not member.get('can_leave', True):
+                self.logger.error(f"{agent_name} cannot leave {channel_id} (e.g., DM channel)")
+                return False
+            
+            # Remove membership
+            await self.db.remove_channel_member(
+                channel_id=channel_id,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id
+            )
+            
+            self.logger.info(f"Agent {agent_name} left channel {channel_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error leaving channel: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def apply_default_channels(self,
+                                    agent_name: str,
+                                    agent_project_id: Optional[str] = None,
+                                    exclusions: List[str] = None) -> int:
+        """
+        Apply default channel memberships for an agent.
+        
+        This method is called during agent registration to automatically
+        add them to channels marked with is_default=true.
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            exclusions: List of channel names to exclude
+            
+        Returns:
+            Number of channels the agent was added to
+        """
+        if not self.db:
+            return 0
+        
+        if exclusions is None:
+            exclusions = []
+        
+        added_count = 0
+        
+        try:
+            # Determine agent's scope
+            agent_scope = 'project' if agent_project_id else 'global'
+            
+            # Get all default channels the agent is eligible for
+            channels = await self.db.get_default_channels(
+                scope='all',  # Get all, we'll filter
+                project_id=agent_project_id
+            )
+            
+            for channel in channels:
+                # Skip excluded channels
+                if channel['name'] in exclusions:
+                    self.logger.debug(f"Skipping excluded channel: {channel['name']}")
+                    continue
+                
+                # Check scope eligibility
+                if channel['scope'] == 'project' and channel['project_id'] != agent_project_id:
+                    continue  # Different project
+                
+                # Check if already a member
+                is_member = await self.db.is_channel_member(
+                    channel['id'],
+                    agent_name,
+                    agent_project_id
+                )
+                if is_member:
+                    continue
+                
+                # Add to channel based on access type
+                invited_by = 'self' if channel['access_type'] == 'open' else 'system'
+                can_invite = (channel['access_type'] == 'open')
+                
+                await self.db.add_channel_member(
+                    channel_id=channel['id'],
+                    agent_name=agent_name,
+                    agent_project_id=agent_project_id,
+                    invited_by=invited_by,
+                    source='default',
+                    can_leave=True,
+                    can_send=True,
+                    can_invite=can_invite,
+                    can_manage=False,
+                    is_from_default=True
+                )
+                
+                added_count += 1
+                self.logger.info(f"Added {agent_name} to default channel: {channel['id']}")
+            
+            return added_count
+            
+        except Exception as e:
+            self.logger.error(f"Error applying default channels: {e}")
+            return added_count

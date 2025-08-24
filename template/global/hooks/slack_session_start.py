@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-slack_session_start.py - Simplified SessionStart hook using ProjectSetupManager
+slack_session_start.py - SessionStart hook using ConfigSyncManager
 
 This hook runs at the start of every Claude Code session and uses the 
-ProjectSetupManager to handle all initialization and setup tasks.
+ConfigSyncManager to handle all initialization and setup tasks with
+the unified membership model and reconciliation pattern.
 """
 
 import os
@@ -36,10 +37,10 @@ except ImportError:
     def log_json_data(l, m, d, level=None): pass
 
 try:
-    from projects.setup_manager import ProjectSetupManager
+    from config.sync_manager import ConfigSyncManager
 except ImportError as e:
-    logger.error(f"Failed to import ProjectSetupManager: {e}")
-    ProjectSetupManager = None
+    logger.error(f"Failed to import ConfigSyncManager: {e}")
+    ConfigSyncManager = None
 
 try:
     from environment_config import env_config
@@ -74,9 +75,9 @@ def main():
         logger.info(f"SessionStart Hook: session={session_id}, cwd={cwd}")
         logger.debug("--- SessionStart Hook Processing ---")
         
-        # Use ProjectSetupManager if available
-        if ProjectSetupManager:
-            logger.info("Using ProjectSetupManager for session initialization")
+        # Use ConfigSyncManager if available
+        if ConfigSyncManager:
+            logger.info("Using ConfigSyncManager for session initialization")
             
             # Database path
             if USE_ENV_CONFIG:
@@ -92,17 +93,17 @@ def main():
             db_path = Path(db_path)
             db_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initialize setup manager
+            # Initialize sync manager
             try:
-                setup_manager = ProjectSetupManager(str(db_path))
+                sync_manager = ConfigSyncManager(str(db_path))
             except Exception as e:
-                logger.error(f"Failed to initialize ProjectSetupManager: {e}")
+                logger.error(f"Failed to initialize ConfigSyncManager: {e}")
                 return 0
             
             # Initialize the session
             import asyncio
             try:
-                results = asyncio.run(setup_manager.initialize_session(
+                results = asyncio.run(sync_manager.initialize_session(
                     session_id=session_id,
                     cwd=cwd,
                     transcript_path=transcript_path
@@ -122,40 +123,25 @@ def main():
             if results.get('session_registered'):
                 logger.info("Session registered successfully")
             
-            # Handle project setup results (now a dict)
-            project_setup = results.get('project_setup_performed', {})
-            if project_setup:
-                logger.info(f"Project setup completed:")
+            # Handle reconciliation results
+            reconciliation = results.get('reconciliation', {})
+            if reconciliation and reconciliation.get('success'):
+                logger.info(f"Reconciliation completed:")
                 logger.info(f"  - Project ID: {results.get('project_id', 'N/A')}")
-                logger.info(f"  - Channels created: {len(project_setup.get('channels_created', []))}")
-                logger.info(f"  - Agents registered: {len(project_setup.get('agents_registered', []))}")
+                logger.info(f"  - Total actions: {reconciliation.get('total_actions', 0)}")
+                logger.info(f"  - Executed: {reconciliation.get('executed', 0)}")
+                logger.info(f"  - Failed: {reconciliation.get('failed', 0)}")
                 
-                # Log any project setup errors
-                if project_setup.get('errors'):
-                    for error in project_setup['errors']:
-                        logger.warning(f"Project setup warning: {error}")
+                # Log phase summary
+                phase_summary = reconciliation.get('phase_summary', {})
+                for phase, stats in phase_summary.items():
+                    if stats.get('total', 0) > 0:
+                        logger.info(f"  - {phase}: {stats['completed']}/{stats['total']} completed")
                 
                 # Silent success message to stderr (for user visibility)
-                agents_count = len(project_setup.get('agents_registered', []))
-                if agents_count > 0:
-                    print(f"Claude-Slack: {agents_count} project agents configured", file=sys.stderr)
-            
-            # Handle global setup results (now a dict)
-            global_setup = results.get('global_setup_performed', {})
-            if global_setup:
-                logger.info(f"Global environment setup completed:")
-                logger.info(f"  - Global channels created: {len(global_setup.get('channels_created', []))}")
-                logger.info(f"  - Global agents registered: {len(global_setup.get('agents_registered', []))}")
-                
-                # Log any global setup errors
-                if global_setup.get('errors'):
-                    for error in global_setup['errors']:
-                        logger.warning(f"Global setup warning: {error}")
-                
-                # Report global agents if any
-                global_agents_count = len(global_setup.get('agents_registered', []))
-                if global_agents_count > 0:
-                    logger.info(f"Configured {global_agents_count} global agents")
+                executed = reconciliation.get('executed', 0)
+                if executed > 0:
+                    print(f"Claude-Slack: {executed} configuration actions applied", file=sys.stderr)
             
             # Handle top-level errors
             if results.get('errors'):
@@ -163,22 +149,13 @@ def main():
                     logger.error(f"Initialization error: {error}")
             
             # Summary message
-            total_agents = 0
-            project_setup = results.get('project_setup_performed', {})
-            global_setup = results.get('global_setup_performed', {})
-            
-            if project_setup:
-                total_agents += len(project_setup.get('agents_registered', []))
-            if global_setup:
-                total_agents += len(global_setup.get('agents_registered', []))
-            
-            if total_agents > 0:
-                logger.info(f"SessionStart hook completed: {total_agents} total agents configured")
+            if reconciliation and reconciliation.get('success'):
+                logger.info("SessionStart hook completed: reconciliation successful")
             else:
-                logger.info("SessionStart hook completed successfully")
+                logger.info("SessionStart hook completed with reconciliation issues")
             
         else:
-            logger.warning("ProjectSetupManager not available - limited initialization")
+            logger.warning("ConfigSyncManager not available - limited initialization")
             # Could fall back to basic session registration here if needed
         
         return 0

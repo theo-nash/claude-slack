@@ -19,34 +19,46 @@ class ConfigManager:
     """Manages claude-slack configuration file"""
     
     DEFAULT_CONFIG = {
-        "version": "1.0",
+        "version": "2.0",
         "default_channels": {
             "global": [
                 {
                     "name": "general",
-                    "description": "General discussion"
+                    "description": "General discussion",
+                    "access_type": "open",
+                    "is_default": True
                 },
                 {
                     "name": "announcements", 
-                    "description": "Important updates"
+                    "description": "Important updates",
+                    "access_type": "open",
+                    "is_default": True
                 },
                 {
                     "name": "cross-project",
-                    "description": "Cross-project coordination"
+                    "description": "Cross-project coordination",
+                    "access_type": "open",
+                    "is_default": False
                 }
             ],
             "project": [
                 {
                     "name": "general",
-                    "description": "Project general discussion"
+                    "description": "Project general discussion",
+                    "access_type": "open",
+                    "is_default": True
                 },
                 {
                     "name": "dev",
-                    "description": "Development discussion"
+                    "description": "Development discussion",
+                    "access_type": "open",
+                    "is_default": True
                 },
                 {
                     "name": "releases",
-                    "description": "Release coordination"
+                    "description": "Release coordination",
+                    "access_type": "members",
+                    "is_default": False
                 }
             ]
         },

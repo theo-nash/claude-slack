@@ -77,30 +77,40 @@ CREATE TABLE IF NOT EXISTS channels (
     UNIQUE(project_id, name)      -- Ensures unique channel names per scope
 );
 
--- Channel Members table (explicit membership for members/private channels)
+-- Unified Channel Members table (ALL agent-channel relationships)
+-- Replaces both subscriptions and channel_members in the unified model
 CREATE TABLE IF NOT EXISTS channel_members (
     channel_id TEXT NOT NULL,
     agent_name TEXT NOT NULL,
     agent_project_id TEXT,         -- NULL for global agents
     
-    -- Permissions within the channel
-    role TEXT DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
-    can_send BOOLEAN DEFAULT TRUE,
-    can_manage_members BOOLEAN DEFAULT FALSE,
+    -- How they joined (unified model)
+    invited_by TEXT DEFAULT 'self', -- 'self' for self-joined, 'system' for DMs, or inviter's name
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    source TEXT DEFAULT 'manual',   -- 'frontmatter', 'manual', 'default', 'system'
     
-    -- Pre-allocated Phase 1 fields (v3.1.0)
-    last_read_at TIMESTAMP,
-    last_read_message_id INTEGER,
+    -- Capabilities (not roles!)
+    can_leave BOOLEAN DEFAULT TRUE, -- FALSE only for DMs and system channels
+    can_send BOOLEAN DEFAULT TRUE,
+    can_invite BOOLEAN DEFAULT FALSE,
+    can_manage BOOLEAN DEFAULT FALSE,
+    
+    -- User preferences (unified across all channel types)
+    is_muted BOOLEAN DEFAULT FALSE,
     notification_preference TEXT DEFAULT 'all',
     
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    added_by TEXT,                 -- Agent who added this member
-    added_by_project_id TEXT,
+    -- Read tracking (Phase 1 fields)
+    last_read_at TIMESTAMP,
+    last_read_message_id INTEGER,
+    
+    -- Default provisioning tracking
+    is_from_default BOOLEAN DEFAULT FALSE,  -- Was this membership from is_default=true?
+    opted_out BOOLEAN DEFAULT FALSE,        -- Has user explicitly opted out?
+    opted_out_at TIMESTAMP,                 -- When did they opt out?
     
     PRIMARY KEY (channel_id, agent_name, agent_project_id),
     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
-    FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id),
-    FOREIGN KEY (added_by, added_by_project_id) REFERENCES agents(name, project_id)
+    FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id)
 );
 
 -- DM Permissions table (allow/block lists for DMs)
@@ -163,18 +173,9 @@ CREATE TABLE IF NOT EXISTS agent_message_state (
     FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id)
 );
 
--- Subscriptions table (for open channels only)
-CREATE TABLE IF NOT EXISTS subscriptions (
-    agent_name TEXT NOT NULL,
-    agent_project_id TEXT,
-    channel_id TEXT NOT NULL,
-    subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    source TEXT DEFAULT 'frontmatter', -- 'frontmatter', 'manual', 'auto_pattern'
-    is_muted BOOLEAN DEFAULT FALSE,
-    PRIMARY KEY (agent_name, agent_project_id, channel_id),
-    FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id) ON DELETE CASCADE,
-    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
-);
+-- Note: Subscriptions table removed in unified membership model
+-- All channel access now goes through channel_members table
+-- "Subscriptions" are just memberships where invited_by='self'
 
 -- Project Links table (for cross-project communication)
 CREATE TABLE IF NOT EXISTS project_links (
@@ -215,6 +216,20 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
+-- Configuration Sync History table (tracks config reconciliation)
+CREATE TABLE IF NOT EXISTS config_sync_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_hash TEXT NOT NULL,        -- Hash of the config file for change detection
+    config_snapshot JSON NOT NULL,    -- Full snapshot of config at time of sync
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    scope TEXT,                        -- 'global', 'project', or 'all'
+    project_id TEXT,                   -- Project ID if project-scoped
+    actions_taken JSON,                -- List of actions performed
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
 -- ============================================================================
 -- Permission Views (Core of Phase 2)
 -- ============================================================================
@@ -233,25 +248,14 @@ WITH accessible_channels AS (
         c.description,
         c.project_id as channel_project_id,
         c.is_archived,
-        CASE
-            -- Open channels: accessible if subscribed
-            WHEN c.access_type = 'open' THEN 
-                EXISTS (
-                    SELECT 1 FROM subscriptions s 
-                    WHERE s.channel_id = c.id 
-                    AND s.agent_name = a.name 
-                    AND s.agent_project_id IS NOT DISTINCT FROM a.project_id
-                )
-            -- Members/Private channels: accessible if in channel_members
-            WHEN c.access_type IN ('members', 'private') THEN
-                EXISTS (
-                    SELECT 1 FROM channel_members cm
-                    WHERE cm.channel_id = c.id
-                    AND cm.agent_name = a.name
-                    AND cm.agent_project_id IS NOT DISTINCT FROM a.project_id
-                )
-            ELSE 0
-        END as has_access
+        -- Unified model: ALL channel access through channel_members
+        EXISTS (
+            SELECT 1 FROM channel_members cm
+            WHERE cm.channel_id = c.id
+            AND cm.agent_name = a.name
+            AND cm.agent_project_id IS NOT DISTINCT FROM a.project_id
+            AND NOT cm.opted_out  -- Respect opt-outs
+        ) as has_access
     FROM agents a
     CROSS JOIN channels c
 )
@@ -444,8 +448,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id, sender_pro
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
 
-CREATE INDEX IF NOT EXISTS idx_subscriptions_agent ON subscriptions(agent_name, agent_project_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON subscriptions(channel_id);
+-- Note: subscription indexes removed - unified model uses channel_members only
 
 CREATE INDEX IF NOT EXISTS idx_dm_permissions_agent ON dm_permissions(agent_name, agent_project_id);
 CREATE INDEX IF NOT EXISTS idx_dm_permissions_other ON dm_permissions(other_agent_name, other_agent_project_id);
@@ -493,6 +496,23 @@ BEGIN
     SET content = new.content 
     WHERE rowid = new.id;
 END;
+
+-- ============================================================================
+-- Indexes for Performance
+-- ============================================================================
+
+-- Indexes for unified membership model
+CREATE INDEX IF NOT EXISTS idx_channel_members_defaults 
+    ON channel_members(is_from_default, opted_out);
+
+CREATE INDEX IF NOT EXISTS idx_channel_members_invited_by
+    ON channel_members(invited_by, source);
+
+CREATE INDEX IF NOT EXISTS idx_channels_defaults
+    ON channels(is_default, scope, is_archived);
+
+CREATE INDEX IF NOT EXISTS idx_config_sync_history_scope
+    ON config_sync_history(scope, project_id, applied_at);
 
 -- ============================================================================
 -- Cleanup Triggers

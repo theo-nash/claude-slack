@@ -301,19 +301,35 @@ class DatabaseManager:
                                 channel_id: str,
                                 agent_name: str,
                                 agent_project_id: Optional[str] = None,
-                                role: str = 'member',
+                                invited_by: str = 'self',
+                                source: str = 'manual',
+                                can_leave: bool = True,
                                 can_send: bool = True,
-                                can_manage_members: bool = False,
-                                added_by: Optional[str] = None,
-                                added_by_project_id: Optional[str] = None):
-        """Add a member to a members/private channel"""
+                                can_invite: bool = False,
+                                can_manage: bool = False,
+                                is_from_default: bool = False):
+        """
+        Add a member to any channel (unified membership model).
+        
+        Args:
+            channel_id: Channel to add member to
+            agent_name: Agent to add
+            agent_project_id: Agent's project ID
+            invited_by: 'self' for self-joined, 'system' for defaults, or inviter's name
+            source: How membership was created ('manual', 'frontmatter', 'default', 'system')
+            can_leave: Whether member can leave (false for DMs)
+            can_send: Whether member can send messages
+            can_invite: Whether member can invite others (true for open channels)
+            can_manage: Whether member can manage channel settings
+            is_from_default: Whether this was from is_default=true
+        """
         await conn.execute("""
             INSERT OR REPLACE INTO channel_members 
-            (channel_id, agent_name, agent_project_id, role, can_send, can_manage_members,
-             added_by, added_by_project_id, joined_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (channel_id, agent_name, agent_project_id, role, can_send, can_manage_members,
-              added_by, added_by_project_id))
+            (channel_id, agent_name, agent_project_id, invited_by, source,
+             can_leave, can_send, can_invite, can_manage, is_from_default, joined_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (channel_id, agent_name, agent_project_id, invited_by, source,
+              can_leave, can_send, can_invite, can_manage, is_from_default))
     
     @with_connection(writer=True)
     async def remove_channel_member(self, conn,
@@ -339,11 +355,12 @@ class DatabaseManager:
             List of member dictionaries
         """
         cursor = await conn.execute("""
-            SELECT agent_name, agent_project_id, role, can_send, 
-                   can_manage_members, joined_at, added_by, added_by_project_id
+            SELECT agent_name, agent_project_id, invited_by, source,
+                   can_leave, can_send, can_invite, can_manage, 
+                   joined_at, is_from_default, is_muted
             FROM channel_members
             WHERE channel_id = ?
-            ORDER BY role DESC, joined_at
+            ORDER BY joined_at
         """, (channel_id,))
         
         rows = await cursor.fetchall()
@@ -351,12 +368,15 @@ class DatabaseManager:
             {
                 'agent_name': row[0],
                 'agent_project_id': row[1],
-                'role': row[2],
-                'can_send': bool(row[3]),
-                'can_manage_members': bool(row[4]),
-                'joined_at': row[5],
-                'added_by': row[6],
-                'added_by_project_id': row[7]
+                'invited_by': row[2],
+                'source': row[3],
+                'can_leave': bool(row[4]),
+                'can_send': bool(row[5]),
+                'can_invite': bool(row[6]),
+                'can_manage': bool(row[7]),
+                'joined_at': row[8],
+                'is_from_default': bool(row[9]),
+                'is_muted': bool(row[10])
             }
             for row in rows
         ]
@@ -654,15 +674,122 @@ class DatabaseManager:
         }
     
     # ============================================================================
-    # Subscription Management (for open channels)
+    # Unified Membership Management (replaces subscription/membership split)
     # ============================================================================
     
+    @with_connection(writer=False)
+    async def is_channel_member(self, conn,
+                               channel_id: str,
+                               agent_name: str,
+                               agent_project_id: Optional[str] = None) -> bool:
+        """Check if an agent is a member of a channel"""
+        cursor = await conn.execute("""
+            SELECT 1 FROM channel_members
+            WHERE channel_id = ? AND agent_name = ?
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (channel_id, agent_name, agent_project_id))
+        return await cursor.fetchone() is not None
+    
+    @with_connection(writer=False)
+    async def get_default_channels(self, conn, 
+                                  scope: str = 'all',
+                                  project_id: Optional[str] = None) -> List[Dict]:
+        """Get all channels marked as is_default=true"""
+        query = "SELECT * FROM channels WHERE is_default = 1"
+        params = []
+        
+        if scope == 'global':
+            query += " AND scope = 'global'"
+        elif scope == 'project' and project_id:
+            query += " AND scope = 'project' AND project_id = ?"
+            params.append(project_id)
+        # scope == 'all' returns everything
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+    
+    @with_connection(writer=False)
+    async def get_channels_by_scope(self, conn, scope: str = 'all', 
+                                   project_id: Optional[str] = None,
+                                   is_default: Optional[bool] = None) -> List[Dict]:
+        """Get channels filtered by scope and optionally by is_default flag"""
+        query = "SELECT * FROM channels WHERE is_archived = 0"
+        params = []
+        
+        if is_default is not None:
+            query += " AND is_default = ?"
+            params.append(1 if is_default else 0)
+        
+        if scope == 'global':
+            query += " AND scope = 'global'"
+        elif scope == 'project' and project_id:
+            query += " AND scope = 'project' AND project_id = ?"
+            params.append(project_id)
+        # scope == 'all' returns everything
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+    
+    @with_connection(writer=False)
+    async def get_agents_by_scope(self, conn, scope: str = 'all',
+                                 project_id: Optional[str] = None) -> List[Dict]:
+        """Get agents filtered by scope"""
+        if scope == 'global':
+            query = "SELECT * FROM agents WHERE project_id IS NULL"
+            params = []
+        elif scope == 'project' and project_id:
+            query = "SELECT * FROM agents WHERE project_id = ?"
+            params = [project_id]
+        else:  # 'all'
+            query = "SELECT * FROM agents"
+            params = []
+            if project_id:
+                query += " WHERE project_id = ? OR project_id IS NULL"
+                params = [project_id]
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+    
     @with_connection(writer=True)
+    async def track_config_sync(self, conn, config_hash: str, config_snapshot: str,
+                               scope: str, project_id: Optional[str],
+                               actions_taken: str, success: bool,
+                               error_message: Optional[str] = None):
+        """Track configuration sync in history table"""
+        await conn.execute("""
+            INSERT INTO config_sync_history
+            (config_hash, config_snapshot, scope, project_id, 
+             actions_taken, success, error_message, applied_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (config_hash, config_snapshot, scope, project_id,
+              actions_taken, success, error_message))
+    
+    @with_connection(writer=False)
+    async def get_last_sync_hash(self, conn) -> Optional[str]:
+        """Get the hash of the last successful sync"""
+        cursor = await conn.execute("""
+            SELECT config_hash
+            FROM config_sync_history
+            WHERE success = 1
+            ORDER BY applied_at DESC
+            LIMIT 1
+        """)
+        row = await cursor.fetchone()
+        return row[0] if row else None
+    
+    @with_connection(writer=True) 
     async def subscribe_to_channel(self, conn,
                                   agent_name: str,
                                   agent_project_id: Optional[str],
-                                  channel_id: str):
-        """Subscribe an agent to an open channel"""
+                                  channel_id: str,
+                                  source: str = 'manual'):
+        """Subscribe to a channel (unified model: self-joined membership)"""
         # Check if channel is open
         cursor = await conn.execute(
             "SELECT access_type FROM channels WHERE id = ?", (channel_id,)
@@ -676,23 +803,32 @@ class DatabaseManager:
             raise ValueError(f"Channel {channel_id} is not open for subscriptions. "
                            f"Use add_channel_member for {row[0]} channels.")
         
-        await conn.execute("""
-            INSERT OR REPLACE INTO subscriptions
-            (agent_name, agent_project_id, channel_id, subscribed_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        """, (agent_name, agent_project_id, channel_id))
+        # In unified model, subscription is just membership with invited_by='self'
+        await self.add_channel_member(
+            conn,
+            channel_id=channel_id,
+            agent_name=agent_name,
+            agent_project_id=agent_project_id,
+            invited_by='self',
+            source=source,
+            can_leave=True,
+            can_send=True,
+            can_invite=True,  # Open channels allow invites
+            can_manage=False
+        )
     
     @with_connection(writer=True)
     async def unsubscribe_from_channel(self, conn,
                                       agent_name: str,
                                       agent_project_id: Optional[str],
                                       channel_id: str):
-        """Unsubscribe an agent from a channel"""
-        await conn.execute("""
-            DELETE FROM subscriptions
-            WHERE agent_name = ? AND agent_project_id IS NOT DISTINCT FROM ?
-              AND channel_id = ?
-        """, (agent_name, agent_project_id, channel_id))
+        """Unsubscribe from a channel (unified model: remove membership)"""
+        await self.remove_channel_member(
+            conn,
+            channel_id=channel_id,
+            agent_name=agent_name,
+            agent_project_id=agent_project_id
+        )
     
     # ============================================================================
     # Agent Discovery

@@ -61,9 +61,10 @@ class MCPToolsManager:
                 'mcp__claude-slack__send_direct_message',
                 'mcp__claude-slack__get_messages',
                 'mcp__claude-slack__list_channels',
-                'mcp__claude-slack__subscribe_to_channel',
-                'mcp__claude-slack__unsubscribe_from_channel',
-                'mcp__claude-slack__get_my_subscriptions',
+                'mcp__claude-slack__join_channel',           # Replaces subscribe_to_channel
+                'mcp__claude-slack__leave_channel',          # Replaces unsubscribe_from_channel
+                'mcp__claude-slack__invite_to_channel',      # New unified API
+                'mcp__claude-slack__list_my_channels',       # Replaces get_my_subscriptions
                 'mcp__claude-slack__search_messages',
                 'mcp__claude-slack__get_current_project',
                 'mcp__claude-slack__list_projects',

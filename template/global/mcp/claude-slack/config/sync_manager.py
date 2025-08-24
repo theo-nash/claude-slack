@@ -1,0 +1,582 @@
+#!/usr/bin/env python3
+"""
+Configuration Sync Manager for Claude-Slack V3
+
+Unified configuration synchronization and project setup.
+Replaces ProjectSetupManager with reconciliation pattern and unified membership model.
+"""
+
+import os
+import sys
+import json
+import hashlib
+from typing import Dict, List, Optional, Any, Set
+from pathlib import Path
+from datetime import datetime
+
+# Add parent directory to path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
+
+from config.reconciliation import (
+    ReconciliationPlan, 
+    CreateChannelAction, 
+    RegisterAgentAction, 
+    AddMembershipAction,
+    ActionResult
+)
+from agents.discovery import AgentDiscoveryService, DiscoveredAgent
+from db.manager import DatabaseManager
+from db.initialization import DatabaseInitializer, ensure_db_initialized
+from channels.manager import ChannelManager
+from sessions.manager import SessionManager
+from config_manager import ConfigManager
+from frontmatter.parser import FrontmatterParser
+
+try:
+    from log_manager import get_logger
+except ImportError:
+    import logging
+    def get_logger(name, component=None):
+        return logging.getLogger(name)
+
+
+class ConfigSyncManager(DatabaseInitializer):
+    """
+    Unified configuration synchronization and project setup.
+    Replaces ProjectSetupManager with reconciliation pattern.
+    """
+    
+    def __init__(self, db_path: str):
+        """
+        Initialize ConfigSyncManager with required components.
+        
+        Args:
+            db_path: Path to SQLite database
+        """
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
+        
+        self.db_path = db_path
+        self.logger = get_logger('ConfigSyncManager', component='sync')
+        
+        # Initialize managers
+        self.db = DatabaseManager(db_path)
+        self.db_manager = self.db  # Required for DatabaseInitializer
+        self.channel_manager = ChannelManager(db_path)
+        self.session_manager = SessionManager(db_path)
+        
+        # Initialize services
+        self.discovery = AgentDiscoveryService()
+        self.config = ConfigManager()
+        
+        # Ensure config exists
+        self.config.ensure_config_exists()
+    
+    @ensure_db_initialized
+    async def initialize_session(self, session_id: str, cwd: str, 
+                                transcript_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Initialize a new session with project detection and full reconciliation.
+        
+        This is the main entry point from the session hook.
+        
+        Args:
+            session_id: Claude session ID
+            cwd: Current working directory
+            transcript_path: Optional path to session transcript
+            
+        Returns:
+            Dictionary with initialization results
+        """
+        results = {
+            'session_registered': False,
+            'project_id': None,
+            'reconciliation': None,
+            'errors': []
+        }
+        
+        self.logger.info(f"Initializing session: {session_id}")
+        
+        try:
+            # Find project path
+            project_path = os.environ.get('CLAUDE_PROJECT_DIR', cwd)
+            if not project_path:
+                project_path = cwd
+            
+            # Register session (this also registers the project)
+            if self.session_manager:
+                success = await self.session_manager.register_session(
+                    session_id=session_id,
+                    project_path=project_path,
+                    transcript_path=transcript_path
+                )
+                results['session_registered'] = success
+                
+                if success:
+                    # Get project ID
+                    project_id = await self.session_manager.generate_project_id(project_path)
+                    results['project_id'] = project_id
+                    
+                    # Run full reconciliation
+                    reconciliation_results = await self.reconcile_all(
+                        scope='all',
+                        project_id=project_id,
+                        project_path=project_path
+                    )
+                    results['reconciliation'] = reconciliation_results
+                else:
+                    self.logger.warning("Failed to register session")
+                    results['errors'].append("Session registration failed")
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing session: {e}")
+            results['errors'].append(str(e))
+        
+        return results
+    
+    @ensure_db_initialized
+    async def reconcile_all(self, scope: str = 'all', 
+                           project_id: Optional[str] = None,
+                           project_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Reconcile configuration with database state.
+        
+        Args:
+            scope: 'global', 'project', or 'all'
+            project_id: Project ID for project scope
+            project_path: Project path for agent discovery
+            
+        Returns:
+            Dictionary with reconciliation results
+        """
+        self.logger.info(f"Starting reconciliation: scope={scope}, project_id={project_id}")
+        
+        # Build reconciliation plan
+        plan = ReconciliationPlan()
+        
+        # Load configuration
+        config = self.config.load_config()
+        
+        # Phase 1: Infrastructure (channels)
+        await self._plan_channels(plan, config, scope, project_id)
+        
+        # Phase 2: Agents
+        if project_path or scope in ['global', 'all']:
+            await self._plan_agents(plan, scope, project_id, project_path)
+        
+        # Phase 3: Access (default memberships)
+        await self._plan_default_access(plan, scope, project_id)
+        
+        # Execute the plan
+        self.logger.info(f"Executing plan with {plan.get_total_actions()} actions")
+        execution_results = await plan.execute(self.db)
+        
+        # Track in history
+        await self._track_sync_history(config, scope, project_id, execution_results)
+        
+        return execution_results
+    
+    @ensure_db_initialized
+    async def reconcile_config(self, force: bool = False) -> Dict[str, Any]:
+        """
+        Reconcile configuration changes.
+        
+        Args:
+            force: Force reconciliation even if config hasn't changed
+            
+        Returns:
+            Dictionary with reconciliation results
+        """
+        config = self.config.load_config()
+        config_hash = self._hash_config(config)
+        
+        # Check if config has changed
+        if not force:
+            last_sync = await self._get_last_sync_hash()
+            if last_sync == config_hash:
+                self.logger.info("Configuration unchanged, skipping reconciliation")
+                return {'changed': False, 'actions': []}
+        
+        # Run reconciliation for all scopes
+        return await self.reconcile_all(scope='all')
+    
+    async def _plan_channels(self, plan: ReconciliationPlan, config: Dict[str, Any],
+                            scope: str, project_id: Optional[str] = None):
+        """
+        Plan channel creation based on configuration.
+        
+        Args:
+            plan: ReconciliationPlan to add actions to
+            config: Configuration dictionary
+            scope: 'global', 'project', or 'all'
+            project_id: Project ID for project channels
+        """
+        default_channels = config.get('default_channels', {})
+        
+        # Process global channels
+        if scope in ['global', 'all']:
+            for channel_config in default_channels.get('global', []):
+                channel_id = f"global:{channel_config['name']}"
+                
+                # Check if channel exists
+                existing = await self.db.get_channel(channel_id)
+                if not existing:
+                    action = CreateChannelAction(
+                        channel_id=channel_id,
+                        channel_type='channel',
+                        access_type=channel_config.get('access_type', 'open'),
+                        scope='global',
+                        name=channel_config['name'],
+                        description=channel_config.get('description'),
+                        is_default=channel_config.get('is_default', False)
+                    )
+                    plan.add_action(action)
+        
+        # Process project channels
+        if scope in ['project', 'all'] and project_id:
+            for channel_config in default_channels.get('project', []):
+                # Generate project-scoped channel ID
+                project_id_short = project_id[:8] if len(project_id) > 8 else project_id
+                channel_id = f"proj_{project_id_short}:{channel_config['name']}"
+                
+                # Check if channel exists
+                existing = await self.db.get_channel(channel_id)
+                if not existing:
+                    action = CreateChannelAction(
+                        channel_id=channel_id,
+                        channel_type='channel',
+                        access_type=channel_config.get('access_type', 'open'),
+                        scope='project',
+                        name=channel_config['name'],
+                        project_id=project_id,
+                        description=channel_config.get('description'),
+                        is_default=channel_config.get('is_default', False)
+                    )
+                    plan.add_action(action)
+    
+    async def _plan_agents(self, plan: ReconciliationPlan, scope: str,
+                          project_id: Optional[str] = None,
+                          project_path: Optional[str] = None):
+        """
+        Plan agent registration based on discovery.
+        
+        Args:
+            plan: ReconciliationPlan to add actions to
+            scope: 'global', 'project', or 'all'
+            project_id: Project ID for project agents
+            project_path: Path to project for discovery
+        """
+        discovered_agents = []
+        
+        # Discover global agents
+        if scope in ['global', 'all']:
+            global_agents = await self.discovery.discover_global_agents()
+            discovered_agents.extend(global_agents)
+        
+        # Discover project agents
+        if scope in ['project', 'all'] and project_path:
+            project_agents = await self.discovery.discover_project_agents(project_path)
+            discovered_agents.extend(project_agents)
+        
+        # Plan registration for each discovered agent
+        for agent in discovered_agents:
+            # Check if agent already registered
+            existing = await self.db.get_agent(agent.name, agent.project_id if agent.scope == 'project' else None)
+            if not existing:
+                action = RegisterAgentAction(
+                    name=agent.name,
+                    project_id=project_id if agent.scope == 'project' else None,
+                    description=agent.description,
+                    dm_policy=agent.dm_policy,
+                    discoverable=agent.discoverable
+                )
+                plan.add_action(action)
+        
+        # Always register the 'assistant' agent for projects
+        if scope in ['project', 'all'] and project_id:
+            assistant_exists = await self.db.get_agent('assistant', project_id)
+            if not assistant_exists:
+                action = RegisterAgentAction(
+                    name='assistant',
+                    project_id=project_id,
+                    description='Main assistant agent for the project'
+                )
+                plan.add_action(action)
+    
+    async def _plan_default_access(self, plan: ReconciliationPlan, scope: str,
+                                  project_id: Optional[str] = None):
+        """
+        Plan default memberships based on is_default channels.
+        
+        Uses the unified membership model - all access goes through channel_members.
+        
+        Args:
+            plan: ReconciliationPlan to add actions to
+            scope: 'global', 'project', or 'all'
+            project_id: Project ID for eligibility check
+        """
+        # Get all channels with is_default=true
+        default_channels = await self._get_default_channels(scope, project_id)
+        
+        # Get all eligible agents
+        agents = await self._get_agents_for_scope(scope, project_id)
+        
+        for channel in default_channels:
+            for agent in agents:
+                # Check eligibility
+                if not self._is_eligible_for_default(agent, channel, project_id):
+                    continue
+                
+                # Check for exclusions in frontmatter
+                if await self._check_agent_exclusions(
+                    agent['name'], 
+                    agent.get('project_id'),
+                    channel['name']
+                ):
+                    self.logger.debug(f"Agent {agent['name']} excluded from {channel['name']}")
+                    continue
+                
+                # Check if already a member
+                is_member = await self.db.is_channel_member(
+                    channel['id'],
+                    agent['name'],
+                    agent.get('project_id')
+                )
+                if is_member:
+                    continue
+                
+                # Determine invited_by based on access_type
+                # For open channels, agent joins themselves
+                # For members channels with is_default, system adds them
+                invited_by = 'self' if channel['access_type'] == 'open' else 'system'
+                
+                # Determine capabilities based on channel type
+                can_leave = True  # All default memberships can be left
+                can_invite = (channel['access_type'] == 'open')  # Only open channels allow invites
+                
+                # Add membership action
+                action = AddMembershipAction(
+                    channel_id=channel['id'],
+                    agent_name=agent['name'],
+                    agent_project_id=agent.get('project_id'),
+                    invited_by=invited_by,
+                    source='default',
+                    is_from_default=True,
+                    can_leave=can_leave,
+                    can_invite=can_invite
+                )
+                plan.add_action(action)
+    
+    async def _get_default_channels(self, scope: str, project_id: Optional[str] = None) -> List[Dict]:
+        """
+        Get all channels where is_default=true for the given scope.
+        """
+        return await self.db.get_channels_by_scope(
+            scope=scope,
+            project_id=project_id,
+            is_default=True
+        )
+    
+    async def _get_agents_for_scope(self, scope: str, project_id: Optional[str] = None) -> List[Dict]:
+        """
+        Get all agents eligible for the given scope.
+        """
+        return await self.db.get_agents_by_scope(
+            scope=scope,
+            project_id=project_id
+        )
+    
+    def _is_eligible_for_default(self, agent: Dict, channel: Dict, 
+                                project_id: Optional[str] = None) -> bool:
+        """
+        Check if an agent is eligible for default access to a channel.
+        """
+        # Global channels: all agents eligible
+        if channel['scope'] == 'global':
+            return True
+        
+        # Project channels: only same-project agents
+        if channel['scope'] == 'project':
+            agent_project = agent.get('project_id')
+            channel_project = channel.get('project_id', project_id)
+            return agent_project == channel_project
+        
+        return False
+    
+    async def _check_agent_exclusions(self, agent_name: str,
+                                     agent_project_id: Optional[str],
+                                     channel_name: str) -> bool:
+        """
+        Check if agent has excluded this channel in frontmatter.
+        
+        Returns:
+            True if excluded, False otherwise
+        """
+        # Get agent file path
+        agent_file = self._get_agent_file_path(agent_name, agent_project_id)
+        if not agent_file or not os.path.exists(agent_file):
+            return False
+        
+        try:
+            # Parse frontmatter
+            agent_data = FrontmatterParser.parse_file(agent_file)
+            channels = agent_data.get('channels', {})
+            
+            # Check exclusion list
+            exclusions = channels.get('exclude', [])
+            if channel_name in exclusions:
+                return True
+            
+            # Check never_default flag
+            if channels.get('never_default', False):
+                return True
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to check exclusions for {agent_name}: {e}")
+        
+        return False
+    
+    def _get_agent_file_path(self, agent_name: str, 
+                            agent_project_id: Optional[str]) -> Optional[str]:
+        """Get the path to an agent's markdown file."""
+        if agent_project_id:
+            # Project agent - need to get project path
+            # This is a simplified version - in production would query the database
+            project_path = os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
+            return os.path.join(project_path, '.claude', 'agents', f'{agent_name}.md')
+        else:
+            # Global agent
+            claude_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.claude'))
+            return os.path.join(claude_dir, 'agents', f'{agent_name}.md')
+    
+    async def _track_sync_history(self, config: Dict, scope: str,
+                                 project_id: Optional[str],
+                                 execution_results: Dict):
+        """
+        Track configuration sync in history table.
+        """
+        try:
+            config_hash = self._hash_config(config)
+            config_snapshot = json.dumps(config)
+            actions_taken = json.dumps([
+                {
+                    'type': r.action_type,
+                    'target': r.target,
+                    'success': r.success,
+                    'message': r.message,
+                    'error': r.error
+                }
+                for r in execution_results.get('results', [])
+            ])
+            
+            await self.db.track_config_sync(
+                config_hash=config_hash,
+                config_snapshot=config_snapshot,
+                scope=scope,
+                project_id=project_id,
+                actions_taken=actions_taken,
+                success=execution_results.get('success', False),
+                error_message=None  # No error message if successful
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to track sync history: {e}")
+    
+    async def _get_last_sync_hash(self) -> Optional[str]:
+        """Get the hash of the last successful sync."""
+        return await self.db.get_last_sync_hash()
+    
+    def _hash_config(self, config: Dict) -> str:
+        """Generate a hash of the configuration for change detection."""
+        config_str = json.dumps(config, sort_keys=True)
+        return hashlib.sha256(config_str.encode()).hexdigest()
+    
+    @ensure_db_initialized
+    async def register_discovered_agent(self, agent: DiscoveredAgent) -> bool:
+        """
+        Register a single discovered agent.
+        
+        This is useful for on-demand agent registration.
+        
+        Args:
+            agent: DiscoveredAgent object
+            
+        Returns:
+            True if successful
+        """
+        try:
+            # Create a plan with just this agent
+            plan = ReconciliationPlan()
+            
+            # Add registration action
+            action = RegisterAgentAction(
+                name=agent.name,
+                project_id=agent.project_id if agent.scope == 'project' else None,
+                description=agent.description,
+                dm_policy=agent.dm_policy,
+                discoverable=agent.discoverable
+            )
+            plan.add_action(action)
+            
+            # Apply default memberships for this agent
+            await self._plan_default_access_for_agent(plan, agent)
+            
+            # Execute the plan
+            results = await plan.execute(self.db)
+            
+            return results.get('success', False)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to register agent {agent.name}: {e}")
+            return False
+    
+    async def _plan_default_access_for_agent(self, plan: ReconciliationPlan,
+                                            agent: DiscoveredAgent):
+        """
+        Plan default memberships for a specific agent.
+        """
+        # Determine scope and project_id
+        project_id = None
+        if agent.scope == 'project':
+            # Get project_id from environment or current context
+            project_path = os.path.dirname(os.path.dirname(agent.source_path))
+            project_id = await self.session_manager.generate_project_id(project_path)
+        
+        # Get default channels for agent's scope
+        default_channels = await self._get_default_channels(agent.scope, project_id)
+        
+        for channel in default_channels:
+            # Check eligibility
+            agent_dict = {
+                'name': agent.name,
+                'project_id': project_id if agent.scope == 'project' else None
+            }
+            
+            if not self._is_eligible_for_default(agent_dict, channel, project_id):
+                continue
+            
+            # Check exclusions
+            if channel['name'] in agent.get_exclusions():
+                continue
+            
+            if agent.excludes_all_defaults():
+                continue
+            
+            # Determine membership parameters
+            invited_by = 'self' if channel['access_type'] == 'open' else 'system'
+            can_invite = (channel['access_type'] == 'open')
+            
+            # Add membership action
+            action = AddMembershipAction(
+                channel_id=channel['id'],
+                agent_name=agent.name,
+                agent_project_id=project_id if agent.scope == 'project' else None,
+                invited_by=invited_by,
+                source='default',
+                is_from_default=True,
+                can_leave=True,
+                can_invite=can_invite
+            )
+            plan.add_action(action)
