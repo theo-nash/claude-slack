@@ -30,7 +30,8 @@ try:
     from subscriptions.manager import SubscriptionManager
     from frontmatter.parser import FrontmatterParser
     from db.manager import DatabaseManager
-    from db.initialization import DatabaseInitializer, ensure_db_initialized
+    from agents.manager import AgentManagerV3
+    from notes.manager import NotesManager
 except ImportError as e:
     print(f"Import error in ProjectSetupManager: {e}", file=sys.stderr)
     SessionManager = None
@@ -39,7 +40,8 @@ except ImportError as e:
     FrontmatterParser = None
     DatabaseManager = None
     DatabaseInitializer = None
-    ensure_db_initialized = None
+    AgentManagerV3 = None
+    NotesManager = None
 
 try:
     from log_manager import get_logger
@@ -60,7 +62,7 @@ except ImportError:
     MCPToolsManager = None
 
 
-class ProjectSetupManager(DatabaseInitializer if DatabaseInitializer else object):
+class ProjectSetupManager:
     """
     Orchestrates project setup and initialization.
     
@@ -78,18 +80,16 @@ class ProjectSetupManager(DatabaseInitializer if DatabaseInitializer else object
         Args:
             db_path: Path to SQLite database
         """
-        # Initialize parent class if it exists
-        if DatabaseInitializer:
-            super().__init__()
         
         self.db_path = db_path
         self.logger = get_logger('ProjectSetupManager', component='manager')
         
         # Initialize component managers
-        self.db_manager = DatabaseManager(db_path) if DatabaseManager else None
         self.session_manager = SessionManager(db_path) if SessionManager else None
         self.channel_manager = ChannelManager(db_path) if ChannelManager else None
         self.subscription_manager = SubscriptionManager(db_path) if SubscriptionManager else None
+        self.agent_manager = AgentManagerV3(db_path) if AgentManagerV3 else None
+        self.notes_manager = NotesManager(db_path) if NotesManager else None
         
         # Load configuration
         self.config = self._load_config()
@@ -389,11 +389,10 @@ await mcp__claude-slack__send_channel_message({{
                 else:
                     self.logger.debug(f"Agent {agent_name} - Using provided: '{description}'")
                 
-                success = await self.register_agent(
-                    agent_name=agent_name,
+                success = await self.agent_manager.register_agent(
+                    name=agent_name,
                     project_id=agent_project_id,
-                    description=description,
-                    status='online'
+                    description=description
                 )
                 
                 if success:
@@ -413,63 +412,17 @@ await mcp__claude-slack__send_channel_message({{
                     agent_project_id=agent_project_id,
                     force=False
                 )
+                
+                # Set up notes channel
+                await self.notes_manager.ensure_notes_channel(
+                    agent_name=agent_name,
+                    agent_project_id=agent_project_id
+                )
                     
             except Exception as e:
                 self.logger.warning(f"Failed to register agent {agent_name}: {e}")
         
         return successful_agents
-    
-    @ensure_db_initialized
-    async def register_agent(self, agent_name: str, project_id: str, description: str, status: str = 'online') -> bool:
-        """
-        Registers an agent in the database using DatabaseManager.
-        This ensures the agent gets their notes channel auto-provisioned.
-        """
-        if not self.db_manager:
-            self.logger.error("DatabaseManager not available")
-            return False
-        
-        try:
-            # Debug log what we're about to pass
-            self.logger.debug(f"Calling DatabaseManager.register_agent with: agent_name='{agent_name}', description='{description}', project_id='{project_id}'")
-            
-            # Use DatabaseManager's register_agent which auto-provisions notes channel
-            await self.db_manager.register_agent(
-                agent_name=agent_name,
-                description=description,
-                project_id=project_id
-            )
-            
-            # Update status if needed (register_agent sets it to 'online' by default)
-            if status != 'online':
-                await self.db_manager.update_agent_status(
-                    agent_name=agent_name,
-                    status=status,
-                    project_id=project_id
-                )
-            
-            self.logger.debug(f"Registered agent: {agent_name} (project_id: {project_id}) with notes channel")
-            return True
-                
-        except Exception as e:
-            self.logger.error(f"Error registering agent: {e}")
-            return False
-    
-    async def setup_project_links(self, project_id: str, project_path: str) -> bool:
-        """
-        Set up project links based on configuration.
-        
-        Args:
-            project_id: Project ID
-            project_path: Project path
-        Returns:
-            True if successful
-        """
-        # This would handle project linking logic
-        # For now, just log
-        # TODO: Implement this logic
-        self.logger.info(f"Would set up project links for: {project_id}")
-        return True
     
     async def setup_global_environment(self, create_channels: bool = True, register_agents: bool = True) -> Dict[str, Any]:
         """
@@ -523,7 +476,6 @@ await mcp__claude-slack__send_channel_message({{
         
         return results
     
-    @ensure_db_initialized
     async def initialize_session(self, session_id: str, cwd: str, 
                                 transcript_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -560,25 +512,21 @@ await mcp__claude-slack__send_channel_message({{
                 self.logger.debug(f"Using cwd as project path: {project_path}")
             elif project_path:
                 self.logger.debug(f"Using CLAUDE_PROJECT_DIR: {project_path}")
-            
-            project_name = os.path.basename(project_path)
-            
-            if self.session_manager:
-                # Register project
-                project_id = await self.session_manager.register_project(project_path, project_name)
-                self.logger.info(f"Registered project: {project_name} with project_id: {project_id}")
-                results['project_id'] = project_id
-                
-                # Register session
+                                        
+            if self.session_manager:                
+                # Register session (project automatically registered before session)
                 success = await self.session_manager.register_session(
                     session_id=session_id,
                     project_path=project_path,
-                    project_name=project_name,
                     transcript_path=transcript_path
                 )
                 if success:
                     self.logger.info(f"Registered project with session: {session_id}")
+                
                 results['session_registered'] = success
+                
+                project_id = await self.session_manager.generate_project_id(project_path)
+                results['project_id'] = project_id
                 
                 # Set up the project
                 project_setup_results = await self.setup_new_project(

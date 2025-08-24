@@ -22,9 +22,12 @@ sys.path.insert(0, parent_dir)
 
 try:
     from db.manager_v3 import DatabaseManagerV3
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
     print(f"Import error in ChannelManagerV3: {e}", file=sys.stderr)
     DatabaseManagerV3 = None
+    DatabaseInitializer = object  # Fallback to object if not available
+    ensure_db_initialized = lambda f: f  # No-op decorator
 
 try:
     from config_manager import get_config_manager
@@ -72,7 +75,7 @@ class ChannelV3:
     metadata: Optional[Dict[str, Any]] = None
 
 
-class ChannelManagerV3:
+class ChannelManagerV3(DatabaseInitializer):
     """
     Manages channels using DatabaseManagerV3.
     
@@ -87,19 +90,19 @@ class ChannelManagerV3:
         Args:
             db_path: Path to SQLite database
         """
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
+        
         self.db_path = db_path
         self.logger = get_logger('ChannelManagerV3', component='manager')
         
         if DatabaseManagerV3:
             self.db = DatabaseManagerV3(db_path)
+            self.db_manager = self.db  # Required for DatabaseInitializer mixin
         else:
             self.db = None
+            self.db_manager = None
             self.logger.error("DatabaseManagerV3 not available")
-    
-    async def initialize(self):
-        """Initialize the database if needed"""
-        if self.db:
-            await self.db.initialize()
     
     @staticmethod
     def get_scoped_channel_id(name: str, scope: str, project_id: Optional[str] = None) -> str:
@@ -183,6 +186,7 @@ class ChannelManagerV3:
         pattern = r'^[a-z0-9-]+$'
         return bool(re.match(pattern, name))
     
+    @ensure_db_initialized
     async def create_channel(self, 
                            name: str,
                            scope: str,
@@ -268,6 +272,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error creating channel: {e}")
             return None
     
+    @ensure_db_initialized
     async def create_dm_channel(self,
                               agent1_name: str,
                               agent1_project_id: Optional[str],
@@ -304,6 +309,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error creating DM channel: {e}")
             return None
     
+    @ensure_db_initialized
     async def get_channel(self, channel_id: str) -> Optional[ChannelV3]:
         """
         Get a channel by ID.
@@ -347,6 +353,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error getting channel: {e}")
             return None
     
+    @ensure_db_initialized
     async def list_channels_for_agent(self,
                                      agent_name: str,
                                      agent_project_id: Optional[str] = None,
@@ -378,6 +385,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error listing channels: {e}")
             return []
     
+    @ensure_db_initialized
     async def add_channel_member(self,
                                 channel_id: str,
                                 agent_name: str,
@@ -423,6 +431,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error adding channel member: {e}")
             return False
     
+    @ensure_db_initialized
     async def remove_channel_member(self,
                                    channel_id: str,
                                    agent_name: str,
@@ -453,6 +462,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error removing channel member: {e}")
             return False
     
+    @ensure_db_initialized
     async def subscribe_to_channel(self,
                                   agent_name: str,
                                   agent_project_id: Optional[str],
@@ -486,6 +496,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error subscribing to channel: {e}")
             return False
     
+    @ensure_db_initialized
     async def unsubscribe_from_channel(self,
                                       agent_name: str,
                                       agent_project_id: Optional[str],
@@ -516,6 +527,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error unsubscribing from channel: {e}")
             return False
     
+    @ensure_db_initialized
     async def get_channel_members(self, channel_id: str) -> List[Dict[str, Any]]:
         """
         Get all members of a channel.
@@ -537,6 +549,7 @@ class ChannelManagerV3:
             self.logger.error(f"Error getting channel members: {e}")
             return []
     
+    @ensure_db_initialized
     async def is_channel_member(self,
                                channel_id: str,
                                agent_name: str,
@@ -559,6 +572,7 @@ class ChannelManagerV3:
                 return True
         return False
     
+    @ensure_db_initialized
     async def send_message_to_channel(self,
                                      channel_id: str,
                                      sender_id: str,

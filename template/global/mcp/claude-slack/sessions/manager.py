@@ -29,10 +29,13 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from db.db_helpers import aconnect
+    from db.manager_v3 import DatabaseManagerV3
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
     print(f"Import error in SessionManager: {e}", file=sys.stderr)
-    aconnect = None
+    DatabaseManagerV3 = None
+    DatabaseInitializer = object  # Fallback to object if not available
+    ensure_db_initialized = lambda f: f  # No-op decorator
 
 try:
     from log_manager import get_logger
@@ -65,7 +68,7 @@ class ProjectContext:
     scope: str = 'project'
 
 
-class SessionManager:
+class SessionManager(DatabaseInitializer):
     """
     Manages session contexts for Claude-Slack.
     
@@ -83,6 +86,13 @@ class SessionManager:
         """
         self.db_path = db_path
         self.logger = get_logger('SessionManager', component='manager')
+        
+        # Initialize DatabaseManagerV3
+        if DatabaseManagerV3:
+            self.db_manager = DatabaseManagerV3(db_path)
+        else:
+            self.db_manager = None
+            self.logger.error("DatabaseManagerV3 not available")
         
         # Simple in-memory cache for performance
         self._cache = {}
@@ -149,8 +159,8 @@ class SessionManager:
         Returns:
             True if successful
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return False
         
         try:
@@ -159,30 +169,32 @@ class SessionManager:
             scope = 'global'
             
             if project_path:
-                project_id = self.generate_project_id(project_path)
                 scope = 'project'
-                if not project_name:
-                    project_name = os.path.basename(project_path)
+                
+                # Register the project first (or update last_active)
+                project_id = await self.register_project(project_path, project_name)
             
             self.logger.info(f"Registering session {session_id} (scope: {scope})")
             
-            async with aconnect(self.db_path, writer=True) as conn:
-                # Register or update session
-                await conn.execute("""
-                    INSERT OR REPLACE INTO sessions 
-                    (id, project_id, project_path, project_name, transcript_path, scope, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-                """, (session_id, project_id, project_path, project_name, transcript_path, scope))
-                
-                # Update current session
-                self._current_session_id = session_id
-                
-                # Invalidate cache for this session
-                self._invalidate_cache(session_id)
-                
-                self.logger.info(f"Session {session_id} registered successfully")
-                return True
-                
+            # Use DatabaseManagerV3 to register session
+            await self.db_manager.register_session(
+                session_id=session_id,
+                project_id=project_id,
+                project_path=project_path,
+                project_name=project_name,
+                transcript_path=transcript_path,
+                scope=scope
+            )
+            
+            # Update current session
+            self._current_session_id = session_id
+            
+            # Invalidate cache for this session
+            self._invalidate_cache(session_id)
+            
+            self.logger.info(f"Session {session_id} registered successfully")
+            return True
+            
         except Exception as e:
             self.logger.error(f"Error registering session: {e}")
             return False
@@ -206,47 +218,40 @@ class SessionManager:
         if cached:
             return cached
         
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return None
         
         try:
             self.logger.debug(f"Looking up session {session_id} in database")
             
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT project_id, project_path, project_name, transcript_path, 
-                           scope, updated_at, metadata
-                    FROM sessions 
-                    WHERE id = ?
-                """, (session_id,))
+            # Use DatabaseManagerV3 to get session
+            session_data = await self.db_manager.get_session(session_id)
+            
+            if session_data:
+                context = SessionContext(
+                    session_id=session_id,
+                    project_id=session_data['project_id'],
+                    project_path=session_data['project_path'],
+                    project_name=session_data['project_name'],
+                    transcript_path=session_data['transcript_path'],
+                    scope=session_data['scope'],
+                    updated_at=datetime.fromisoformat(session_data['updated_at']) if session_data['updated_at'] else datetime.now(),
+                    metadata=session_data['metadata']
+                )
                 
-                row = await cursor.fetchone()
+                # Update cache
+                self._cache_context(context)
                 
-                if row:
-                    context = SessionContext(
-                        session_id=session_id,
-                        project_id=row[0],
-                        project_path=row[1],
-                        project_name=row[2],
-                        transcript_path=row[3],
-                        scope=row[4],
-                        updated_at=datetime.fromisoformat(row[5]) if row[5] else datetime.now(),
-                        metadata=json.loads(row[6]) if row[6] else None
-                    )
-                    
-                    # Update cache
-                    self._cache_context(context)
-                    
-                    # Update current session
-                    self._current_session_id = session_id
-                    
-                    self.logger.info(f"Found session context: scope={context.scope}, project={context.project_name}")
-                    return context
-                else:
-                    self.logger.debug(f"No context found for session {session_id}")
-                    return None
-                    
+                # Update current session
+                self._current_session_id = session_id
+                
+                self.logger.info(f"Found session context: scope={context.scope}, project={context.project_name}")
+                return context
+            else:
+                self.logger.debug(f"No context found for session {session_id}")
+                return None
+                
         except Exception as e:
             self.logger.error(f"Error getting session context: {e}")
             return None
@@ -276,24 +281,18 @@ class SessionManager:
         Returns:
             Session ID or None if no recent sessions
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return None
         
         try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT id 
-                    FROM sessions 
-                    WHERE updated_at > datetime('now', '-5 minutes')
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                """)
-                
-                row = await cursor.fetchone()
-                if row:
-                    self.logger.debug(f"Found recent session: {row[0]}")
-                    return row[0]
+            # Get active sessions from the last 5 minutes (0.083 hours)
+            active_sessions = await self.db_manager.get_active_sessions(hours=0.083)
+            
+            if active_sessions:
+                session_id = active_sessions[0]['id']
+                self.logger.debug(f"Found recent session: {session_id}")
+                return session_id
                     
         except Exception as e:
             self.logger.error(f"Error getting recent session: {e}")
@@ -310,25 +309,20 @@ class SessionManager:
         Returns:
             ProjectContext object or None if not found
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return None
         
         try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT path, name
-                    FROM projects 
-                    WHERE id = ?
-                """, (project_id,))
-                
-                row = await cursor.fetchone()
-                if row:
-                    return ProjectContext(
-                        project_id=project_id,
-                        project_path=row[0],
-                        project_name=row[1]
-                    )
+            # Use DatabaseManagerV3 to get project
+            project_data = await self.db_manager.get_project(project_id)
+            
+            if project_data:
+                return ProjectContext(
+                    project_id=project_id,
+                    project_path=project_data['path'],
+                    project_name=project_data['name']
+                )
                     
         except Exception as e:
             self.logger.error(f"Error getting project context: {e}")
@@ -351,18 +345,19 @@ class SessionManager:
         if not project_name:
             project_name = os.path.basename(project_path)
         
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return project_id
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT OR REPLACE INTO projects (id, path, name, last_active)
-                    VALUES (?, ?, ?, datetime('now'))
-                """, (project_id, project_path, project_name))
-                
-                self.logger.info(f"Registered project: {project_name} ({project_id})")
+            # Use DatabaseManagerV3 to register project
+            await self.db_manager.register_project(
+                project_id=project_id,
+                project_path=project_path,
+                project_name=project_name
+            )
+            
+            self.logger.info(f"Registered project: {project_name} ({project_id})")
                 
         except Exception as e:
             self.logger.error(f"Error registering project: {e}")
@@ -382,32 +377,28 @@ class SessionManager:
         Returns:
             Session ID or None if no match found
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return None
         
         try:
-            # Create hash of tool inputs for matching
-            import json
-            inputs_json = json.dumps(tool_inputs, sort_keys=True)
-            inputs_hash = hashlib.sha256(inputs_json.encode()).hexdigest()[:16]
+            # For matching, we need to iterate through recent sessions
+            # and check their tool calls
+            active_sessions = await self.db_manager.get_active_sessions(hours=1)
             
-            self.logger.debug(f"Looking for tool call: {tool_name} with hash {inputs_hash}")
-            
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT session_id 
-                    FROM tool_calls 
-                    WHERE tool_name = ? AND tool_inputs_hash = ?
-                    ORDER BY called_at DESC
-                    LIMIT 1
-                """, (tool_name, inputs_hash))
+            for session in active_sessions:
+                session_id = session['id']
+                recent_calls = await self.db_manager.get_recent_tool_calls(
+                    session_id=session_id,
+                    minutes=10
+                )
                 
-                row = await cursor.fetchone()
-                if row:
-                    session_id = row[0]
-                    self.logger.debug(f"Matched tool call to session: {session_id}")
-                    return session_id
+                for call in recent_calls:
+                    if call['tool_name'] == tool_name:
+                        # Check if inputs match
+                        if call['tool_inputs'] == tool_inputs:
+                            self.logger.debug(f"Matched tool call to session: {session_id}")
+                            return session_id
                     
         except Exception as e:
             self.logger.error(f"Error matching tool call: {e}")
@@ -424,26 +415,27 @@ class SessionManager:
             tool_inputs: Input parameters for the tool
             
         Returns:
-            True if recorded successfully
+            True if recorded successfully (False if duplicate)
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return False
         
         try:
-            import json
-            inputs_json = json.dumps(tool_inputs, sort_keys=True)
-            inputs_hash = hashlib.sha256(inputs_json.encode()).hexdigest()[:16]
+            # Use DatabaseManagerV3 to record tool call with deduplication
+            is_new = await self.db_manager.record_tool_call(
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_inputs=tool_inputs,
+                dedup_window_minutes=10
+            )
             
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT INTO tool_calls 
-                    (session_id, tool_name, tool_inputs_hash, tool_inputs, called_at)
-                    VALUES (?, ?, ?, ?, datetime('now'))
-                """, (session_id, tool_name, inputs_hash, inputs_json))
-                
+            if is_new:
                 self.logger.debug(f"Recorded tool call: {tool_name} for session {session_id}")
-                return True
+            else:
+                self.logger.debug(f"Duplicate tool call skipped: {tool_name} for session {session_id}")
+            
+            return is_new
                 
         except Exception as e:
             self.logger.error(f"Error recording tool call: {e}")
@@ -459,22 +451,21 @@ class SessionManager:
         Returns:
             Number of sessions cleaned up
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db_manager:
+            self.logger.error("Database manager not available")
             return 0
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                cursor = await conn.execute("""
-                    DELETE FROM sessions 
-                    WHERE updated_at < datetime('now', ? || ' hours')
-                """, (-max_age_hours,))
-                
-                count = cursor.rowcount
-                if count > 0:
-                    self.logger.info(f"Cleaned up {count} old sessions")
-                
-                return count
+            # Use DatabaseManagerV3 to cleanup old sessions
+            count = await self.db_manager.cleanup_old_sessions(hours=max_age_hours)
+            
+            # Also cleanup old tool calls
+            await self.db_manager.cleanup_old_tool_calls(minutes=10)
+            
+            if count > 0:
+                self.logger.info(f"Cleaned up {count} old sessions")
+            
+            return count
                 
         except Exception as e:
             self.logger.error(f"Error cleaning up sessions: {e}")
