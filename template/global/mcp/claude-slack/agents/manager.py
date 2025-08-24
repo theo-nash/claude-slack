@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Agent Manager v3 for Claude-Slack
+Agent Manager for Claude-Slack
 Manages agent policies, DM permissions, and discovery
-Phase 2 (v3.0.0) Implementation
+Phase 2 Implementation
 
 This manager handles agent-specific operations that don't belong in ChannelManager:
 - DM policies and permissions
@@ -23,11 +23,11 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from db.manager_v3 import DatabaseManagerV3
+    from db.manager import DatabaseManager
     from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
-    print(f"Import error in AgentManagerV3: {e}", file=sys.stderr)
-    DatabaseManagerV3 = None
+    print(f"Import error in AgentManager: {e}", file=sys.stderr)
+    DatabaseManager = None
     DatabaseInitializer = object  # Fallback to object if not available
     ensure_db_initialized = lambda f: f  # No-op decorator
 
@@ -73,17 +73,17 @@ class AgentInfo:
     has_existing_dm: bool = False
 
 
-class AgentManagerV3(DatabaseInitializer):
+class AgentManager(DatabaseInitializer):
     """
     Manages agent policies, DM permissions, and discovery.
     
     This manager provides agent-specific operations, delegating
-    all database operations to DatabaseManagerV3.
+    all database operations to DatabaseManager.
     """
     
     def __init__(self, db_path: str):
         """
-        Initialize AgentManagerV3.
+        Initialize AgentManager.
         
         Args:
             db_path: Path to SQLite database
@@ -92,15 +92,15 @@ class AgentManagerV3(DatabaseInitializer):
         super().__init__()
         
         self.db_path = db_path
-        self.logger = get_logger('AgentManagerV3', component='manager')
+        self.logger = get_logger('AgentManager', component='manager')
         
-        if DatabaseManagerV3:
-            self.db = DatabaseManagerV3(db_path)
+        if DatabaseManager:
+            self.db = DatabaseManager(db_path)
             self.db_manager = self.db  # Required for DatabaseInitializer mixin
         else:
             self.db = None
             self.db_manager = None
-            self.logger.error("DatabaseManagerV3 not available")
+            self.logger.error("DatabaseManager not available")
     
     # ============================================================================
     # Agent Registration and Management

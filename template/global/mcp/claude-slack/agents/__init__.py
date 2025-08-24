@@ -1,9 +1,9 @@
 """
-Agent management module for Claude-Slack v3
+Agent management module for Claude-Slack
 """
 
-from .manager_v3 import (
-    AgentManagerV3,
+from .manager import (
+    AgentManager,
     DMPolicy,
     Discoverability,
     DMPermission,
@@ -11,7 +11,7 @@ from .manager_v3 import (
 )
 
 __all__ = [
-    'AgentManagerV3',
+    'AgentManager',
     'DMPolicy',
     'Discoverability', 
     'DMPermission',

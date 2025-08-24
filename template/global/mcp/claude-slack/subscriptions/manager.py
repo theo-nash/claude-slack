@@ -1,666 +1,404 @@
 #!/usr/bin/env python3
 """
-Centralized Subscription Manager for Claude-Slack
+SubscriptionManager: Simplified subscription management for open channels
 
-Handles all subscription operations with proper composite key support for the database schema.
-The database uses composite foreign keys: (agent_name, agent_project_id) -> agents(name, project_id)
+In the v3 architecture, subscriptions are ONLY for open channels where agents
+can voluntarily choose what to follow. For other channel types:
+- Members channels: Membership determines access (no subscription needed)
+- Private channels: Fixed membership (no subscription concept)
+- DM channels: Participants only (no subscription concept)
+- Notes channels: Single member (no subscription concept)
 
-This manager provides:
-- Unified interface for all subscription operations
-- Proper handling of composite keys for referential integrity
-- Context-aware operations using SessionContextManager
-- Atomic updates to both database and frontmatter
-- Simple caching for performance
+This manager handles:
+1. Voluntary subscriptions to open channels
+2. Frontmatter syncing for agent preferences
+3. Default channel patterns for new agents
 """
 
 import os
 import sys
-import json
-import time
-from typing import Any, Dict, List, Optional, Tuple
+import logging
+from typing import Dict, List, Optional, Set
 from pathlib import Path
 
-# Add parent directories to path for imports
+# Add parent directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-try:
-    from db.db_helpers import aconnect
-    from db.manager import DatabaseManager
-    from db.initialization import DatabaseInitializer, ensure_db_initialized
-    from frontmatter.updater import FrontmatterUpdater
-    from frontmatter.parser import FrontmatterParser
-except ImportError as e:
-    print(f"Import error in SubscriptionManager: {e}", file=sys.stderr)
-    # Create fallback imports to avoid crashes
-    aconnect = None
-    DatabaseManager = None
-    DatabaseInitializer = None
-    ensure_db_initialized = None
-    FrontmatterUpdater = None
-    FrontmatterParser = None
+from db.manager import DatabaseManager
+from channels.manager import ChannelManager
+from db.initialization import DatabaseInitializer, ensure_db_initialized
+from frontmatter.parser import FrontmatterParser
+from frontmatter.updater import FrontmatterUpdater
 
-try:
-    from config_manager import get_config_manager
-except ImportError:
-    get_config_manager = None
 
-try:
-    from log_manager import get_logger
-except ImportError:
-    # Fallback to standard logging if new logging system not available
-    import logging
-    def get_logger(name, component=None):
-        return logging.getLogger(name)
-
-class SubscriptionManager(DatabaseInitializer if DatabaseInitializer else object):
-    """
-    Centralized manager for all subscription operations.
-    
-    Handles the complexity of composite foreign keys and provides a clean interface
-    for subscription management across both database and frontmatter persistence.
-    """
+class SubscriptionManager(DatabaseInitializer):
+    """Manages voluntary subscriptions to open channels"""
     
     def __init__(self, db_path: str):
         """
-        Initialize subscription manager.
+        Initialize SubscriptionManager
         
         Args:
-            db_path: Path to SQLite database
-            session_manager: SessionManager instance for context detection
+            db_path: Path to the database
         """
-        # Initialize parent class if it exists
-        if DatabaseInitializer:
-            super().__init__()
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
         
         self.db_path = db_path
-        self.logger = get_logger('SubscriptionManager', component='manager')
-        
-        # Initialize DatabaseManager for agent registration
-        self.db_manager = DatabaseManager(db_path) if DatabaseManager else None
-        
-        # Simple in-memory cache with TTL
-        self._cache = {}
-        self._cache_times = {}
-        self._cache_ttl = 60  # 60 seconds
-    
-    def _cache_key(self, agent_name: str, agent_project_id: Optional[str]) -> str:
-        """Generate cache key for agent subscriptions"""
-        return f"{agent_name}:{agent_project_id or 'global'}"
-    
-    def _get_cached_subscriptions(self, agent_name: str, agent_project_id: Optional[str]) -> Optional[Dict[str, List[str]]]:
-        """Get cached subscriptions if still valid"""
-        cache_key = self._cache_key(agent_name, agent_project_id)
-        if cache_key in self._cache:
-            if time.time() - self._cache_times.get(cache_key, 0) < self._cache_ttl:
-                self.logger.debug(f"Cache hit for {cache_key}")
-                return self._cache[cache_key]
-        return None
-    
-    def _cache_subscriptions(self, agent_name: str, agent_project_id: Optional[str], subscriptions: Dict[str, List[str]]):
-        """Cache subscriptions for the agent"""
-        cache_key = self._cache_key(agent_name, agent_project_id)
-        self._cache[cache_key] = subscriptions
-        self._cache_times[cache_key] = time.time()
-        self.logger.debug(f"Cached subscriptions for {cache_key}")
-    
-    def _invalidate_cache(self, agent_name: str, agent_project_id: Optional[str]):
-        """Invalidate cached subscriptions for the agent"""
-        cache_key = self._cache_key(agent_name, agent_project_id)
-        if cache_key in self._cache:
-            del self._cache[cache_key]
-            del self._cache_times[cache_key]
-            self.logger.debug(f"Invalidated cache for {cache_key}")
-    
-    def _get_scoped_channel_id(self, channel_name: str, scope: str, project_id: Optional[str] = None) -> str:
-        """
-        Get the full channel ID with scope prefix.
-        
-        Args:
-            channel_name: Channel name without prefix
-            scope: 'global' or 'project'
-            project_id: Project ID for project channels
-            
-        Returns:
-            Full channel ID (e.g., "global:general" or "proj_abc123:dev")
-        """
-        if scope == 'global':
-            return f"global:{channel_name}"
-        else:
-            if project_id:
-                project_id_short = project_id[:8]
-                return f"proj_{project_id_short}:{channel_name}"
-            else:
-                # Fallback to global if no project context
-                return f"global:{channel_name}"
+        self.db = DatabaseManager(db_path)
+        self.db_manager = self.db  # Required for DatabaseInitializer mixin
+        self.channel_manager = ChannelManager(db_path)
+        self.logger = logging.getLogger(__name__)
     
     @ensure_db_initialized
-    async def ensure_agent_registered(self, agent_name: str, agent_project_id: Optional[str]) -> bool:
+    async def subscribe_to_channel(self,
+                                  agent_name: str,
+                                  agent_project_id: Optional[str],
+                                  channel_id: str) -> bool:
         """
-        Ensure agent is registered in the database using DatabaseManager.
-        This ensures the agent gets their notes channel auto-provisioned.
+        Subscribe an agent to an open channel.
+        
+        This only works for open channels. For other channel types:
+        - Members/private: Use ChannelManagerV3.add_member()
+        - DM: Automatically handled when DM is created
+        - Notes: Automatically handled when notes channel is created
+        
+        Args:
+            agent_name: Agent to subscribe
+            agent_project_id: Agent's project ID
+            channel_id: Channel to subscribe to
+            
+        Returns:
+            True if subscription successful, False otherwise
+        """
+        # Get channel info
+        channel = await self.channel_manager.get_channel(channel_id)
+        if not channel:
+            self.logger.error(f"Channel {channel_id} does not exist")
+            return False
+        
+        # Only allow subscriptions to open channels
+        if channel.access_type != 'open':
+            self.logger.error(
+                f"Cannot subscribe to {channel.access_type} channel {channel_id}. "
+                f"Use add_member() for members/private channels."
+            )
+            return False
+        
+        # Subscribe the agent
+        try:
+            await self.db.subscribe_to_channel(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                channel_id=channel_id
+            )
+            self.logger.info(f"Subscribed {agent_name} to {channel_id}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to subscribe {agent_name} to {channel_id}: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def unsubscribe_from_channel(self,
+                                      agent_name: str,
+                                      agent_project_id: Optional[str],
+                                      channel_id: str) -> bool:
+        """
+        Unsubscribe an agent from an open channel.
+        
+        Args:
+            agent_name: Agent to unsubscribe
+            agent_project_id: Agent's project ID
+            channel_id: Channel to unsubscribe from
+            
+        Returns:
+            True if unsubscription successful, False otherwise
+        """
+        # Get channel info
+        channel = await self.channel_manager.get_channel(channel_id)
+        if not channel:
+            self.logger.error(f"Channel {channel_id} does not exist")
+            return False
+        
+        # Only allow unsubscribing from open channels
+        if channel.access_type != 'open':
+            self.logger.error(
+                f"Cannot unsubscribe from {channel.access_type} channel {channel_id}. "
+                f"Use remove_member() for members/private channels."
+            )
+            return False
+        
+        # Unsubscribe the agent
+        try:
+            await self.db.unsubscribe_from_channel(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                channel_id=channel_id
+            )
+            self.logger.info(f"Unsubscribed {agent_name} from {channel_id}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to unsubscribe {agent_name} from {channel_id}: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def get_agent_channels(self,
+                                agent_name: str,
+                                agent_project_id: Optional[str]) -> Dict[str, List[Dict]]:
+        """
+        Get all channels accessible to an agent.
+        
+        This includes:
+        - Open channels they're subscribed to
+        - Members/private channels they're members of
+        - DM channels they're participants in
+        - Their notes channel
         
         Args:
             agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global)
+            agent_project_id: Agent's project ID
             
         Returns:
-            True if agent was registered or already exists
+            Dict with 'subscribed', 'member', 'dm', and 'notes' lists
         """
-        if self.db_manager:
-            try:
-                # Check if agent already exists
-                if await self.db_manager.agent_exists(agent_name, project_id=agent_project_id):
-                    self.logger.debug(f"Agent {agent_name} already exists, skipping registration")
-                    return True
-                
-                # Only register if agent doesn't exist
-                # Use a fallback description since we don't have the real one here
-                await self.db_manager.register_agent(
-                    agent_name=agent_name,
-                    description=f"Agent {agent_name}",
-                    project_id=agent_project_id
+        # Use the channel manager to get all accessible channels
+        all_channels = await self.channel_manager.list_channels_for_agent(
+            agent_name, agent_project_id
+        )
+        
+        # Categorize channels
+        result = {
+            'subscribed': [],  # Open channels (voluntary)
+            'member': [],      # Members/private channels (mandatory)
+            'dm': [],          # Direct message channels
+            'notes': []        # Notes channels
+        }
+        
+        for channel in all_channels:
+            channel_id = channel['id']
+            
+            # Categorize by channel type and access
+            if channel_id.startswith('dm:'):
+                result['dm'].append(channel)
+            elif channel_id.startswith('notes:'):
+                result['notes'].append(channel)
+            elif channel.get('access_type') == 'open':
+                result['subscribed'].append(channel)
+            else:  # members or private
+                result['member'].append(channel)
+        
+        return result
+    
+    @ensure_db_initialized
+    async def get_subscribed_open_channels(self,
+                                          agent_name: str,
+                                          agent_project_id: Optional[str]) -> List[str]:
+        """
+        Get only the open channels an agent is subscribed to.
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            
+        Returns:
+            List of channel IDs for open channels the agent is subscribed to
+        """
+        channels = await self.get_agent_channels(agent_name, agent_project_id)
+        return [ch['id'] for ch in channels.get('subscribed', [])]
+    
+    @ensure_db_initialized
+    async def apply_default_subscriptions(self,
+                                         agent_name: str,
+                                         agent_project_id: Optional[str],
+                                         default_channels: Optional[List[str]] = None) -> List[str]:
+        """
+        Apply default subscriptions for a new agent.
+        
+        Only subscribes to open channels that exist.
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            default_channels: List of channel IDs to subscribe to.
+                            If None, uses standard defaults.
+            
+        Returns:
+            List of channel IDs successfully subscribed to
+        """
+        if default_channels is None:
+            # Standard defaults
+            default_channels = []
+            
+            # Global defaults
+            if agent_project_id is None:
+                default_channels = [
+                    'global:general',
+                    'global:announcements',
+                    'global:random'
+                ]
+            else:
+                # Project agent defaults
+                # Include both global and project channels
+                default_channels = [
+                    'global:announcements',
+                    f'project:{agent_project_id}:general',
+                    f'project:{agent_project_id}:dev'
+                ]
+        
+        subscribed = []
+        for channel_id in default_channels:
+            # Check if channel exists and is open
+            channel = await self.channel_manager.get_channel(channel_id)
+            if channel and channel.access_type == 'open':
+                success = await self.subscribe_to_channel(
+                    agent_name, agent_project_id, channel_id
                 )
-                
-                self.logger.debug(f"Ensured agent {agent_name} is registered with notes channel")
-                return True
-                    
-            except Exception as e:
-                self.logger.error(f"Error ensuring agent registration: {e}")
-                return False
-        
-        # Fallback to direct SQL if DatabaseManager not available
-        if not aconnect:
-            self.logger.error("Neither DatabaseManager nor aconnect available")
-            return False
-        
-        try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT OR IGNORE INTO agents (name, project_id, description, status, last_active)
-                    VALUES (?, ?, ?, 'online', datetime('now'))
-                """, (agent_name, agent_project_id, f"Agent {agent_name}"))
-                
-                # Update last_active if agent already exists
-                await conn.execute("""
-                    UPDATE agents 
-                    SET last_active = datetime('now'), status = 'online'
-                    WHERE name = ? AND project_id IS ?
-                """, (agent_name, agent_project_id))
-                
-                self.logger.debug(f"Ensured agent registration: {agent_name} (project_id: {agent_project_id}) (fallback method)")
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"Error ensuring agent registration: {e}")
-            return False
-    
-    async def ensure_channel_exists(self, channel_id: str, scope: str, channel_name: str, project_id: Optional[str] = None) -> bool:
-        """
-        Ensure channel exists in the database.
-        
-        Args:
-            channel_id: Full channel ID
-            scope: 'global' or 'project'
-            channel_name: Channel name without prefix
-            project_id: Project ID for project channels
-            
-        Returns:
-            True if channel exists or was created
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return False
-        
-        try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT OR IGNORE INTO channels (id, project_id, scope, name, description, created_at)
-                    VALUES (?, ?, ?, ?, ?, datetime('now'))
-                """, (channel_id, project_id, scope, channel_name, f"{scope.title()} {channel_name} channel"))
-                
-                self.logger.debug(f"Ensured channel exists: {channel_id}")
-                return True
-                
-        except Exception as e:
-            self.logger.error(f"Error ensuring channel exists: {e}")
-            return False
-    
-    async def subscribe(self, agent_name: str, agent_project_id: Optional[str], 
-                       channel_name: str, scope: str, source: str = 'manual', agent_project_dir = None) -> bool:
-        """
-        Subscribe an agent to a channel.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            channel_name: Channel name without prefix
-            scope: 'global' or 'project'
-            source: Source of subscription ('manual', 'frontmatter', 'auto_pattern')
-            
-        Returns:
-            True if subscription was successful
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return False
-        
-        # Determine project ID for channel scoping
-        channel_project_id = agent_project_id if scope == 'project' else None
-        channel_id = self._get_scoped_channel_id(channel_name, scope, channel_project_id)
-        
-        self.logger.info(f"Subscribing {agent_name} (project: {agent_project_id}) to {channel_id}")
-        
-        try:
-            # Ensure agent is registered
-            await self.ensure_agent_registered(agent_name, agent_project_id)
-            
-            # Ensure channel exists
-            await self.ensure_channel_exists(channel_id, scope, channel_name, channel_project_id)
-            
-            # Add subscription
-            async with aconnect(self.db_path, writer=True) as conn:
-                cursor = await conn.execute("""
-                    INSERT OR REPLACE INTO subscriptions 
-                    (agent_name, agent_project_id, channel_id, source, subscribed_at)
-                    VALUES (?, ?, ?, ?, datetime('now'))
-                """, (agent_name, agent_project_id, channel_id, source))
-                
-                success = cursor.rowcount > 0
                 if success:
-                    self.logger.info(f"Successfully subscribed {agent_name} to {channel_id}")
-                    # Invalidate cache
-                    self._invalidate_cache(agent_name, agent_project_id)
-                else:
-                    self.logger.warning(f"No rows affected for subscription: {agent_name} -> {channel_id}")
-            
-            # Update frontmatter
-            if agent_name != "assistant" and agent_project_dir:
-                try:
-                    await FrontmatterUpdater.add_channel_subscription(agent_name, channel_id, scope, agent_project_dir)
-                    self.logger.debug(f"Updated frontmatter for {agent_name}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to update frontmatter: {e}")
-            
-            return success
-                
-        except Exception as e:
-            self.logger.error(f"Error subscribing {agent_name} to {channel_id}: {e}")
-            return False
+                    subscribed.append(channel_id)
+                    self.logger.debug(f"Applied default subscription: {channel_id}")
+            else:
+                self.logger.debug(f"Skipping non-existent or non-open channel: {channel_id}")
+        
+        self.logger.info(f"Applied {len(subscribed)} default subscriptions for {agent_name}")
+        return subscribed
     
-    async def unsubscribe(self, agent_name: str, agent_project_id: Optional[str],
-                         channel_name: str, scope: str, agent_project_dir = None) -> bool:
+    @ensure_db_initialized
+    async def sync_from_frontmatter(self,
+                                   agent_name: str,
+                                   agent_project_id: Optional[str],
+                                   agent_file_path: str) -> Dict[str, List[str]]:
         """
-        Unsubscribe an agent from a channel.
+        Sync agent's subscriptions from their frontmatter file using FrontmatterParser.
         
         Args:
             agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            channel_name: Channel name without prefix
-            scope: 'global' or 'project'
+            agent_project_id: Agent's project ID
+            agent_file_path: Path to agent's markdown file
             
         Returns:
-            True if unsubscription was successful
+            Dict with 'added' and 'removed' channel lists
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return False
+        result = {'added': [], 'removed': []}
         
-        # Determine project ID for channel scoping
-        channel_project_id = agent_project_id if scope == 'project' else None
-        channel_id = self._get_scoped_channel_id(channel_name, scope, channel_project_id)
-        
-        self.logger.info(f"Unsubscribing {agent_name} (project: {agent_project_id}) from {channel_id}")
+        if not os.path.exists(agent_file_path):
+            self.logger.warning(f"Agent file not found: {agent_file_path}")
+            return result
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                cursor = await conn.execute("""
-                    DELETE FROM subscriptions 
-                    WHERE agent_name = ? AND agent_project_id IS ? AND channel_id = ?
-                """, (agent_name, agent_project_id, channel_id))
-                
-                success = cursor.rowcount > 0
-                if success:
-                    self.logger.info(f"Successfully unsubscribed {agent_name} from {channel_id}")
-                    # Invalidate cache
-                    self._invalidate_cache(agent_name, agent_project_id)
-                else:
-                    self.logger.warning(f"No subscription found to remove: {agent_name} -> {channel_id}")
-                
-            # Update frontmatter
-            if agent_name != "assistant" and agent_project_dir:
-                try:
-                    await FrontmatterUpdater.remove_channel_subscription(agent_name, channel_id, scope, agent_project_dir)
-                    self.logger.debug(f"Remoed frontmatter for {agent_name}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to remove frontmatter: {e}")
-            
-            return success
-                
-        except Exception as e:
-            self.logger.error(f"Error unsubscribing {agent_name} from {channel_id}: {e}")
-            return False
-    
-    async def get_subscriptions(self, agent_name: str, agent_project_id: Optional[str]) -> Dict[str, List[str]]:
-        """
-        Get all subscriptions for an agent.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            
-        Returns:
-            Dictionary with 'global' and 'project' channel lists
-        """
-        # Check cache first
-        cached = self._get_cached_subscriptions(agent_name, agent_project_id)
-        if cached is not None:
-            return cached
-        
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return {'global': [], 'project': []}
-        
-        subscriptions = {'global': [], 'project': []}
-        
-        try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT c.scope, c.name
-                    FROM subscriptions s
-                    JOIN channels c ON s.channel_id = c.id
-                    WHERE s.agent_name = ? AND s.agent_project_id IS ?
-                    AND s.is_muted = 0
-                    ORDER BY c.scope, c.name
-                """, (agent_name, agent_project_id))
-                
-                async for row in cursor:
-                    scope, channel_name = row
-                    if scope in subscriptions:
-                        subscriptions[scope].append(channel_name)
-                
-                self.logger.debug(f"Retrieved subscriptions for {agent_name}: {subscriptions}")
-                
-                # Cache the result
-                self._cache_subscriptions(agent_name, agent_project_id, subscriptions)
-                
-                return subscriptions
-                
-        except Exception as e:
-            self.logger.error(f"Error getting subscriptions for {agent_name}: {e}")
-            return {'global': [], 'project': []}
-    
-    async def is_subscribed(self, agent_name: str, agent_project_id: Optional[str], 
-                           channel_name: str, scope: str) -> bool:
-        """
-        Check if an agent is subscribed to a specific channel.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            channel_name: Channel name without prefix
-            scope: 'global' or 'project'
-            
-        Returns:
-            True if agent is subscribed to the channel
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return False
-        
-        # Determine project ID for channel scoping
-        channel_project_id = agent_project_id if scope == 'project' else None
-        channel_id = self._get_scoped_channel_id(channel_name, scope, channel_project_id)
-        
-        try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT 1 FROM subscriptions 
-                    WHERE agent_name = ? AND agent_project_id IS ? AND channel_id = ?
-                    AND is_muted = 0
-                """, (agent_name, agent_project_id, channel_id))
-                
-                result = await cursor.fetchone()
-                is_subscribed = result is not None
-                
-                self.logger.debug(f"Subscription check: {agent_name} -> {channel_id}: {is_subscribed}")
-                return is_subscribed
-                
-        except Exception as e:
-            self.logger.error(f"Error checking subscription: {e}")
-            return False
-    
-    async def bulk_subscribe(self, agent_name: str, agent_project_id: Optional[str],
-                            channels: List[str], scope: str, source: str = 'bulk') -> int:
-        """
-        Subscribe an agent to multiple channels at once.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            channels: List of channel names without prefix
-            scope: 'global' or 'project'
-            source: Source of subscriptions
-            
-        Returns:
-            Number of channels successfully subscribed to
-        """
-        self.logger.info(f"Bulk subscribing {agent_name} to {len(channels)} {scope} channels")
-        
-        success_count = 0
-        for channel_name in channels:
-            if await self.subscribe(agent_name, agent_project_id, channel_name, scope, source):
-                success_count += 1
-        
-        self.logger.info(f"Bulk subscription complete: {success_count}/{len(channels)} successful")
-        return success_count
-    
-    async def clear_subscriptions(self, agent_name: str, agent_project_id: Optional[str], scope: Optional[str] = None) -> int:
-        """
-        Clear all subscriptions for an agent.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            scope: Optional scope filter ('global' or 'project')
-            
-        Returns:
-            Number of subscriptions removed
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return 0
-        
-        self.logger.info(f"Clearing subscriptions for {agent_name} (project: {agent_project_id}, scope: {scope})")
-        
-        try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                if scope:
-                    # Clear subscriptions for specific scope
-                    cursor = await conn.execute("""
-                        DELETE FROM subscriptions 
-                        WHERE agent_name = ? AND agent_project_id IS ?
-                        AND channel_id IN (
-                            SELECT id FROM channels WHERE scope = ?
-                        )
-                    """, (agent_name, agent_project_id, scope))
-                else:
-                    # Clear all subscriptions
-                    cursor = await conn.execute("""
-                        DELETE FROM subscriptions 
-                        WHERE agent_name = ? AND agent_project_id IS ?
-                    """, (agent_name, agent_project_id))
-                
-                removed_count = cursor.rowcount
-                self.logger.info(f"Cleared {removed_count} subscriptions for {agent_name}")
-                
-                # Invalidate cache
-                self._invalidate_cache(agent_name, agent_project_id)
-                
-                return removed_count
-                
-        except Exception as e:
-            self.logger.error(f"Error clearing subscriptions: {e}")
-            return 0
-    
-    async def sync_from_frontmatter(self, agent_name: str, agent_project_id: Optional[str], 
-                                   agent_file_path: str) -> bool:
-        """
-        Sync agent subscriptions from frontmatter file to database.
-        
-        Args:
-            agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            agent_file_path: Path to agent markdown file
-            
-        Returns:
-            True if sync was successful
-        """
-        if not FrontmatterParser:
-            self.logger.error("FrontmatterParser not available")
-            return False
-        
-        self.logger.info(f"Syncing subscriptions from frontmatter: {agent_file_path}")
-        
-        try:
-            # Parse frontmatter
+            # Parse frontmatter using FrontmatterParser
             agent_data = FrontmatterParser.parse_file(agent_file_path)
-            channels = agent_data.get('channels', {'global': [], 'project': []})
+            channels_config = agent_data.get('channels', {})
+                        
+            # Build list of desired channel IDs
+            desired_channels = set()
             
-            # Ensure it's in scoped format
-            if isinstance(channels, list):
-                channels = {'global': channels, 'project': []}
-            elif not isinstance(channels, dict):
-                channels = {'global': ['general', 'announcements'], 'project': []}
+            # Add global channels
+            for ch in channels_config.get('global', []):
+                # Channel names from frontmatter don't have scope prefix
+                desired_channels.add(f"global:{ch}")
             
-            # Clear existing subscriptions and replace with frontmatter data
-            await self.clear_subscriptions(agent_name, agent_project_id)
+            # Add project channels (only if agent has project context)
+            if agent_project_id:
+                for ch in channels_config.get('project', []):
+                    # Add project scope
+                    project_short = agent_project_id[:8] if len(agent_project_id) > 8 else agent_project_id
+                    desired_channels.add(f"proj_{project_short}:{ch}")
             
-            # Subscribe to global channels
-            global_count = await self.bulk_subscribe(
-                agent_name, agent_project_id, 
-                channels.get('global', []), 'global', 'frontmatter'
+            # Get current subscriptions (open channels only)
+            current_channels = set(await self.get_subscribed_open_channels(
+                agent_name, agent_project_id
+            ))
+            
+            # Calculate changes
+            to_add = desired_channels - current_channels
+            to_remove = current_channels - desired_channels
+            
+            # Apply additions
+            for channel_id in to_add:
+                success = await self.subscribe_to_channel(
+                    agent_name, agent_project_id, channel_id
+                )
+                if success:
+                    result['added'].append(channel_id)
+            
+            # Apply removals  
+            for channel_id in to_remove:
+                success = await self.unsubscribe_from_channel(
+                    agent_name, agent_project_id, channel_id
+                )
+                if success:
+                    result['removed'].append(channel_id)
+            
+            self.logger.info(
+                f"Frontmatter sync for {agent_name}: "
+                f"added {len(result['added'])}, removed {len(result['removed'])} subscriptions"
             )
             
-            # Subscribe to project channels (only if agent has project context)
-            project_count = 0
-            if agent_project_id and channels.get('project'):
-                project_count = await self.bulk_subscribe(
-                    agent_name, agent_project_id,
-                    channels.get('project', []), 'project', 'frontmatter'
-                )
-            
-            self.logger.info(f"Frontmatter sync complete: {global_count} global, {project_count} project subscriptions")
-            return True
-            
         except Exception as e:
-            self.logger.error(f"Error syncing from frontmatter: {e}")
-            return False
+            self.logger.error(f"Failed to sync from frontmatter: {e}")
+        
+        return result
     
-    async def get_channel_subscribers(self, channel_id: str) -> List[Tuple[str, Optional[str]]]:
+    @ensure_db_initialized
+    async def update_frontmatter(self,
+                                agent_name: str,
+                                agent_project_id: Optional[str],
+                                agent_project_dir: str) -> bool:
         """
-        Get all subscribers for a channel.
+        Update agent's frontmatter file with current subscriptions using FrontmatterUpdater.
         
-        Args:
-            channel_id: Full channel ID
-            
-        Returns:
-            List of (agent_name, agent_project_id) tuples
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return []
-        
-        try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT agent_name, agent_project_id
-                    FROM subscriptions 
-                    WHERE channel_id = ? AND is_muted = 0
-                    ORDER BY agent_name
-                """, (channel_id,))
-                
-                subscribers = []
-                async for row in cursor:
-                    subscribers.append((row[0], row[1]))
-                
-                self.logger.debug(f"Found {len(subscribers)} subscribers for {channel_id}")
-                return subscribers
-                
-        except Exception as e:
-            self.logger.error(f"Error getting channel subscribers: {e}")
-            return []
-    
-    async def apply_default_subscriptions(self, agent_name: str, agent_project_id: Optional[str], 
-                                         force: bool = False) -> Dict[str, List[str]]:
-        """
-        Apply default channel subscriptions from configuration.
-        
-        This method reads the default subscriptions from the config file and applies them
-        to the specified agent. It's useful for initializing new agents or resetting
-        an agent's subscriptions to defaults.
+        Only updates open channel subscriptions.
+        Does NOT include members/private/dm channels (those are determined by membership).
         
         Args:
             agent_name: Agent name
-            agent_project_id: Agent's project ID (None for global agents)
-            force: If True, overwrites existing subscriptions. If False, only adds missing defaults.
+            agent_project_id: Agent's project ID
+            agent_project_dir: Directory containing agent files (project or global)
             
         Returns:
-            Dictionary with 'global' and 'project' lists of applied subscriptions
+            True if update successful
         """
-        applied = {'global': [], 'project': []}
-        
-        self.logger.info(f"Applying default subscriptions for {agent_name} (project: {agent_project_id})")
-        
-        # Get default subscriptions from config
-        default_subs = None
-        
-        # Try to get from ConfigManager first
-        if get_config_manager:
-            try:
-                config_manager = get_config_manager()
-                settings = config_manager.get_settings()
-                
-                # Get default agent subscriptions from settings
-                default_subs = settings.get('default_agent_subscriptions', None)
-                if default_subs:
-                    self.logger.debug("Using default subscriptions from config")
-                    
-            except Exception as e:
-                self.logger.warning(f"Failed to get defaults from ConfigManager: {e}")
-        
-        # Use hardcoded defaults if config unavailable
-        if not default_subs:
-            default_subs = {
-                'global': ['general', 'announcements'],
-                'project': ['general', 'dev'] if agent_project_id else []
-            }
-            self.logger.debug("Using hardcoded default subscriptions")
-        
-        # Get current subscriptions if not forcing
-        current_subs = {'global': [], 'project': []}
-        if not force:
-            current_subs = await self.get_subscriptions(agent_name, agent_project_id)
-            self.logger.debug(f"Current subscriptions: {current_subs}")
-        
-        # Apply global defaults
-        for channel in default_subs.get('global', []):
-            if force or channel not in current_subs.get('global', []):
-                success = await self.subscribe(agent_name, agent_project_id, channel, 'global', 'default')
-                if success:
-                    applied['global'].append(channel)
-                    self.logger.debug(f"Applied default global subscription: {channel}")
-        
-        # Apply project defaults (only if agent has project context)
-        if agent_project_id:
-            for channel in default_subs.get('project', []):
-                if force or channel not in current_subs.get('project', []):
-                    success = await self.subscribe(agent_name, agent_project_id, channel, 'project', 'default')
-                    if success:
-                        applied['project'].append(channel)
-                        self.logger.debug(f"Applied default project subscription: {channel}")
-        
-        self.logger.info(f"Applied default subscriptions: {len(applied['global'])} global, {len(applied['project'])} project")
-        
-        return applied
+        try:
+            # Get current open channel subscriptions
+            subscribed_channels = await self.get_subscribed_open_channels(
+                agent_name, agent_project_id
+            )
+            
+            # Organize by scope for FrontmatterUpdater
+            channels_by_scope = {'global': [], 'project': []}
+            
+            for ch_id in subscribed_channels:
+                if ch_id.startswith('global:'):
+                    # Remove 'global:' prefix for cleaner frontmatter
+                    channel_name = ch_id[7:]
+                    channels_by_scope['global'].append(channel_name)
+                elif ch_id.startswith('proj_'):
+                    # Extract channel name from project channel ID
+                    # Format: proj_{short_id}:{channel_name}
+                    parts = ch_id.split(':', 1)
+                    if len(parts) == 2:
+                        channel_name = parts[1]
+                        channels_by_scope['project'].append(channel_name)
+            
+            # Use FrontmatterUpdater to bulk update
+            success = await FrontmatterUpdater.bulk_update_subscriptions(
+                agent_name=agent_name,
+                subscribe_to=channels_by_scope,  # Set exact subscriptions
+                unsubscribe_from={'global': [], 'project': []},  # No removals in this mode
+                claude_dir=agent_project_dir
+            )
+            
+            if success:
+                self.logger.info(
+                    f"Updated frontmatter for {agent_name}: "
+                    f"{len(channels_by_scope['global'])} global, "
+                    f"{len(channels_by_scope['project'])} project channels"
+                )
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update frontmatter: {e}")
+            return False

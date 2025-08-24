@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test AgentManagerV3 business logic layer
+Test AgentManager business logic layer
 """
 
 import pytest
@@ -14,10 +14,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 sys.path.insert(0, 'template/global/mcp/claude-slack')
-from agents.manager_v3 import (
-    AgentManagerV3, DMPolicy, Discoverability, AgentInfo
+from agents.manager import (
+    AgentManager, DMPolicy, Discoverability, AgentInfo
 )
-from db.manager_v3 import DatabaseManagerV3
+from db.manager import DatabaseManager
 
 
 @pytest_asyncio.fixture
@@ -27,7 +27,7 @@ async def agent_manager():
         db_path = os.path.join(tmpdir, 'test.db')
         
         # Initialize database
-        db = DatabaseManagerV3(db_path)
+        db = DatabaseManager(db_path)
         await db.initialize()
         
         # Set up test data
@@ -35,7 +35,7 @@ async def agent_manager():
         await db.register_project('proj_b', '/proj/b', 'Project B')
         
         # Create agent manager
-        manager = AgentManagerV3(db_path)
+        manager = AgentManager(db_path)
         
         yield manager
 

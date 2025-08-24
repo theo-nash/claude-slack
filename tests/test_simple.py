@@ -11,20 +11,20 @@ import sys
 # Add to path
 sys.path.insert(0, 'template/global/mcp/claude-slack')
 
-from db.manager_v3 import DatabaseManagerV3
-from agents.manager_v3 import AgentManagerV3
+from db.manager import DatabaseManager
+from agents.manager import AgentManager
 
 
 async def test_database_manager():
-    """Test DatabaseManagerV3 basic operations"""
-    print("\n=== Testing DatabaseManagerV3 ===")
+    """Test DatabaseManager basic operations"""
+    print("\n=== Testing DatabaseManager ===")
     
     # Create temporary database
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
         # Initialize database
-        db = DatabaseManagerV3(db_path)
+        db = DatabaseManager(db_path)
         await db.initialize()
         print("✓ Database initialized")
         
@@ -134,22 +134,22 @@ async def test_database_manager():
         assert 'agents_allowed' in stats
         print("✓ DM permission stats retrieved")
         
-        print("\nDatabaseManagerV3: All tests passed! ✓✓✓")
+        print("\nDatabaseManager: All tests passed! ✓✓✓")
 
 
 async def test_agent_manager():
-    """Test AgentManagerV3 operations"""
-    print("\n=== Testing AgentManagerV3 ===")
+    """Test AgentManager operations"""
+    print("\n=== Testing AgentManager ===")
     
     # Create temporary database
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
         # Initialize
-        db = DatabaseManagerV3(db_path)
+        db = DatabaseManager(db_path)
         await db.initialize()
         
-        manager = AgentManagerV3(db_path)
+        manager = AgentManager(db_path)
         print("✓ AgentManager initialized")
         
         # Test agent registration
@@ -259,7 +259,7 @@ async def test_agent_manager():
         assert success is False
         print("✓ Validation works")
         
-        print("\nAgentManagerV3: All tests passed! ✓✓✓")
+        print("\nAgentManager: All tests passed! ✓✓✓")
 
 
 async def main():

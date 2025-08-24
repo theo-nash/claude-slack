@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Database Manager for Claude-Slack
-Handles all database operations with project isolation support
+Handles unified channel system with permission controls
+Phase 2 (v3.0.0) Implementation
 """
 
 import os
@@ -26,13 +27,12 @@ except ImportError:
 try:
     from log_manager import get_logger
 except ImportError:
-    # Fallback to standard logging if new logging system not available
     import logging
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
 class DatabaseManager:
-    """Manages SQLite database operations for claude-slack with project isolation"""
+    """Manages SQLite database operations for claude-slack v3 with unified channels"""
     
     def __init__(self, db_path: str):
         """
@@ -43,7 +43,6 @@ class DatabaseManager:
         """
         self.db_path = db_path
         self.logger = get_logger('DatabaseManager', component='manager')
-    
     
     async def initialize(self):
         """Initialize database and ensure schema exists"""
@@ -64,24 +63,17 @@ class DatabaseManager:
                     schema = f.read()
                     await conn.executescript(schema)
     
-    
     async def close(self):
         """Close database connection (no-op with connection pooling)"""
         pass
     
-    
+    # ============================================================================
     # Project Management
+    # ============================================================================
     
     @with_connection(writer=True)
     async def register_project(self, conn, project_id: str, project_path: str, project_name: str):
-        """
-        Register a project in the database
-        
-        Args:
-            project_id: Unique project identifier (hash of path)
-            project_path: Absolute path to project
-            project_name: Human-readable project name
-        """
+        """Register a project in the database"""
         await conn.execute("""
             INSERT OR REPLACE INTO projects (id, path, name, last_active)
             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -107,236 +99,425 @@ class DatabaseManager:
             }
         return None
     
+    # ============================================================================
+    # Agent Management
+    # ============================================================================
+    
     @with_connection(writer=True)
-    async def link_projects(self, conn, project_a_id: str, project_b_id: str, 
-                           link_type: str = "bidirectional", created_by: str = None) -> bool:
+    async def register_agent(self, conn, name: str, project_id: Optional[str] = None,
+                            description: Optional[str] = None,
+                            dm_policy: str = 'open',
+                            discoverable: str = 'public',
+                            status: str = 'offline',
+                            current_project_id: Optional[str] = None,
+                            metadata: Optional[Dict] = None):
         """
-        Create a link between two projects to allow cross-project communication.
+        Register an agent with DM policies and initial settings.
         
         Args:
-            project_a_id: First project ID
-            project_b_id: Second project ID  
-            link_type: 'bidirectional', 'a_to_b', or 'b_to_a'
-            created_by: Agent or user who created the link
-            
-        Returns:
-            True if link created successfully
+            name: Agent name
+            project_id: Project the agent belongs to
+            description: Agent description
+            dm_policy: DM policy ('open', 'restricted', 'closed')
+            discoverable: Discoverability ('public', 'project', 'private')
+            status: Initial status ('online', 'offline', 'busy')
+            current_project_id: Currently active project
+            metadata: Additional agent metadata as dict
         """
-        # Ensure consistent ordering
-        if project_a_id > project_b_id:
-            project_a_id, project_b_id = project_b_id, project_a_id
-            # Reverse link type if needed
-            if link_type == "a_to_b":
-                link_type = "b_to_a"
-            elif link_type == "b_to_a":
-                link_type = "a_to_b"
-        
-        try:
-            await conn.execute("""
-                INSERT OR REPLACE INTO project_links 
-                (project_a_id, project_b_id, link_type, created_by, enabled)
-                VALUES (?, ?, ?, ?, TRUE)
-            """, (project_a_id, project_b_id, link_type, created_by))
-            return True
-        except Exception:
-            return False
-    
-    @with_connection(writer=True)
-    async def unlink_projects(self, conn, project_a_id: str, project_b_id: str) -> bool:
-        """Remove link between two projects"""
-        # Ensure consistent ordering
-        if project_a_id > project_b_id:
-            project_a_id, project_b_id = project_b_id, project_a_id
+        metadata_str = json.dumps(metadata) if metadata else None
         
         await conn.execute("""
-            DELETE FROM project_links 
-            WHERE project_a_id = ? AND project_b_id = ?
-        """, (project_a_id, project_b_id))
-        return True
+            INSERT OR REPLACE INTO agents 
+            (name, project_id, description, dm_policy, discoverable, 
+             status, current_project_id, metadata, last_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (name, project_id, description, dm_policy, discoverable,
+              status, current_project_id, metadata_str))
     
     @with_connection(writer=False)
-    async def get_linked_projects(self, conn, project_id: str) -> List[str]:
-        """
-        Get all projects linked to the given project.
-        Checks config file first, then falls back to database.
-        
-        Returns:
-            List of project IDs that this project can communicate with
-        """
-        # Try to get from config first
-        if ConfigManager is not None:
-            try:
-                config_manager = ConfigManager()
-                return config_manager.get_linked_projects(project_id)
-            except Exception:
-                pass  # Fall back to database
-        
-        # Fall back to database
+    async def get_agent(self, conn, name: str, project_id: Optional[str] = None) -> Optional[Dict]:
+        """Get agent information"""
         cursor = await conn.execute("""
-            SELECT 
-                CASE 
-                    WHEN project_a_id = ? THEN project_b_id
-                    ELSE project_a_id
-                END as linked_project_id,
-                link_type
-            FROM project_links
-            WHERE (project_a_id = ? OR project_b_id = ?)
-                AND enabled = TRUE
-                AND (
-                    link_type = 'bidirectional'
-                    OR (project_a_id = ? AND link_type = 'a_to_b')
-                    OR (project_b_id = ? AND link_type = 'b_to_a')
-                )
-        """, (project_id, project_id, project_id, project_id, project_id))
-        
-        rows = await cursor.fetchall()
-        return [row[0] for row in rows]
-    
-    @with_connection(writer=False)
-    async def can_projects_communicate(self, conn, project_a_id: str, project_b_id: str) -> bool:
-        """
-        Check if two projects are allowed to communicate.
-        Checks config file first, then falls back to database.
-        """
-        if project_a_id == project_b_id:
-            return True  # Same project can always communicate
-        
-        # Try to check from config first
-        if ConfigManager is not None:
-            try:
-                config_manager = ConfigManager()
-                return config_manager.can_projects_communicate(project_a_id, project_b_id)
-            except Exception:
-                pass  # Fall back to database
-        
-        # Fall back to database
-        # Ensure consistent ordering
-        orig_a, orig_b = project_a_id, project_b_id
-        if project_a_id > project_b_id:
-            project_a_id, project_b_id = project_b_id, project_a_id
-        
-        cursor = await conn.execute("""
-            SELECT link_type FROM project_links
-            WHERE project_a_id = ? AND project_b_id = ? AND enabled = TRUE
-        """, (project_a_id, project_b_id))
+            SELECT name, project_id, description, status, dm_policy, discoverable,
+                   current_project_id, last_active, created_at, metadata
+            FROM agents WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+        """, (name, project_id))
         
         row = await cursor.fetchone()
-        if not row:
-            return False
+        if row:
+            return {
+                'name': row[0],
+                'project_id': row[1],
+                'description': row[2],
+                'status': row[3],
+                'dm_policy': row[4],
+                'discoverable': row[5],
+                'current_project_id': row[6],
+                'last_active': row[7],
+                'created_at': row[8],
+                'metadata': json.loads(row[9]) if row[9] else {}
+            }
+        return None
+    
+    # ============================================================================
+    # Unified Channel Management
+    # ============================================================================
+    
+    def get_dm_channel_id(self, agent1_name: str, agent1_project_id: Optional[str],
+                         agent2_name: str, agent2_project_id: Optional[str]) -> str:
+        """Generate consistent DM channel ID"""
+        # Sort agents to ensure consistent channel ID regardless of order
+        agent1_key = f"{agent1_name}:{agent1_project_id or ''}"
+        agent2_key = f"{agent2_name}:{agent2_project_id or ''}"
         
-        link_type = row[0]
-        if link_type == "bidirectional":
-            return True
-        elif link_type == "a_to_b":
-            return orig_a == project_a_id  # Original A can talk to B
-        elif link_type == "b_to_a":
-            return orig_b == project_a_id  # Original B can talk to A
+        if agent1_key < agent2_key:
+            return f"dm:{agent1_key}:{agent2_key}"
+        else:
+            return f"dm:{agent2_key}:{agent1_key}"
+    
+    @with_connection(writer=True)
+    async def create_channel(self, conn, 
+                           channel_id: str,
+                           channel_type: str,
+                           access_type: str,
+                           scope: str,
+                           name: str,
+                           project_id: Optional[str] = None,
+                           description: Optional[str] = None,
+                           created_by: Optional[str] = None,
+                           created_by_project_id: Optional[str] = None,
+                           is_default: bool = False) -> str:
+        """
+        Create a new channel (regular or DM)
         
-        return False
+        Args:
+            channel_id: Unique channel identifier
+            channel_type: 'channel' or 'direct'
+            access_type: 'open', 'members', or 'private'
+            scope: 'global' or 'project'
+            name: Channel name or DM identifier
+            project_id: Project ID for project-scoped channels
+            description: Channel description
+            created_by: Agent who created the channel
+            created_by_project_id: Creator's project ID
+            is_default: Whether to auto-subscribe new agents
+        
+        Returns:
+            channel_id
+        """
+        try:
+            await conn.execute("""
+                INSERT INTO channels 
+                (id, channel_type, access_type, scope, name, project_id, 
+                 description, created_by, created_by_project_id, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (channel_id, channel_type, access_type, scope, name, project_id,
+                  description, created_by, created_by_project_id, is_default))
+            
+            self.logger.info(f"Created {channel_type} channel: {channel_id} "
+                           f"(access_type={access_type}, scope={scope})")
+            return channel_id
+        except sqlite3.IntegrityError:
+            # Channel already exists
+            self.logger.debug(f"Channel already exists: {channel_id}")
+            return channel_id
+    
+    @with_connection(writer=True)
+    async def create_or_get_dm_channel(self, conn,
+                                      agent1_name: str, agent1_project_id: Optional[str],
+                                      agent2_name: str, agent2_project_id: Optional[str]) -> str:
+        """
+        Create or get a DM channel between two agents
+        
+        Returns:
+            channel_id of the DM channel
+        """
+        # Check if agents can DM each other
+        can_dm = await self.check_dm_permission(
+            agent1_name, agent1_project_id,
+            agent2_name, agent2_project_id
+        )
+        
+        if not can_dm:
+            raise ValueError(f"DM not allowed between {agent1_name} and {agent2_name}")
+        
+        # Generate consistent channel ID
+        channel_id = self.get_dm_channel_id(
+            agent1_name, agent1_project_id,
+            agent2_name, agent2_project_id
+        )
+        
+        # Check if channel exists
+        cursor = await conn.execute(
+            "SELECT id FROM channels WHERE id = ?", (channel_id,)
+        )
+        existing = await cursor.fetchone()
+        
+        if not existing:
+            # Determine scope (global if either agent is global)
+            scope = 'global' if (agent1_project_id is None or agent2_project_id is None) else 'project'
+            
+            # Create the DM channel
+            await conn.execute("""
+                INSERT INTO channels 
+                (id, channel_type, access_type, scope, name, created_at)
+                VALUES (?, 'direct', 'private', ?, ?, CURRENT_TIMESTAMP)
+            """, (channel_id, scope, channel_id))
+            
+            # Add both agents as members
+            await conn.execute("""
+                INSERT INTO channel_members 
+                (channel_id, agent_name, agent_project_id, role, can_send)
+                VALUES (?, ?, ?, 'member', TRUE)
+            """, (channel_id, agent1_name, agent1_project_id))
+            
+            await conn.execute("""
+                INSERT INTO channel_members 
+                (channel_id, agent_name, agent_project_id, role, can_send)
+                VALUES (?, ?, ?, 'member', TRUE)
+            """, (channel_id, agent2_name, agent2_project_id))
+            
+            self.logger.info(f"Created DM channel: {channel_id}")
+        
+        return channel_id
     
     @with_connection(writer=False)
-    async def list_projects(self, conn) -> List[Dict]:
-        """List all known projects"""
+    async def check_dm_permission(self, conn,
+                                 agent1_name: str, agent1_project_id: Optional[str],
+                                 agent2_name: str, agent2_project_id: Optional[str]) -> bool:
+        """Check if two agents can DM each other based on policies"""
+        # Use the dm_access view
         cursor = await conn.execute("""
-            SELECT id, path, name, created_at, last_active
-            FROM projects
-            ORDER BY last_active DESC
-        """)
+            SELECT can_dm FROM dm_access
+            WHERE agent1_name = ? AND agent1_project_id IS NOT DISTINCT FROM ?
+              AND agent2_name = ? AND agent2_project_id IS NOT DISTINCT FROM ?
+        """, (agent1_name, agent1_project_id, agent2_name, agent2_project_id))
+        
+        row = await cursor.fetchone()
+        return bool(row[0]) if row else False
+    
+    @with_connection(writer=True)
+    async def add_channel_member(self, conn,
+                                channel_id: str,
+                                agent_name: str,
+                                agent_project_id: Optional[str] = None,
+                                role: str = 'member',
+                                can_send: bool = True,
+                                can_manage_members: bool = False,
+                                added_by: Optional[str] = None,
+                                added_by_project_id: Optional[str] = None):
+        """Add a member to a members/private channel"""
+        await conn.execute("""
+            INSERT OR REPLACE INTO channel_members 
+            (channel_id, agent_name, agent_project_id, role, can_send, can_manage_members,
+             added_by, added_by_project_id, joined_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (channel_id, agent_name, agent_project_id, role, can_send, can_manage_members,
+              added_by, added_by_project_id))
+    
+    @with_connection(writer=True)
+    async def remove_channel_member(self, conn,
+                                   channel_id: str,
+                                   agent_name: str,
+                                   agent_project_id: Optional[str] = None):
+        """Remove a member from a channel"""
+        await conn.execute("""
+            DELETE FROM channel_members
+            WHERE channel_id = ? AND agent_name = ? 
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (channel_id, agent_name, agent_project_id))
+    
+    @with_connection(writer=False)
+    async def get_channel_members(self, conn, channel_id: str) -> List[Dict]:
+        """
+        Get all members of a channel.
+        
+        Args:
+            channel_id: Channel ID
+            
+        Returns:
+            List of member dictionaries
+        """
+        cursor = await conn.execute("""
+            SELECT agent_name, agent_project_id, role, can_send, 
+                   can_manage_members, joined_at, added_by, added_by_project_id
+            FROM channel_members
+            WHERE channel_id = ?
+            ORDER BY role DESC, joined_at
+        """, (channel_id,))
         
         rows = await cursor.fetchall()
         return [
             {
-                'id': row[0],
-                'path': row[1],
-                'name': row[2],
-                'created_at': row[3],
-                'last_active': row[4]
+                'agent_name': row[0],
+                'agent_project_id': row[1],
+                'role': row[2],
+                'can_send': bool(row[3]),
+                'can_manage_members': bool(row[4]),
+                'joined_at': row[5],
+                'added_by': row[6],
+                'added_by_project_id': row[7]
             }
             for row in rows
         ]
     
-    # Channel Management
-    
-    
-    @with_connection(writer=True)
-    async def create_channel_if_not_exists(
-        self, 
-        conn,
-        channel_id: str,
-        name: str,
-        description: str,
-        scope: str,
-        project_id: Optional[str] = None,
-        is_default: bool = False
-    ):
-        """Create a channel if it doesn't exist"""
-        try:
-            await conn.execute("""
-                INSERT INTO channels (id, project_id, scope, name, description, 
-                                    created_by, created_by_project_id, is_default)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (channel_id, project_id, scope, name, description, 
-                  'system', None,  # System-created channels don't have a specific creator
-                  is_default))
-        except sqlite3.IntegrityError:
-            # Channel already exists
-            pass
-    
-    
     @with_connection(writer=False)
     async def get_channel(self, conn, channel_id: str) -> Optional[Dict]:
-        """Get channel information"""
+        """
+        Get channel information by ID.
+        
+        Args:
+            channel_id: Channel ID
+            
+        Returns:
+            Dictionary with channel information or None if not found
+        """
         cursor = await conn.execute("""
-            SELECT id, project_id, scope, name, description, created_at, is_default, is_archived
-            FROM channels WHERE id = ?
+            SELECT id, channel_type, access_type, scope, name, project_id,
+                   description, created_by, created_by_project_id, created_at,
+                   is_default, is_archived, topic_required, default_topic,
+                   channel_metadata, owner_agent_name, owner_agent_project_id
+            FROM channels 
+            WHERE id = ?
         """, (channel_id,))
         
         row = await cursor.fetchone()
         if row:
             return {
                 'id': row[0],
-                'project_id': row[1],
-                'scope': row[2],
-                'name': row[3],
-                'description': row[4],
-                'created_at': row[5],
-                'is_default': row[6],
-                'is_archived': row[7]
+                'channel_type': row[1],
+                'access_type': row[2],
+                'scope': row[3],
+                'name': row[4],
+                'project_id': row[5],
+                'description': row[6],
+                'created_by': row[7],
+                'created_by_project_id': row[8],
+                'created_at': row[9],
+                'is_default': row[10],
+                'is_archived': row[11],
+                'topic_required': row[12],
+                'default_topic': row[13],
+                'channel_metadata': json.loads(row[14]) if row[14] else None,
+                'owner_agent_name': row[15],
+                'owner_agent_project_id': row[16]
             }
         return None
     
     @with_connection(writer=False)
-    async def list_channels(
-        self, 
-        conn,
-        scope: str = 'all',
-        project_id: Optional[str] = None,
-        include_archived: bool = False
-    ) -> List[Dict]:
+    async def get_agent_channels(self, conn,
+                                agent_name: str,
+                                agent_project_id: Optional[str] = None,
+                                include_archived: bool = False) -> List[Dict]:
+        """Get all channels accessible to an agent using the permission view"""
+        query = """
+            SELECT channel_id, channel_type, access_type, scope, 
+                   channel_name, description, channel_project_id
+            FROM agent_channels
+            WHERE agent_name = ? AND agent_project_id IS NOT DISTINCT FROM ?
         """
-        List channels based on scope
-        
-        Args:
-            scope: 'all', 'global', or 'project'
-            project_id: Project ID for project scope
-            include_archived: Include archived channels
-        """
-        query = "SELECT id, project_id, scope, name, description, is_default FROM channels WHERE 1=1"
-        params = []
         
         if not include_archived:
-            query += " AND is_archived = 0"
+            query += " AND is_archived = FALSE"
         
-        if scope == 'global':
-            query += " AND scope = 'global'"
-        elif scope == 'project' and project_id:
-            query += " AND project_id = ?"
-            params.append(project_id)
-        elif scope == 'all' and project_id:
-            query += " AND (scope = 'global' OR project_id = ?)"
-            params.append(project_id)
+        cursor = await conn.execute(query, (agent_name, agent_project_id))
+        rows = await cursor.fetchall()
         
-        query += " ORDER BY scope, name"
+        return [
+            {
+                'id': row[0],
+                'channel_type': row[1],
+                'access_type': row[2],
+                'scope': row[3],
+                'name': row[4],
+                'description': row[5],
+                'project_id': row[6]
+            }
+            for row in rows
+        ]
+    
+    # ============================================================================
+    # Message Management
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def send_message(self, conn,
+                         channel_id: str,
+                         sender_id: str,
+                         sender_project_id: Optional[str],
+                         content: str,
+                         metadata: Optional[Dict] = None,
+                         thread_id: Optional[str] = None) -> int:
+        """
+        Send a message to a channel (unified for regular channels and DMs)
+        
+        Returns:
+            Message ID
+        """
+        # Verify sender has access to the channel
+        cursor = await conn.execute("""
+            SELECT 1 FROM agent_channels
+            WHERE channel_id = ? AND agent_name = ? 
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (channel_id, sender_id, sender_project_id))
+        
+        if not await cursor.fetchone():
+            raise ValueError(f"Agent {sender_id} does not have access to channel {channel_id}")
+        
+        # Insert the message
+        cursor = await conn.execute("""
+            INSERT INTO messages 
+            (channel_id, sender_id, sender_project_id, content, metadata, thread_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (channel_id, sender_id, sender_project_id, content,
+              json.dumps(metadata) if metadata else None, thread_id))
+        
+        message_id = cursor.lastrowid
+        
+        self.logger.info(f"Message {message_id} sent to channel {channel_id} by {sender_id}")
+        return message_id
+    
+    @with_connection(writer=False)
+    async def get_messages(self, conn,
+                         agent_name: str,
+                         agent_project_id: Optional[str] = None,
+                         channel_id: Optional[str] = None,
+                         limit: int = 100,
+                         since: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get messages for an agent (only from accessible channels)
+        
+        Args:
+            agent_name: Agent requesting messages
+            agent_project_id: Agent's project ID
+            channel_id: Optional specific channel
+            limit: Maximum number of messages
+            since: Only messages after this timestamp
+        
+        Returns:
+            List of messages
+        """
+        # Build query using agent_channels view for permission checking
+        query = """
+            SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                   m.content, m.timestamp, m.thread_id, m.metadata,
+                   ac.channel_name, ac.channel_type, ac.scope
+            FROM messages m
+            INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+            WHERE ac.agent_name = ? AND ac.agent_project_id IS NOT DISTINCT FROM ?
+        """
+        params = [agent_name, agent_project_id]
+        
+        if channel_id:
+            query += " AND m.channel_id = ?"
+            params.append(channel_id)
+        
+        if since:
+            query += " AND m.timestamp > ?"
+            params.append(since.isoformat())
+        
+        query += " ORDER BY m.timestamp DESC LIMIT ?"
+        params.append(limit)
         
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
@@ -344,383 +525,507 @@ class DatabaseManager:
         return [
             {
                 'id': row[0],
-                'project_id': row[1],
-                'scope': row[2],
-                'name': row[3],
-                'description': row[4],
-                'is_default': row[5]
+                'channel_id': row[1],
+                'sender_id': row[2],
+                'sender_project_id': row[3],
+                'content': row[4],
+                'timestamp': row[5],
+                'thread_id': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {},
+                'channel_name': row[8],
+                'channel_type': row[9],
+                'scope': row[10]
             }
             for row in rows
         ]
     
-    # Agent Management
-    
-    @with_connection(writer=False)
-    async def validate_agent_for_scope(self, conn, agent_name: str, scope: str, project_id: Optional[str] = None) -> bool:
-        """Validate that an agent exists with the correct project context for the given scope"""
-        if scope == "global":
-            # For global scope, agent must exist with project_id=NULL
-            agent = await self.get_agent(agent_name, project_id=None)
-        else:  # project scope
-            # For project scope, agent must exist with matching project_id
-            agent = await self.get_agent(agent_name, project_id=project_id)
-        
-        return agent is not None
+    # ============================================================================
+    # DM Permission Management
+    # ============================================================================
     
     @with_connection(writer=True)
-    async def register_agent(self, conn, agent_name: str, description: str = "", project_id: Optional[str] = None):
-        """Register or update an agent and auto-provision notes channel"""
-        # Debug logging
-        self.logger.debug(f"register_agent called with: agent_name='{agent_name}', description='{description}', project_id='{project_id}'")
-        
-        # Register the agent
-        final_desc = description or f"Agent: {agent_name}"
-        self.logger.debug(f"Using final description: '{final_desc}'")
-        
+    async def set_dm_permission(self, conn,
+                               agent_name: str,
+                               agent_project_id: Optional[str],
+                               other_agent_name: str,
+                               other_agent_project_id: Optional[str],
+                               permission: str,
+                               reason: Optional[str] = None):
+        """Set DM permission (allow/block) between two agents"""
         await conn.execute("""
-            INSERT OR REPLACE INTO agents (name, description, project_id, last_active, status)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'online')
-        """, (agent_name, final_desc, project_id))
-        
-        # Auto-provision agent notes channel
-        await self._provision_agent_notes_channel(conn, agent_name, project_id)
+            INSERT OR REPLACE INTO dm_permissions
+            (agent_name, agent_project_id, other_agent_name, other_agent_project_id,
+             permission, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (agent_name, agent_project_id, other_agent_name, other_agent_project_id,
+              permission, reason))
     
     @with_connection(writer=True)
-    async def update_agent_status(self, conn, agent_name: str, status: str, project_id: Optional[str] = None):
-        """Update agent status"""
+    async def update_dm_policy(self, conn,
+                             agent_name: str,
+                             agent_project_id: Optional[str],
+                             dm_policy: str):
+        """Update an agent's DM policy (open/restricted/closed)"""
         await conn.execute("""
-            UPDATE agents SET status = ?, last_active = CURRENT_TIMESTAMP
-            WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
-        """, (status, agent_name, project_id, project_id))
+            UPDATE agents 
+            SET dm_policy = ?
+            WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+        """, (dm_policy, agent_name, agent_project_id))
+    
+    @with_connection(writer=True)
+    async def remove_dm_permission(self, conn,
+                                  agent_name: str,
+                                  agent_project_id: Optional[str],
+                                  other_agent_name: str,
+                                  other_agent_project_id: Optional[str]):
+        """Remove a DM permission between two agents"""
+        await conn.execute("""
+            DELETE FROM dm_permissions
+            WHERE agent_name = ? 
+              AND agent_project_id IS NOT DISTINCT FROM ?
+              AND other_agent_name = ?
+              AND other_agent_project_id IS NOT DISTINCT FROM ?
+        """, (agent_name, agent_project_id, other_agent_name, other_agent_project_id))
+    
+    @with_connection(writer=True)
+    async def update_agent(self, conn,
+                         agent_name: str,
+                         agent_project_id: Optional[str],
+                         **fields):
+        """Update agent fields"""
+        allowed_fields = {
+            'description', 'status', 'current_project_id',
+            'dm_policy', 'discoverable', 'metadata'
+        }
+        
+        update_fields = []
+        values = []
+        
+        for field, value in fields.items():
+            if field in allowed_fields:
+                if field == 'metadata' and not isinstance(value, str):
+                    value = json.dumps(value)
+                update_fields.append(f"{field} = ?")
+                values.append(value)
+        
+        if not update_fields:
+            return
+        
+        values.extend([agent_name, agent_project_id])
+        
+        await conn.execute(f"""
+            UPDATE agents
+            SET {', '.join(update_fields)},
+                last_active = CURRENT_TIMESTAMP
+            WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+        """, values)
     
     @with_connection(writer=False)
-    async def agent_exists(self, conn, agent_name: str, project_id: Optional[str] = None) -> bool:
-        """Check if an agent exists in the database"""
+    async def get_dm_permission_stats(self, conn,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str]) -> Dict[str, int]:
+        """Get DM permission statistics for an agent"""
         cursor = await conn.execute("""
-            SELECT COUNT(*) FROM agents 
-            WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
-        """, (agent_name, project_id, project_id))
+            SELECT 
+                SUM(CASE WHEN permission = 'block' THEN 1 ELSE 0 END) as blocked_count,
+                SUM(CASE WHEN permission = 'allow' THEN 1 ELSE 0 END) as allowed_count
+            FROM dm_permissions
+            WHERE agent_name = ?
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (agent_name, agent_project_id))
+        row = await cursor.fetchone()
+        blocked_count = row[0] or 0 if row else 0
+        allowed_count = row[1] or 0 if row else 0
+        
+        # Get agents that blocked this agent
+        cursor = await conn.execute("""
+            SELECT COUNT(*)
+            FROM dm_permissions
+            WHERE other_agent_name = ?
+              AND other_agent_project_id IS NOT DISTINCT FROM ?
+              AND permission = 'block'
+        """, (agent_name, agent_project_id))
+        blocked_by_count = (await cursor.fetchone())[0] or 0
+        
+        return {
+            'agents_blocked': blocked_count,
+            'agents_allowed': allowed_count,
+            'blocked_by_others': blocked_by_count
+        }
+    
+    # ============================================================================
+    # Subscription Management (for open channels)
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def subscribe_to_channel(self, conn,
+                                  agent_name: str,
+                                  agent_project_id: Optional[str],
+                                  channel_id: str):
+        """Subscribe an agent to an open channel"""
+        # Check if channel is open
+        cursor = await conn.execute(
+            "SELECT access_type FROM channels WHERE id = ?", (channel_id,)
+        )
+        row = await cursor.fetchone()
+        
+        if not row:
+            raise ValueError(f"Channel {channel_id} not found")
+        
+        if row[0] != 'open':
+            raise ValueError(f"Channel {channel_id} is not open for subscriptions. "
+                           f"Use add_channel_member for {row[0]} channels.")
+        
+        await conn.execute("""
+            INSERT OR REPLACE INTO subscriptions
+            (agent_name, agent_project_id, channel_id, subscribed_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        """, (agent_name, agent_project_id, channel_id))
+    
+    @with_connection(writer=True)
+    async def unsubscribe_from_channel(self, conn,
+                                      agent_name: str,
+                                      agent_project_id: Optional[str],
+                                      channel_id: str):
+        """Unsubscribe an agent from a channel"""
+        await conn.execute("""
+            DELETE FROM subscriptions
+            WHERE agent_name = ? AND agent_project_id IS NOT DISTINCT FROM ?
+              AND channel_id = ?
+        """, (agent_name, agent_project_id, channel_id))
+    
+    # ============================================================================
+    # Agent Discovery
+    # ============================================================================
+    
+    @with_connection(writer=False)
+    async def get_discoverable_agents(self, conn,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str] = None,
+                                     include_unavailable: bool = False) -> List[Dict]:
+        """
+        Get all agents discoverable by a given agent using the agent_discovery view.
+        
+        Args:
+            agent_name: Agent doing the discovery
+            agent_project_id: Agent's project ID
+            include_unavailable: Include agents with closed DM policy
+            
+        Returns:
+            List of discoverable agents with their DM availability
+        """
+        query = """
+            SELECT 
+                discoverable_agent as name,
+                discoverable_project_id as project_id,
+                discoverable_project_name as project_name,
+                discoverable_description as description,
+                discoverable_status as status,
+                discoverable_setting,
+                dm_policy,
+                dm_availability,
+                has_existing_dm
+            FROM agent_discovery
+            WHERE discovering_agent = ?
+              AND discovering_project_id IS NOT DISTINCT FROM ?
+              AND can_discover = 1
+        """
+        
+        params = [agent_name, agent_project_id]
+        
+        if not include_unavailable:
+            query += " AND dm_availability != 'unavailable'"
+        
+        query += """
+            ORDER BY 
+                -- Existing DMs first
+                has_existing_dm DESC,
+                -- Then by availability
+                CASE dm_availability
+                    WHEN 'available' THEN 1
+                    WHEN 'requires_permission' THEN 2
+                    WHEN 'blocked' THEN 3
+                    WHEN 'unavailable' THEN 4
+                END,
+                -- Then by name
+                name
+        """
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'name': row[0],
+                'project_id': row[1],
+                'project_name': row[2],
+                'description': row[3],
+                'status': row[4],
+                'discoverable': row[5],
+                'dm_policy': row[6],
+                'dm_availability': row[7],
+                'has_existing_dm': bool(row[8]),
+                'can_dm': row[7] in ['available', 'requires_permission']
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def check_can_discover_agent(self, conn,
+                                      discovering_agent: str,
+                                      discovering_project_id: Optional[str],
+                                      target_agent: str,
+                                      target_project_id: Optional[str]) -> bool:
+        """
+        Check if one agent can discover another using the agent_discovery view.
+        
+        Args:
+            discovering_agent: Agent trying to discover
+            discovering_project_id: Discovering agent's project
+            target_agent: Agent to be discovered
+            target_project_id: Target agent's project
+            
+        Returns:
+            True if target agent is discoverable by discovering agent
+        """
+        cursor = await conn.execute("""
+            SELECT can_discover
+            FROM agent_discovery
+            WHERE discovering_agent = ?
+              AND discovering_project_id IS NOT DISTINCT FROM ?
+              AND discoverable_agent = ?
+              AND discoverable_project_id IS NOT DISTINCT FROM ?
+        """, (discovering_agent, discovering_project_id, 
+              target_agent, target_project_id))
         
         row = await cursor.fetchone()
-        return row[0] > 0 if row else False
+        return bool(row[0]) if row else False
+    
+    # ============================================================================
+    # Mention Validation
+    # ============================================================================
     
     @with_connection(writer=False)
-    async def get_agent(self, conn, agent_name: str, project_id: Optional[str] = None) -> Optional[Dict]:
-        """Get agent information"""
+    async def check_agent_can_access_channel(self, conn,
+                                            agent_name: str,
+                                            agent_project_id: Optional[str],
+                                            channel_id: str) -> bool:
+        """
+        Check if an agent can access a specific channel.
+        Used for @mention validation - ensures mentioned agent can see the message.
+        
+        Simply checks if the agent appears in agent_channels view for this channel.
+        """
         cursor = await conn.execute("""
-            SELECT name, description, project_id, status, current_project_id, last_active
-            FROM agents WHERE name = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))
-        """, (agent_name, project_id, project_id))
+            SELECT 1
+            FROM agent_channels
+            WHERE agent_name = ?
+            AND agent_project_id IS NOT DISTINCT FROM ?
+            AND channel_id = ?
+        """, (agent_name, agent_project_id, channel_id))
+        
+        result = await cursor.fetchone()
+        return result is not None
+    
+    @with_connection(writer=False)
+    async def validate_mentions_batch(self, conn,
+                                     channel_id: str,
+                                     mentions: List[Dict[str, Optional[str]]]) -> Dict[str, List]:
+        """
+        Validate multiple @mentions for a channel.
+        
+        Args:
+            channel_id: The channel where the message will be posted
+            mentions: List of dicts with 'name' and 'project_id' keys
+        
+        Returns:
+            Dict with:
+            - 'valid': List of agents who can access the channel
+            - 'invalid': List of agents who cannot access the channel  
+            - 'unknown': List of agents who don't exist
+        """
+        if not mentions:
+            return {'valid': [], 'invalid': [], 'unknown': []}
+        
+        result = {'valid': [], 'invalid': [], 'unknown': []}
+        
+        # Check each mention
+        for mention in mentions:
+            agent_name = mention.get('name')
+            agent_project_id = mention.get('project_id')
+            
+            # Check if agent exists
+            cursor = await conn.execute("""
+                SELECT 1 FROM agents
+                WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
+            """, (agent_name, agent_project_id))
+            
+            exists = await cursor.fetchone()
+            if not exists:
+                result['unknown'].append(mention)
+                continue
+            
+            # Check if agent can access the channel
+            cursor = await conn.execute("""
+                SELECT 1 FROM agent_channels
+                WHERE agent_name = ?
+                AND agent_project_id IS NOT DISTINCT FROM ?
+                AND channel_id = ?
+            """, (agent_name, agent_project_id, channel_id))
+            
+            can_access = await cursor.fetchone()
+            if can_access:
+                result['valid'].append(mention)
+            else:
+                result['invalid'].append(mention)
+        
+        return result
+    
+    # ============================================================================
+    # Session Management
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def register_session(self, conn,
+                              session_id: str,
+                              project_id: Optional[str] = None,
+                              project_path: Optional[str] = None,
+                              project_name: Optional[str] = None,
+                              transcript_path: Optional[str] = None,
+                              scope: str = 'global',
+                              metadata: Optional[Dict] = None) -> str:
+        """
+        Register or update a Claude session.
+        
+        Args:
+            session_id: Unique session identifier
+            project_id: Associated project ID
+            project_path: Path to project (if applicable)
+            project_name: Human-readable project name
+            transcript_path: Path to transcript file
+            scope: 'global' or 'project'
+            metadata: Additional session metadata
+        
+        Returns:
+            session_id
+        """
+        metadata_str = json.dumps(metadata) if metadata else None
+        
+        await conn.execute("""
+            INSERT OR REPLACE INTO sessions 
+            (id, project_id, project_path, project_name, transcript_path, 
+             scope, updated_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        """, (session_id, project_id, project_path, project_name, 
+              transcript_path, scope, metadata_str))
+        
+        self.logger.info(f"Registered session: {session_id} (scope={scope})")
+        return session_id
+    
+    @with_connection(writer=True)
+    async def update_session(self, conn,
+                           session_id: str,
+                           **fields) -> bool:
+        """
+        Update session fields.
+        
+        Args:
+            session_id: Session ID to update
+            **fields: Fields to update (project_id, project_path, project_name,
+                     transcript_path, scope, metadata)
+        
+        Returns:
+            True if updated, False if session not found
+        """
+        allowed_fields = {
+            'project_id', 'project_path', 'project_name',
+            'transcript_path', 'scope', 'metadata'
+        }
+        
+        update_fields = []
+        values = []
+        
+        for field, value in fields.items():
+            if field in allowed_fields:
+                if field == 'metadata' and not isinstance(value, str):
+                    value = json.dumps(value)
+                update_fields.append(f"{field} = ?")
+                values.append(value)
+        
+        if not update_fields:
+            return False
+        
+        # Add session_id for WHERE clause
+        values.append(session_id)
+        
+        result = await conn.execute(f"""
+            UPDATE sessions
+            SET {', '.join(update_fields)},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, values)
+        
+        return result.rowcount > 0
+    
+    @with_connection(writer=False)
+    async def get_session(self, conn, session_id: str) -> Optional[Dict]:
+        """
+        Get session information.
+        
+        Args:
+            session_id: Session ID
+        
+        Returns:
+            Session dictionary or None if not found
+        """
+        cursor = await conn.execute("""
+            SELECT id, project_id, project_path, project_name, 
+                   transcript_path, scope, updated_at, metadata
+            FROM sessions
+            WHERE id = ?
+        """, (session_id,))
         
         row = await cursor.fetchone()
         if row:
             return {
-                'name': row[0],
-                'description': row[1],
-                'project_id': row[2],
-                'status': row[3],
-                'current_project_id': row[4],
-                'last_active': row[5]
+                'id': row[0],
+                'project_id': row[1],
+                'project_path': row[2],
+                'project_name': row[3],
+                'transcript_path': row[4],
+                'scope': row[5],
+                'updated_at': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {}
             }
         return None
     
     @with_connection(writer=False)
-    async def get_agents_by_scope(self, conn, project_id: Optional[str] = None, all_projects: bool = False, 
-                                  current_project_id: Optional[str] = None) -> List[Dict]:
+    async def get_active_sessions(self, conn,
+                                 project_id: Optional[str] = None,
+                                 hours: int = 24) -> List[Dict]:
         """
-        Get agents filtered by scope, respecting project link permissions.
+        Get recently active sessions.
         
         Args:
-            project_id: If None, get global agents. If specified, get agents for that project.
-            all_projects: If True and project_id is None, get agents from linked projects only
-            current_project_id: The current project context (for filtering linked projects)
+            project_id: Optional filter by project
+            hours: Number of hours to look back (default 24)
         
         Returns:
-            List of agent dictionaries with name, description, project_id
+            List of active session dictionaries
         """
-        if project_id:
-            # Get agents for specific project
-            cursor = await conn.execute("""
-                SELECT a.name, a.description, a.project_id, p.name as project_name
-                FROM agents a
-                LEFT JOIN projects p ON a.project_id = p.id
-                WHERE a.project_id = ?
-                ORDER BY a.name
-            """, (project_id,))
-        elif all_projects:
-            # Get agents from linked projects only (not all projects)
-            if current_project_id:
-                # Get linked project IDs
-                linked_projects = await self.get_linked_projects(current_project_id)
-                # Include current project
-                linked_projects.append(current_project_id)
-                
-                if linked_projects:
-                    placeholders = ','.join('?' * len(linked_projects))
-                    cursor = await conn.execute(f"""
-                        SELECT a.name, a.description, a.project_id, p.name as project_name
-                        FROM agents a
-                        LEFT JOIN projects p ON a.project_id = p.id
-                        WHERE a.project_id IN ({placeholders})
-                        ORDER BY p.name, a.name
-                    """, linked_projects)
-                else:
-                    # No linked projects, only show current project agents
-                    cursor = await conn.execute("""
-                        SELECT a.name, a.description, a.project_id, p.name as project_name
-                        FROM agents a
-                        LEFT JOIN projects p ON a.project_id = p.id
-                        WHERE a.project_id = ?
-                        ORDER BY a.name
-                    """, (current_project_id,))
-            else:
-                # No current project context, don't show any project agents
-                return []
-        else:
-            # Get global agents only
-            cursor = await conn.execute("""
-                SELECT name, description, project_id, NULL as project_name
-                FROM agents
-                WHERE project_id IS NULL
-                ORDER BY name
-            """)
-        
-        rows = await cursor.fetchall()
-        agents = []
-        for row in rows:
-            agents.append({
-                'name': row[0],
-                'description': row[1] or f"Agent: {row[0]}",
-                'project_id': row[2],
-                'project_name': row[3]
-            })
-        
-        return agents
-    
-    # Message Operations
-    
-    @with_connection(writer=True)
-    async def send_channel_message(
-        self,
-        conn,
-        channel_id: str,
-        sender_id: str,
-        content: str,
-        sender_project_id: Optional[str] = None,  # Agent's actual project_id
-        metadata: Optional[Dict] = None,
-        thread_id: Optional[str] = None
-    ) -> int:
-        """
-        Send a message to a channel (creates channel if it doesn't exist)
-        
-        Returns:
-            Message ID
-        """
-        # Parse channel_id to determine scope and project
-        if channel_id.startswith('global:'):
-            scope = 'global'
-            project_id = None
-            channel_name = channel_id.replace('global:', '')
-        elif channel_id.startswith('proj_'):
-            scope = 'project'
-            # Extract project_id from channel_id (e.g., proj_abc123:general)
-            parts = channel_id.split(':')
-            if len(parts) >= 2:
-                project_prefix = parts[0].replace('proj_', '')[:8]
-                channel_name = parts[1] if len(parts) > 1 else 'general'
-                # Need to look up full project_id from prefix
-                cursor = await conn.execute(
-                    "SELECT id FROM projects WHERE id LIKE ? LIMIT 1",
-                    (f"{project_prefix}%",)
-                )
-                row = await cursor.fetchone()
-                project_id = row[0] if row else None
-            else:
-                project_id = None
-                channel_name = 'general'
-        else:
-            # Default to global scope
-            scope = 'global'
-            project_id = None
-            channel_name = channel_id
-            channel_id = f'global:{channel_id}'
-        
-        # Ensure channel exists - need to call the method with conn
-        try:
-            await conn.execute("""
-                INSERT INTO channels (id, project_id, scope, name, description, 
-                                    created_by, created_by_project_id, is_default)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (channel_id, project_id, scope, channel_name, f"Channel: {channel_name}", 
-                  'system', None, False))
-        except sqlite3.IntegrityError:
-            # Channel already exists
-            pass
-        
-        # Send the message - validate sender exists with exact sender_id + sender_project_id combination
-        # sender_project_id can be None for global agents
-        
-        # Verify the agent exists with this exact combination
-        agent = await self.get_agent(sender_id, project_id=sender_project_id)
-        if not agent:
-            if sender_project_id is None:
-                raise ValueError(f"Global agent '{sender_id}' not found")
-            else:
-                raise ValueError(f"Agent '{sender_id}' with project_id '{sender_project_id}' not found")
-        
-        # For project channels, verify access permissions
-        if scope == 'project':
-            # Global agents (sender_project_id=None) can post to any project channel
-            # Project agents can only post to their own project's channels
-            if sender_project_id is not None and sender_project_id != project_id:
-                raise ValueError(f"Agent '{sender_id}' from project '{sender_project_id}' cannot post to channels in project '{project_id}'")
-        
-        metadata_json = json.dumps(metadata) if metadata else None
-        
-        cursor = await conn.execute("""
-            INSERT INTO messages (
-                project_id, channel_id, 
-                sender_id, sender_project_id,
-                recipient_id, recipient_project_id,
-                content, scope, thread_id, metadata
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            project_id, channel_id, 
-            sender_id, sender_project_id,  # Use the actual sender's project_id, not the channel's
-            None, None,
-            content, scope, thread_id, metadata_json
-        ))
-        
-        return cursor.lastrowid
-    
-    @with_connection(writer=True)
-    async def send_message(
-        self,
-        conn,
-        sender_id: str,
-        content: str,
-        channel_id: Optional[str] = None,
-        recipient_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        scope: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-        thread_id: Optional[str] = None
-    ) -> int:
-        """
-        Send a message to a channel or as a DM
-        
-        Returns:
-            Message ID
-        """
-        # Validate sender exists with correct project context
-        agent = await self.get_agent(sender_id, project_id=project_id)
-        if not agent:
-            raise ValueError(f"Agent '{sender_id}' not found in {'project ' + project_id if project_id else 'global'} context")
-        
-        metadata_json = json.dumps(metadata) if metadata else None
-        
-        cursor = await conn.execute("""
-            INSERT INTO messages (
-                project_id, channel_id, 
-                sender_id, sender_project_id,
-                recipient_id, recipient_project_id,
-                content, scope, thread_id, metadata
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            project_id, channel_id, 
-            sender_id, project_id,  # sender's project_id is the current project
-            recipient_id, project_id if recipient_id else None,  # recipient's project_id (same project for DMs)
-            content, scope, thread_id, metadata_json
-        ))
-        
-        return cursor.lastrowid
-    
-    @with_connection(writer=False)
-    async def get_channel_messages(
-        self,
-        conn,
-        channel_id: str,
-        since: Optional[str] = None,
-        limit: int = 100
-    ) -> List[Dict]:
-        """Get messages from a channel"""
         query = """
-            SELECT m.id, m.sender_id, m.content, m.timestamp, m.thread_id, m.metadata,
-                   COALESCE(a.name, m.sender_id) as sender_name
-            FROM messages m
-            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
-            WHERE m.channel_id = ?
+            SELECT id, project_id, project_path, project_name,
+                   transcript_path, scope, updated_at, metadata
+            FROM sessions
+            WHERE updated_at > datetime('now', ? || ' hours')
         """
-        params = [channel_id]
+        params = [-hours]
         
-        if since:
-            query += " AND m.timestamp > ?"
-            params.append(since)
-        else:
-            # Default to last 7 days
-            week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-            query += " AND m.timestamp > ?"
-            params.append(week_ago)
-        
-        query += " ORDER BY m.timestamp DESC LIMIT ?"
-        params.append(limit)
-        
-        cursor = await conn.execute(query, params)
-        rows = await cursor.fetchall()
-        
-        return [
-            {
-                'id': row[0],
-                'sender_id': row[1],
-                'content': row[2],
-                'timestamp': row[3],
-                'thread_id': row[4],
-                'metadata': json.loads(row[5]) if row[5] else {},
-                'sender_name': row[6]
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def get_direct_messages(
-        self,
-        conn,
-        agent_id: str,
-        scope: str = 'all',
-        project_id: Optional[str] = None,
-        since: Optional[str] = None,
-        limit: int = 100
-    ) -> List[Dict]:
-        """Get direct messages for an agent"""
-        query = """
-            SELECT m.id, m.sender_id, m.recipient_id, m.content, m.timestamp, 
-                   m.scope, m.metadata, COALESCE(a.name, m.sender_id) as sender_name
-            FROM messages m
-            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
-            WHERE m.channel_id IS NULL
-            AND (m.recipient_id = ? OR m.sender_id = ?)
-        """
-        params = [agent_id, agent_id]
-        
-        if scope == 'global':
-            query += " AND m.scope = 'global'"
-        elif scope == 'project' and project_id:
-            query += " AND m.project_id = ?"
+        if project_id is not None:
+            query += " AND project_id = ?"
             params.append(project_id)
         
-        if since:
-            query += " AND m.timestamp > ?"
-            params.append(since)
-        else:
-            # Default to last 7 days
-            week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-            query += " AND m.timestamp > ?"
-            params.append(week_ago)
-        
-        query += " ORDER BY m.timestamp DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY updated_at DESC"
         
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
@@ -728,53 +1033,167 @@ class DatabaseManager:
         return [
             {
                 'id': row[0],
-                'sender_id': row[1],
-                'recipient_id': row[2],
-                'content': row[3],
-                'timestamp': row[4],
+                'project_id': row[1],
+                'project_path': row[2],
+                'project_name': row[3],
+                'transcript_path': row[4],
                 'scope': row[5],
-                'metadata': json.loads(row[6]) if row[6] else {},
-                'sender_name': row[7],
-                'is_sent': row[1] == agent_id
+                'updated_at': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {}
             }
             for row in rows
         ]
     
-    @with_connection(writer=False)
-    async def search_messages(
-        self,
-        conn,
-        query: str,
-        agent_id: str,
-        scope: str = 'all',
-        project_id: Optional[str] = None,
-        limit: int = 20
-    ) -> List[Dict]:
-        """Search messages using full-text search"""
-        # This would use the FTS5 virtual table
-        # For now, simple LIKE search
-        search_query = """
-            SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
-                   c.name as channel_name, COALESCE(a.name, m.sender_id) as sender_name
-            FROM messages m
-            LEFT JOIN channels c ON m.channel_id = c.id
-            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
-            WHERE m.content LIKE ?
+    @with_connection(writer=True)
+    async def cleanup_old_sessions(self, conn, hours: int = 24) -> int:
         """
-        params = [f'%{query}%']
+        Clean up sessions older than specified hours.
         
-        if scope == 'global':
-            search_query += " AND m.scope = 'global'"
-        elif scope == 'project' and project_id:
-            search_query += " AND m.project_id = ?"
-            params.append(project_id)
+        Args:
+            hours: Number of hours after which to clean up sessions
         
-        search_query += " ORDER BY m.timestamp DESC LIMIT ?"
-        params.append(limit)
+        Returns:
+            Number of sessions deleted
+        """
+        result = await conn.execute("""
+            DELETE FROM sessions
+            WHERE updated_at < datetime('now', ? || ' hours')
+        """, (-hours,))
         
-        cursor = await conn.execute(search_query, params)
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            self.logger.info(f"Cleaned up {deleted_count} old sessions")
+        
+        return deleted_count
+    
+    # ============================================================================
+    # Tool Call Deduplication
+    # ============================================================================
+    
+    @with_connection(writer=True)
+    async def record_tool_call(self, conn,
+                              session_id: str,
+                              tool_name: str,
+                              tool_inputs: Dict,
+                              dedup_window_minutes: int = 10) -> bool:
+        """
+        Record a tool call for deduplication.
+        
+        Args:
+            session_id: Session ID
+            tool_name: Name of the tool called
+            tool_inputs: Tool input parameters
+            dedup_window_minutes: Minutes to look back for duplicates
+        
+        Returns:
+            True if this is a new tool call, False if duplicate detected
+        """
+        # Generate hash of tool inputs for comparison
+        inputs_str = json.dumps(tool_inputs, sort_keys=True)
+        inputs_hash = hashlib.sha256(inputs_str.encode()).hexdigest()
+        
+        # Check for recent duplicate
+        cursor = await conn.execute("""
+            SELECT id FROM tool_calls
+            WHERE session_id = ?
+              AND tool_name = ?
+              AND tool_inputs_hash = ?
+              AND called_at > datetime('now', ? || ' minutes')
+        """, (session_id, tool_name, inputs_hash, -dedup_window_minutes))
+        
+        if await cursor.fetchone():
+            self.logger.debug(f"Duplicate tool call detected: {tool_name} in session {session_id}")
+            return False
+        
+        # Record new tool call
+        await conn.execute("""
+            INSERT INTO tool_calls 
+            (session_id, tool_name, tool_inputs_hash, tool_inputs, called_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (session_id, tool_name, inputs_hash, inputs_str))
+        
+        return True
+    
+    @with_connection(writer=False)
+    async def get_recent_tool_calls(self, conn,
+                                   session_id: str,
+                                   minutes: int = 10) -> List[Dict]:
+        """
+        Get recent tool calls for a session.
+        
+        Args:
+            session_id: Session ID
+            minutes: Number of minutes to look back
+        
+        Returns:
+            List of recent tool calls
+        """
+        cursor = await conn.execute("""
+            SELECT id, tool_name, tool_inputs, called_at
+            FROM tool_calls
+            WHERE session_id = ?
+              AND called_at > datetime('now', ? || ' minutes')
+            ORDER BY called_at DESC
+        """, (session_id, -minutes))
+        
         rows = await cursor.fetchall()
+        return [
+            {
+                'id': row[0],
+                'tool_name': row[1],
+                'tool_inputs': json.loads(row[2]),
+                'called_at': row[3]
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=True)
+    async def cleanup_old_tool_calls(self, conn, minutes: int = 10) -> int:
+        """
+        Clean up tool calls older than specified minutes.
         
+        Args:
+            minutes: Number of minutes after which to clean up tool calls
+        
+        Returns:
+            Number of tool calls deleted
+        """
+        result = await conn.execute("""
+            DELETE FROM tool_calls
+            WHERE called_at < datetime('now', ? || ' minutes')
+        """, (-minutes,))
+        
+        deleted_count = result.rowcount
+        if deleted_count > 0:
+            self.logger.debug(f"Cleaned up {deleted_count} old tool calls")
+        
+        return deleted_count
+    
+    # ============================================================================
+    # Search and Query
+    # ============================================================================
+    
+    @with_connection(writer=False)
+    async def search_messages(self, conn,
+                            agent_name: str,
+                            agent_project_id: Optional[str],
+                            query: str,
+                            limit: int = 50) -> List[Dict]:
+        """Search messages in accessible channels using FTS"""
+        cursor = await conn.execute("""
+            SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
+                   ac.channel_name, ac.channel_type
+            FROM messages m
+            INNER JOIN messages_fts fts ON m.id = fts.rowid
+            INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+            WHERE fts.content MATCH ?
+              AND ac.agent_name = ? 
+              AND ac.agent_project_id IS NOT DISTINCT FROM ?
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+        """, (query, agent_name, agent_project_id, limit))
+        
+        rows = await cursor.fetchall()
         return [
             {
                 'id': row[0],
@@ -783,440 +1202,183 @@ class DatabaseManager:
                 'content': row[3],
                 'timestamp': row[4],
                 'channel_name': row[5],
-                'sender_name': row[6]
+                'channel_type': row[6]
             }
             for row in rows
         ]
     
-    # Read Receipt Management
-    
-    @with_connection(writer=True)
-    async def mark_messages_read(self, conn, agent_id: str, message_ids: List[int]):
-        """Mark messages as read"""
-        for msg_id in message_ids:
-            try:
-                await conn.execute("""
-                    INSERT INTO read_receipts (agent_id, message_id)
-                    VALUES (?, ?)
-                """, (agent_id, msg_id))
-            except sqlite3.IntegrityError:
-                # Already marked as read
-                pass
+    # ============================================================================
+    # Message CRUD Operations
+    # ============================================================================
     
     @with_connection(writer=False)
-    async def get_unread_count(self, conn, agent_id: str) -> int:
-        """Get count of unread messages for an agent"""
-        cursor = await conn.execute("""
-            SELECT COUNT(*) FROM messages m
-            WHERE m.id NOT IN (
-                SELECT message_id FROM read_receipts WHERE agent_id = ?
-            )
-            AND (
-                m.recipient_id = ?
-                OR m.channel_id IN (
-                    -- This would need to check agent's subscriptions
-                    SELECT id FROM channels WHERE scope = 'global'
-                )
-            )
-        """, (agent_id, agent_id))
+    async def get_message(self, conn,
+                         message_id: int,
+                         agent_name: Optional[str] = None,
+                         agent_project_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get a specific message by ID.
+        
+        Args:
+            message_id: The message ID
+            agent_name: Optional agent requesting (for permission check)
+            agent_project_id: Optional agent's project ID
+        
+        Returns:
+            Message dict or None if not found/not accessible
+        """
+        if agent_name:
+            # Check permissions using agent_channels view
+            cursor = await conn.execute("""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.topic_name, m.ai_metadata, m.confidence, m.model_version,
+                       m.intent_type, m.is_edited, m.edited_at,
+                       c.channel_type, c.access_type, c.scope, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+                WHERE m.id = ?
+                  AND ac.agent_name = ?
+                  AND ac.agent_project_id IS NOT DISTINCT FROM ?
+            """, (message_id, agent_name, agent_project_id))
+        else:
+            # No permission check - return any message
+            cursor = await conn.execute("""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.topic_name, m.ai_metadata, m.confidence, m.model_version,
+                       m.intent_type, m.is_edited, m.edited_at,
+                       c.channel_type, c.access_type, c.scope, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                WHERE m.id = ?
+            """, (message_id,))
         
         row = await cursor.fetchone()
-        return row[0] if row else 0
+        if not row:
+            return None
+        
+        return {
+            'id': row[0],
+            'channel_id': row[1],
+            'sender_id': row[2],
+            'sender_project_id': row[3],
+            'content': row[4],
+            'timestamp': row[5],
+            'thread_id': row[6],
+            'metadata': row[7],
+            'topic_name': row[8],
+            'ai_metadata': row[9],
+            'confidence': row[10],
+            'model_version': row[11],
+            'intent_type': row[12],
+            'is_edited': row[13],
+            'edited_at': row[14],
+            'channel_type': row[15],
+            'access_type': row[16],
+            'scope': row[17],
+            'channel_name': row[18]
+        }
     
-    # Thread Management
-    
-    @with_connection(writer=False)
-    async def get_thread_messages(self, conn, thread_id: str) -> List[Dict]:
-        """Get all messages in a thread"""
+    @with_connection(writer=True)
+    async def update_message(self, conn,
+                           message_id: int,
+                           content: str,
+                           agent_name: str,
+                           agent_project_id: Optional[str] = None) -> bool:
+        """
+        Update a message's content.
+        
+        Args:
+            message_id: The message ID to update
+            content: New content
+            agent_name: Agent requesting the update
+            agent_project_id: Agent's project ID
+        
+        Returns:
+            True if updated, False if not found or not authorized
+        """
+        # Verify the agent is the sender
         cursor = await conn.execute("""
-            SELECT m.id, m.sender_id, m.content, m.timestamp, m.metadata,
-                   COALESCE(a.name, m.sender_id) as sender_name
+            SELECT sender_id, sender_project_id
+            FROM messages
+            WHERE id = ?
+        """, (message_id,))
+        
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        
+        sender_id, sender_project_id = row
+        if sender_id != agent_name or sender_project_id != agent_project_id:
+            return False  # Not authorized to edit
+        
+        # Update the message
+        await conn.execute("""
+            UPDATE messages
+            SET content = ?,
+                is_edited = TRUE,
+                edited_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (content, message_id))
+        
+        return True
+    
+    @with_connection(writer=True)
+    async def delete_message(self, conn,
+                           message_id: int,
+                           agent_name: str,
+                           agent_project_id: Optional[str] = None) -> bool:
+        """
+        Delete a message (soft delete by default).
+        
+        Args:
+            message_id: The message ID to delete
+            agent_name: Agent requesting deletion
+            agent_project_id: Agent's project ID
+        
+        Returns:
+            True if deleted, False if not found or not authorized
+        """
+        # Verify the agent is the sender or has admin rights
+        cursor = await conn.execute("""
+            SELECT m.sender_id, m.sender_project_id, m.channel_id,
+                   cm.role
             FROM messages m
-            LEFT JOIN agents a ON m.sender_id = a.name AND m.sender_project_id = a.project_id
-            WHERE m.thread_id = ?
-            ORDER BY m.timestamp ASC
-        """, (thread_id,))
-        
-        rows = await cursor.fetchall()
-        
-        return [
-            {
-                'id': row[0],
-                'sender_id': row[1],
-                'content': row[2],
-                'timestamp': row[3],
-                'metadata': json.loads(row[4]) if row[4] else {},
-                'sender_name': row[5]
-            }
-            for row in rows
-        ]
-    
-    # Additional methods for channel management
-    @with_connection(writer=False)
-    async def get_channels_by_scope(self, conn, scope: str, project_id: Optional[str] = None) -> List[Dict]:
-        """Get all channels for a given scope"""
-        if scope == 'global':
-            cursor = await conn.execute("""
-                SELECT id, name, description, is_default, is_archived, created_at
-                FROM channels
-                WHERE scope = 'global'
-                ORDER BY name
-            """)
-        elif scope == 'project' and project_id:
-            cursor = await conn.execute("""
-                SELECT id, name, description, is_default, is_archived, created_at
-                FROM channels
-                WHERE scope = 'project' AND project_id = ?
-                ORDER BY name
-            """, (project_id,))
-        else:
-            return []
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'name': row[1],
-                'description': row[2],
-                'is_default': row[3],
-                'is_archived': row[4],
-                'created_at': row[5]
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def channel_exists(self, conn, channel_id: str) -> bool:
-        """Check if a channel exists"""
-        cursor = await conn.execute(
-            "SELECT 1 FROM channels WHERE id = ?",
-            (channel_id,)
-        )
-        row = await cursor.fetchone()
-        return row is not None
-    
-    @with_connection(writer=True)
-    async def create_channel(self, conn, channel_id: str, project_id: Optional[str], 
-                            scope: str, name: str, description: str,
-                            created_by: str, created_by_project_id: Optional[str] = None, 
-                            is_default: bool = False) -> bool:
-        """Create a new channel"""
-        try:
-            await conn.execute("""
-                INSERT INTO channels (id, project_id, scope, name, description, 
-                                    created_by, created_by_project_id, is_default, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            """, (channel_id, project_id, scope, name, description, created_by, created_by_project_id, is_default))
-            return True
-        except Exception as e:
-            # Channel might already exist or other error
-            return False
-    
-    @with_connection(writer=True)
-    async def add_subscription(self, conn, agent_name: str, channel_id: str, 
-                              agent_project_id: Optional[str] = None,
-                              source: str = 'manual') -> bool:
-        """Add a subscription to the database"""
-        try:
-            # Ensure channel exists
-            cursor = await conn.execute(
-                "SELECT 1 FROM channels WHERE id = ?", (channel_id,)
-            )
-            channel_exists = await cursor.fetchone()
-            if not channel_exists:
-                return False
-            
-            # Add subscription
-            await conn.execute("""
-                INSERT OR REPLACE INTO subscriptions 
-                (agent_name, agent_project_id, channel_id, source, subscribed_at)
-                VALUES (?, ?, ?, ?, datetime('now'))
-            """, (agent_name, agent_project_id, channel_id, source))
-            
-            return True
-        except Exception as e:
-            print(f"Error adding subscription: {e}")
-            return False
-    
-    @with_connection(writer=True)
-    async def remove_subscription(self, conn, agent_name: str, channel_id: str,
-                                  agent_project_id: Optional[str] = None) -> bool:
-        """Remove a subscription from the database"""
-        try:
-            await conn.execute("""
-                DELETE FROM subscriptions 
-                WHERE agent_name = ? AND agent_project_id IS ? AND channel_id = ?
-            """, (agent_name, agent_project_id, channel_id))
-            
-            return True
-        except Exception as e:
-            print(f"Error removing subscription: {e}")
-            return False
-    
-    @with_connection(writer=False)
-    async def list_all_projects(self, conn) -> List[Dict]:
-        """List all registered projects"""
-        cursor = await conn.execute("""
-            SELECT id, path, name, created_at, last_active, metadata
-            FROM projects
-            ORDER BY last_active DESC NULLS LAST, name
-        """)
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'path': row[1],
-                'name': row[2],
-                'created_at': row[3],
-                'last_active': row[4],
-                'metadata': json.loads(row[5]) if row[5] else {}
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def list_all_agents(self, conn) -> List[Dict]:
-        """List all registered agents"""
-        cursor = await conn.execute("""
-            SELECT name, description, status, current_project_id,
-                   last_active, created_at, project_id
-            FROM agents
-            ORDER BY name
-        """)
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'name': row[0],
-                'description': row[1],
-                'status': row[2],
-                'current_project_id': row[3],
-                'last_active': row[4],
-                'created_at': row[5],
-                'project_id': row[6]
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def list_all_channels(self, conn) -> List[Dict]:
-        """List all channels across all scopes"""
-        cursor = await conn.execute("""
-            SELECT c.id, c.project_id, c.scope, c.name, c.description,
-                   c.created_by, c.created_at, c.is_default, c.is_archived,
-                   p.name as project_name
-            FROM channels c
-            LEFT JOIN projects p ON c.project_id = p.id
-            ORDER BY c.scope, c.name
-        """)
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'project_id': row[1],
-                'scope': row[2],
-                'name': row[3],
-                'description': row[4],
-                'created_by': row[5],
-                'created_at': row[6],
-                'is_default': row[7],
-                'is_archived': row[8],
-                'project_name': row[9]
-            }
-            for row in rows
-        ]
-    
-    # Agent Notes Channel Management
-    
-    def _get_agent_notes_channel_id(self, agent_name: str, project_id: Optional[str] = None) -> str:
-        """Generate the channel ID for an agent's notes channel"""
-        if project_id:
-            return f"agent-notes:{agent_name}:proj_{project_id[:8]}"
-        return f"agent-notes:{agent_name}:global"
-    
-    async def _provision_agent_notes_channel(self, conn, agent_name: str, project_id: Optional[str] = None):
-        """Auto-provision a notes channel for an agent"""
-        channel_id = self._get_agent_notes_channel_id(agent_name, project_id)
-        channel_name = f"agent-notes-{agent_name}"
-        
-        # Check if channel already exists
-        cursor = await conn.execute("""
-            SELECT id FROM channels WHERE id = ?
-        """, (channel_id,))
-        
-        if await cursor.fetchone():
-            return  # Channel already exists
-        
-        # Create the notes channel
-        scope = 'project' if project_id else 'global'
-        await conn.execute("""
-            INSERT INTO channels (
-                id, project_id, scope, name, description, 
-                created_by, created_by_project_id, channel_type,
-                owner_agent_name, owner_agent_project_id
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            channel_id, project_id, scope, channel_name,
-            f"Private notes for {agent_name}",
-            agent_name, project_id, 'agent-notes',
-            agent_name, project_id
-        ))
-        
-        # Auto-subscribe the agent to their notes channel
-        await conn.execute("""
-            INSERT OR IGNORE INTO subscriptions (
-                agent_name, agent_project_id, channel_id, source
-            )
-            VALUES (?, ?, ?, 'auto_notes')
-        """, (agent_name, project_id, channel_id))
-    
-    @with_connection(writer=True)
-    async def write_note(self, conn, agent_name: str, agent_project_id: Optional[str], 
-                         content: str, tags: List[str] = None, session_id: Optional[str] = None,
-                         metadata: Optional[Dict] = None):
-        """Write a note to an agent's notes channel"""
-        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
-        scope = 'project' if agent_project_id else 'global'
-        
-        # Ensure notes channel exists
-        await self._provision_agent_notes_channel(conn, agent_name, agent_project_id)
-        
-        # Insert the note
-        cursor = await conn.execute("""
-            INSERT INTO messages (
-                channel_id, sender_id, sender_project_id, content, 
-                scope, tags, session_id, metadata
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-        """, (
-            channel_id, agent_name, agent_project_id, content,
-            scope, json.dumps(tags) if tags else None, session_id,
-            json.dumps(metadata) if metadata else None
-        ))
+            LEFT JOIN channel_members cm ON 
+                m.channel_id = cm.channel_id
+                AND cm.agent_name = ?
+                AND cm.agent_project_id IS NOT DISTINCT FROM ?
+            WHERE m.id = ?
+        """, (agent_name, agent_project_id, message_id))
         
         row = await cursor.fetchone()
-        return row[0] if row else None
-    
-    @with_connection(writer=False)
-    async def search_notes(self, conn, agent_name: str, agent_project_id: Optional[str],
-                           query: Optional[str] = None, tags: Optional[List[str]] = None,
-                           since: Optional[datetime] = None, limit: int = 50) -> List[Dict]:
-        """Search an agent's own notes"""
-        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
+        if not row:
+            return False
         
-        # Build query
-        sql_parts = ["SELECT id, content, tags, timestamp, session_id, metadata FROM messages WHERE channel_id = ?"]
-        params = [channel_id]
+        sender_id, sender_project_id, channel_id, member_role = row
         
-        if query:
-            sql_parts.append("AND content LIKE ?")
-            params.append(f"%{query}%")
+        # Check authorization: sender or channel admin
+        is_sender = (sender_id == agent_name and sender_project_id == agent_project_id)
+        is_admin = member_role in ('owner', 'admin')
         
-        if tags:
-            # Search for any of the provided tags
-            tag_conditions = []
-            for tag in tags:
-                tag_conditions.append("tags LIKE ?")
-                params.append(f'%"{tag}"%')
-            sql_parts.append(f"AND ({' OR '.join(tag_conditions)})")
+        if not (is_sender or is_admin):
+            return False
         
-        if since:
-            sql_parts.append("AND timestamp >= ?")
-            params.append(since.isoformat())
+        # Perform soft delete by updating content
+        await conn.execute("""
+            UPDATE messages
+            SET content = '[Message deleted]',
+                is_edited = TRUE,
+                edited_at = CURRENT_TIMESTAMP,
+                metadata = json_set(
+                    COALESCE(metadata, '{}'),
+                    '$.deleted', true,
+                    '$.deleted_by', ?,
+                    '$.deleted_at', datetime('now')
+                )
+            WHERE id = ?
+        """, (agent_name, message_id))
         
-        sql_parts.append("ORDER BY timestamp DESC LIMIT ?")
-        params.append(limit)
-        
-        cursor = await conn.execute(" ".join(sql_parts), params)
-        rows = await cursor.fetchall()
-        
-        return [
-            {
-                'id': row[0],
-                'content': row[1],
-                'tags': json.loads(row[2]) if row[2] else [],
-                'timestamp': row[3],
-                'session_id': row[4],
-                'metadata': json.loads(row[5]) if row[5] else {}
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def get_recent_notes(self, conn, agent_name: str, agent_project_id: Optional[str],
-                               limit: int = 20, session_id: Optional[str] = None) -> List[Dict]:
-        """Get recent notes for an agent"""
-        channel_id = self._get_agent_notes_channel_id(agent_name, agent_project_id)
-        
-        if session_id:
-            # Get notes from a specific session
-            cursor = await conn.execute("""
-                SELECT id, content, tags, timestamp, session_id, metadata
-                FROM messages
-                WHERE channel_id = ? AND session_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (channel_id, session_id, limit))
-        else:
-            # Get most recent notes
-            cursor = await conn.execute("""
-                SELECT id, content, tags, timestamp, session_id, metadata
-                FROM messages
-                WHERE channel_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (channel_id, limit))
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'content': row[1],
-                'tags': json.loads(row[2]) if row[2] else [],
-                'timestamp': row[3],
-                'session_id': row[4],
-                'metadata': json.loads(row[5]) if row[5] else {}
-            }
-            for row in rows
-        ]
-    
-    @with_connection(writer=False)
-    async def peek_agent_notes(self, conn, target_agent_name: str, target_project_id: Optional[str],
-                               query: Optional[str] = None, limit: int = 20) -> List[Dict]:
-        """Peek at another agent's notes (for META agents or debugging)"""
-        channel_id = self._get_agent_notes_channel_id(target_agent_name, target_project_id)
-        
-        if query:
-            cursor = await conn.execute("""
-                SELECT id, content, tags, timestamp, session_id, metadata
-                FROM messages
-                WHERE channel_id = ? AND content LIKE ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (channel_id, f"%{query}%", limit))
-        else:
-            cursor = await conn.execute("""
-                SELECT id, content, tags, timestamp, session_id, metadata
-                FROM messages
-                WHERE channel_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """, (channel_id, limit))
-        
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'content': row[1],
-                'tags': json.loads(row[2]) if row[2] else [],
-                'timestamp': row[3],
-                'session_id': row[4],
-                'metadata': json.loads(row[5]) if row[5] else {},
-                'agent': target_agent_name  # Include whose notes these are
-            }
-            for row in rows
-        ]
+        return True

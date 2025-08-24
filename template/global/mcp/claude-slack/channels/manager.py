@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """
 Channel Manager for Claude-Slack
+Manages channels using DatabaseManager for all database operations
+Phase 2 Implementation
 
-Manages channels as entities without knowledge of subscriptions.
-
-Responsibilities:
-- Create, read, update, delete channels
-- Manage channel metadata (name, description, scope)
-- Apply default channels from configuration
-- Validate channel names and IDs
-- NO knowledge of subscriptions or who is subscribed
+This manager acts as a higher-level abstraction over DatabaseManager,
+focusing on channel-specific business logic and validation.
 """
 
 import os
 import sys
-import json
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass
+from enum import Enum
 
 # Add parent directory to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,10 +21,13 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from db.db_helpers import aconnect
+    from db.manager import DatabaseManager
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
     print(f"Import error in ChannelManager: {e}", file=sys.stderr)
-    aconnect = None
+    DatabaseManager = None
+    DatabaseInitializer = object  # Fallback to object if not available
+    ensure_db_initialized = lambda f: f  # No-op decorator
 
 try:
     from config_manager import get_config_manager
@@ -38,32 +37,50 @@ except ImportError:
 try:
     from log_manager import get_logger
 except ImportError:
-    # Fallback to standard logging if new logging system not available
     import logging
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
+
+class ChannelType(Enum):
+    """Channel types in the unified system"""
+    CHANNEL = 'channel'
+    DIRECT = 'direct'
+
+
+class AccessType(Enum):
+    """Channel access types"""
+    OPEN = 'open'        # Anyone can subscribe
+    MEMBERS = 'members'  # Invite-only
+    PRIVATE = 'private'  # Fixed membership (DMs)
+
+
 @dataclass
-class Channel:
-    """Data class representing a channel"""
-    id: str  # Full channel ID (e.g., "global:general" or "proj_abc123:dev")
-    name: str  # Channel name without prefix (e.g., "general", "dev")
+class ChannelV3:
+    """Data class representing a channel in v3"""
+    id: str  # Full channel ID
+    channel_type: ChannelType
+    access_type: AccessType
     scope: str  # 'global' or 'project'
-    project_id: Optional[str]  # Project ID for project channels
+    name: str  # Channel name or DM identifier
+    project_id: Optional[str]
     description: Optional[str]
     created_by: Optional[str]
+    created_by_project_id: Optional[str]
     created_at: datetime
     is_default: bool = False
     is_archived: bool = False
+    topic_required: bool = False  # Pre-allocated for Phase 1
+    default_topic: str = 'general'  # Pre-allocated for Phase 1
     metadata: Optional[Dict[str, Any]] = None
 
 
-class ChannelManager:
+class ChannelManager(DatabaseInitializer):
     """
-    Manages channels as standalone entities.
+    Manages channels using DatabaseManager.
     
-    This manager handles all channel CRUD operations without any knowledge
-    of subscriptions. It purely manages channels as resources.
+    This manager provides channel-specific operations and business logic,
+    delegating all database operations to DatabaseManager.
     """
     
     def __init__(self, db_path: str):
@@ -73,8 +90,19 @@ class ChannelManager:
         Args:
             db_path: Path to SQLite database
         """
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
+        
         self.db_path = db_path
         self.logger = get_logger('ChannelManager', component='manager')
+        
+        if DatabaseManager:
+            self.db = DatabaseManager(db_path)
+            self.db_manager = self.db  # Required for DatabaseInitializer mixin
+        else:
+            self.db = None
+            self.db_manager = None
+            self.logger.error("DatabaseManager not available")
     
     @staticmethod
     def get_scoped_channel_id(name: str, scope: str, project_id: Optional[str] = None) -> str:
@@ -95,30 +123,52 @@ class ChannelManager:
             project_id_short = project_id[:8] if len(project_id) > 8 else project_id
             return f"proj_{project_id_short}:{name}"
         else:
-            # Fallback to global if no project context
             return f"global:{name}"
     
     @staticmethod
-    def parse_channel_id(channel_id: str) -> tuple[str, str, Optional[str]]:
+    def parse_channel_id(channel_id: str) -> Dict[str, Any]:
         """
-        Parse a full channel ID into its components.
+        Parse a channel ID to determine its type and components.
         
         Args:
-            channel_id: Full channel ID (e.g., "global:general" or "proj_abc123:dev")
+            channel_id: Full channel ID
             
         Returns:
-            Tuple of (scope, name, project_id_short)
+            Dictionary with parsed components
         """
-        if channel_id.startswith('global:'):
-            return 'global', channel_id[7:], None
+        if channel_id.startswith('dm:'):
+            # DM channel
+            parts = channel_id[3:].split(':')
+            if len(parts) >= 4:
+                return {
+                    'type': 'direct',
+                    'agent1_name': parts[0],
+                    'agent1_project_id': parts[1] if parts[1] else None,
+                    'agent2_name': parts[2],
+                    'agent2_project_id': parts[3] if len(parts) > 3 and parts[3] else None
+                }
+        elif channel_id.startswith('global:'):
+            # Global channel
+            return {
+                'type': 'channel',
+                'scope': 'global',
+                'name': channel_id[7:],
+                'project_id': None
+            }
         elif channel_id.startswith('proj_'):
+            # Project channel
             parts = channel_id.split(':', 1)
             if len(parts) == 2:
                 project_part = parts[0][5:]  # Remove 'proj_' prefix
-                return 'project', parts[1], project_part
+                return {
+                    'type': 'channel',
+                    'scope': 'project',
+                    'name': parts[1],
+                    'project_id_short': project_part
+                }
         
-        # Default fallback
-        return 'global', channel_id, None
+        # Unknown format
+        return {'type': 'unknown', 'raw': channel_id}
     
     @staticmethod
     def validate_channel_name(name: str) -> bool:
@@ -136,10 +186,15 @@ class ChannelManager:
         pattern = r'^[a-z0-9-]+$'
         return bool(re.match(pattern, name))
     
-    async def create_channel(self, name: str, scope: str, 
+    @ensure_db_initialized
+    async def create_channel(self, 
+                           name: str,
+                           scope: str,
+                           access_type: str = 'open',
                            project_id: Optional[str] = None,
                            description: Optional[str] = None,
                            created_by: Optional[str] = None,
+                           created_by_project_id: Optional[str] = None,
                            is_default: bool = False) -> Optional[str]:
         """
         Create a new channel.
@@ -147,16 +202,18 @@ class ChannelManager:
         Args:
             name: Channel name (without prefix)
             scope: 'global' or 'project'
+            access_type: 'open', 'members', or 'private'
             project_id: Project ID for project channels
             description: Channel description
-            created_by: Agent or user who created the channel
+            created_by: Agent who created the channel
+            created_by_project_id: Creator's project ID
             is_default: Whether this is a default channel
             
         Returns:
             Channel ID if created successfully, None otherwise
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db:
+            self.logger.error("Database manager not available")
             return None
         
         # Validate channel name
@@ -170,38 +227,90 @@ class ChannelManager:
             return None
         
         # Strip project_id if global scope
-        if scope == 'global' and project_id:
+        if scope == 'global':
             project_id = None
         
         channel_id = self.get_scoped_channel_id(name, scope, project_id)
         
-        # Check if channel already exists
-        if await self.channel_exists(channel_id):
-            return channel_id
-        
         if not description:
             description = f"{scope.title()} {name} channel"
         
-        self.logger.info(f"Creating channel: {channel_id}")
+        self.logger.info(f"Creating channel: {channel_id} (access_type={access_type})")
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                await conn.execute("""
-                    INSERT INTO channels 
-                    (id, project_id, scope, name, description, created_by, 
-                     created_at, is_default, is_archived)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, 0)
-                """, (channel_id, project_id, scope, name, description, 
-                     created_by, is_default))
-                
-                self.logger.info(f"Channel created successfully: {channel_id}")
-                return channel_id
-                
+            # Use DatabaseManagerV3 to create the channel
+            created_id = await self.db.create_channel(
+                channel_id=channel_id,
+                channel_type='channel',
+                access_type=access_type,
+                scope=scope,
+                name=name,
+                project_id=project_id,
+                description=description,
+                created_by=created_by,
+                created_by_project_id=created_by_project_id,
+                is_default=is_default
+            )
+            
+            # If it's a members or private channel with a creator, add them as member
+            # (DatabaseManagerV3 doesn't do this automatically for regular channels)
+            if created_id and access_type in ['members', 'private'] and created_by:
+                await self.db.add_channel_member(
+                    channel_id=created_id,
+                    agent_name=created_by,
+                    agent_project_id=created_by_project_id,
+                    role='owner',
+                    can_send=True,
+                    can_manage_members=True,
+                    added_by=created_by,
+                    added_by_project_id=created_by_project_id
+                )
+            
+            return created_id
+            
         except Exception as e:
             self.logger.error(f"Error creating channel: {e}")
             return None
     
-    async def get_channel(self, channel_id: str) -> Optional[Channel]:
+    @ensure_db_initialized
+    async def create_dm_channel(self,
+                              agent1_name: str,
+                              agent1_project_id: Optional[str],
+                              agent2_name: str,
+                              agent2_project_id: Optional[str]) -> Optional[str]:
+        """
+        Create a DM channel between two agents.
+        
+        Args:
+            agent1_name: First agent name
+            agent1_project_id: First agent's project ID
+            agent2_name: Second agent name
+            agent2_project_id: Second agent's project ID
+            
+        Returns:
+            DM channel ID if created successfully, None otherwise
+        """
+        if not self.db:
+            self.logger.error("Database manager not available")
+            return None
+        
+        try:
+            # Use DatabaseManagerV3 to create or get the DM channel
+            dm_channel_id = await self.db.create_or_get_dm_channel(
+                agent1_name, agent1_project_id,
+                agent2_name, agent2_project_id
+            )
+            return dm_channel_id
+            
+        except ValueError as e:
+            self.logger.error(f"Cannot create DM: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error creating DM channel: {e}")
+            return None
+    
+    @ensure_db_initialized
+    async def get_channel(self, channel_id: str) -> Optional[ChannelV3]:
         """
         Get a channel by ID.
         
@@ -209,334 +318,299 @@ class ChannelManager:
             channel_id: Full channel ID
             
         Returns:
-            Channel object or None if not found
+            ChannelV3 object or None if not found
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db:
             return None
         
         try:
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute("""
-                    SELECT id, name, scope, project_id, description, 
-                           created_by, created_at, is_default, is_archived, metadata
-                    FROM channels 
-                    WHERE id = ?
-                """, (channel_id,))
-                
-                row = await cursor.fetchone()
-                if row:
-                    return Channel(
-                        id=row[0],
-                        name=row[1],
-                        scope=row[2],
-                        project_id=row[3],
-                        description=row[4],
-                        created_by=row[5],
-                        created_at=datetime.fromisoformat(row[6]) if row[6] else datetime.now(),
-                        is_default=bool(row[7]),
-                        is_archived=bool(row[8]),
-                        metadata=json.loads(row[9]) if row[9] else None
-                    )
-                    
+            # Use DatabaseManagerV3 to get channel information
+            channel_data = await self.db.get_channel(channel_id)
+            
+            if not channel_data:
+                return None
+            
+            # Convert to ChannelV3 object
+            return ChannelV3(
+                id=channel_data['id'],
+                channel_type=ChannelType(channel_data['channel_type']),
+                access_type=AccessType(channel_data['access_type']),
+                scope=channel_data['scope'],
+                name=channel_data['name'],
+                project_id=channel_data['project_id'],
+                description=channel_data['description'],
+                created_by=channel_data['created_by'],
+                created_by_project_id=channel_data['created_by_project_id'],
+                created_at=datetime.fromisoformat(channel_data['created_at']) if channel_data['created_at'] else datetime.now(),
+                is_default=bool(channel_data['is_default']),
+                is_archived=bool(channel_data['is_archived']),
+                topic_required=bool(channel_data['topic_required']),
+                default_topic=channel_data['default_topic'] or 'general',
+                metadata=channel_data['channel_metadata']
+            )
+            
         except Exception as e:
             self.logger.error(f"Error getting channel: {e}")
-        
-        return None
+            return None
     
-    async def channel_exists(self, channel_id: str) -> bool:
+    @ensure_db_initialized
+    async def list_channels_for_agent(self,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str] = None,
+                                     include_archived: bool = False) -> List[Dict[str, Any]]:
         """
-        Check if a channel exists.
+        List all channels accessible to an agent.
         
         Args:
-            channel_id: Full channel ID
-            
-        Returns:
-            True if channel exists, False otherwise
-        """
-        channel = await self.get_channel(channel_id)
-        return channel is not None
-    
-    async def list_channels(self, scope: Optional[str] = None, 
-                           project_id: Optional[str] = None,
-                           include_archived: bool = False) -> List[Channel]:
-        """
-        List channels with optional filtering.
-        
-        Args:
-            scope: Filter by scope ('global' or 'project')
-            project_id: Filter by project ID
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
             include_archived: Include archived channels
             
         Returns:
-            List of Channel objects
+            List of channel dictionaries
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db:
             return []
         
-        channels = []
-        
         try:
-            # Build query based on filters
-            query = "SELECT id, name, scope, project_id, description, created_by, created_at, is_default, is_archived, metadata FROM channels WHERE 1=1"
-            params = []
-            
-            if scope:
-                query += " AND scope = ?"
-                params.append(scope)
-            
-            if project_id:
-                query += " AND project_id = ?"
-                params.append(project_id)
-            
-            if not include_archived:
-                query += " AND is_archived = 0"
-            
-            query += " ORDER BY scope, name"
-            
-            async with aconnect(self.db_path, writer=False) as conn:
-                cursor = await conn.execute(query, params)
-                
-                async for row in cursor:
-                    channels.append(Channel(
-                        id=row[0],
-                        name=row[1],
-                        scope=row[2],
-                        project_id=row[3],
-                        description=row[4],
-                        created_by=row[5],
-                        created_at=datetime.fromisoformat(row[6]) if row[6] else datetime.now(),
-                        is_default=bool(row[7]),
-                        is_archived=bool(row[8]),
-                        metadata=json.loads(row[9]) if row[9] else None
-                    ))
-            
-            self.logger.debug(f"Listed {len(channels)} channels")
+            # Use DatabaseManagerV3 to get agent's channels
+            channels = await self.db.get_agent_channels(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                include_archived=include_archived
+            )
+            return channels
             
         except Exception as e:
             self.logger.error(f"Error listing channels: {e}")
-        
-        return channels
+            return []
     
-    async def update_channel(self, channel_id: str, 
-                           description: Optional[str] = None,
-                           is_archived: Optional[bool] = None) -> bool:
+    @ensure_db_initialized
+    async def add_channel_member(self,
+                                channel_id: str,
+                                agent_name: str,
+                                agent_project_id: Optional[str] = None,
+                                role: str = 'member',
+                                can_send: bool = True,
+                                can_manage_members: bool = False,
+                                added_by: Optional[str] = None,
+                                added_by_project_id: Optional[str] = None) -> bool:
         """
-        Update a channel's metadata.
+        Add a member to a channel.
         
         Args:
-            channel_id: Full channel ID
-            description: New description
-            is_archived: Archive status
+            channel_id: Channel ID
+            agent_name: Agent to add
+            agent_project_id: Agent's project ID
+            role: Member role (owner/admin/member)
+            can_send: Whether member can send messages
+            can_manage_members: Whether member can manage other members
+            added_by: Agent who added this member
+            added_by_project_id: Adder's project ID
             
         Returns:
-            True if updated successfully
+            True if successful, False otherwise
         """
-        if not aconnect:
-            self.logger.error("Database connection not available")
-            return False
-        
-        updates = []
-        params = []
-        
-        if description is not None:
-            updates.append("description = ?")
-            params.append(description)
-        
-        if is_archived is not None:
-            updates.append("is_archived = ?")
-            params.append(int(is_archived))
-        
-        if not updates:
-            self.logger.warning("No updates provided")
-            return False
-        
-        params.append(channel_id)
-        
-        try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                cursor = await conn.execute(
-                    f"UPDATE channels SET {', '.join(updates)} WHERE id = ?",
-                    params
-                )
-                
-                success = cursor.rowcount > 0
-                if success:
-                    self.logger.info(f"Updated channel: {channel_id}")
-                else:
-                    self.logger.warning(f"No channel found to update: {channel_id}")
-                
-                return success
-                
-        except Exception as e:
-            self.logger.error(f"Error updating channel: {e}")
-            return False
-    
-    async def delete_channel(self, channel_id: str) -> bool:
-        """
-        Delete a channel.
-        
-        Note: This will fail if there are foreign key constraints (e.g., messages in the channel).
-        Consider archiving instead of deleting.
-        
-        Args:
-            channel_id: Full channel ID
-            
-        Returns:
-            True if deleted successfully
-        """
-        if not aconnect:
-            self.logger.error("Database connection not available")
+        if not self.db:
             return False
         
         try:
-            async with aconnect(self.db_path, writer=True) as conn:
-                cursor = await conn.execute(
-                    "DELETE FROM channels WHERE id = ?",
-                    (channel_id,)
-                )
-                
-                success = cursor.rowcount > 0
-                if success:
-                    self.logger.info(f"Deleted channel: {channel_id}")
-                else:
-                    self.logger.warning(f"No channel found to delete: {channel_id}")
-                
-                return success
-                
-        except Exception as e:
-            self.logger.error(f"Error deleting channel: {e}")
-            return False
-    
-    async def archive_channel(self, channel_id: str) -> bool:
-        """
-        Archive a channel (soft delete).
-        
-        Args:
-            channel_id: Full channel ID
-            
-        Returns:
-            True if archived successfully
-        """
-        return await self.update_channel(channel_id, is_archived=True)
-    
-    async def unarchive_channel(self, channel_id: str) -> bool:
-        """
-        Unarchive a channel.
-        
-        Args:
-            channel_id: Full channel ID
-            
-        Returns:
-            True if unarchived successfully
-        """
-        return await self.update_channel(channel_id, is_archived=False)
-    
-    async def apply_default_channels(self, scope: str, 
-                                    project_id: Optional[str] = None,
-                                    created_by: Optional[str] = None) -> List[str]:
-        """
-        Create default channels from configuration.
-        
-        Args:
-            scope: 'global' or 'project'
-            project_id: Project ID for project channels
-            created_by: Who is creating these channels
-            
-        Returns:
-            List of channel IDs that were created
-        """
-        created_channels = []
-        
-        self.logger.info(f"Creating default {scope} channels")
-        
-        # Get default channels from config
-        default_channels = []
-        
-        if get_config_manager:
-            try:
-                config_manager = get_config_manager()
-                channels_config = config_manager.get_default_channels()
-                
-                if scope == 'project':
-                    default_channels = channels_config.get('project', [])
-                else:
-                    default_channels = channels_config.get('global', [])
-
-            except Exception as e:
-                self.logger.warning(f"Failed to get default channels from config: {e}")
-        
-        # Use hardcoded defaults if config unavailable
-        if not default_channels:
-            if scope == 'project':
-                default_channels = [
-                    {'name': 'general', 'description': 'General project discussion'},
-                    {'name': 'dev', 'description': 'Development discussion'}
-                ]
-            else:
-                default_channels = [
-                    {'name': 'general', 'description': 'General discussion'},
-                    {'name': 'announcements', 'description': 'System announcements'}
-                ]
-        
-        # Create the channels
-        for channel_config in default_channels:
-            name = channel_config.get('name')
-            description = channel_config.get('description', f'{scope.title()} {name} channel')
-            is_default = channel_config.get('is_default', True)
-            
-            # Check if channel already exists
-            channel_id = self.get_scoped_channel_id(name, scope, project_id)
-            if await self.channel_exists(channel_id):
-                self.logger.debug(f"Channel already exists: {channel_id}")
-                continue
-            
-            # Create the channel
-            created_id = await self.create_channel(
-                name=name,
-                scope=scope,
-                project_id=project_id,
-                description=description,
-                created_by=created_by,
-                is_default=is_default
+            await self.db.add_channel_member(
+                channel_id=channel_id,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                role=role,
+                can_send=can_send,
+                can_manage_members=can_manage_members,
+                added_by=added_by,
+                added_by_project_id=added_by_project_id
             )
+            return True
             
-            if created_id:
-                created_channels.append(created_id)
-                self.logger.debug(f"Created default channel: {created_id}")
-        
-        self.logger.info(f"Created {len(created_channels)} default {scope} channels")
-        
-        return created_channels
+        except Exception as e:
+            self.logger.error(f"Error adding channel member: {e}")
+            return False
     
-    async def get_or_create_channel(self, name: str, scope: str,
-                                  project_id: Optional[str] = None,
-                                  description: Optional[str] = None) -> str:
+    @ensure_db_initialized
+    async def remove_channel_member(self,
+                                   channel_id: str,
+                                   agent_name: str,
+                                   agent_project_id: Optional[str] = None) -> bool:
         """
-        Get a channel if it exists, or create it if it doesn't.
+        Remove a member from a channel.
         
         Args:
-            name: Channel name
-            scope: 'global' or 'project'
-            project_id: Project ID for project channels
-            description: Channel description for creation
+            channel_id: Channel ID
+            agent_name: Agent to remove
+            agent_project_id: Agent's project ID
             
         Returns:
-            Channel ID
+            True if successful, False otherwise
         """
-        channel_id = self.get_scoped_channel_id(name, scope, project_id)
+        if not self.db:
+            return False
         
-        # Check if channel exists
-        if await self.channel_exists(channel_id):
-            return channel_id
+        try:
+            await self.db.remove_channel_member(
+                channel_id=channel_id,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id
+            )
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error removing channel member: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def subscribe_to_channel(self,
+                                  agent_name: str,
+                                  agent_project_id: Optional[str],
+                                  channel_id: str) -> bool:
+        """
+        Subscribe an agent to an open channel.
         
-        # Create the channel
-        created_id = await self.create_channel(
-            name=name,
-            scope=scope,
-            project_id=project_id,
-            description=description
-        )
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            channel_id: Channel to subscribe to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            return False
         
-        return created_id or channel_id
+        try:
+            await self.db.subscribe_to_channel(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                channel_id=channel_id
+            )
+            return True
+            
+        except ValueError as e:
+            self.logger.error(f"Cannot subscribe: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error subscribing to channel: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def unsubscribe_from_channel(self,
+                                      agent_name: str,
+                                      agent_project_id: Optional[str],
+                                      channel_id: str) -> bool:
+        """
+        Unsubscribe an agent from a channel.
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            channel_id: Channel to unsubscribe from
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.db:
+            return False
+        
+        try:
+            await self.db.unsubscribe_from_channel(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                channel_id=channel_id
+            )
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error unsubscribing from channel: {e}")
+            return False
+    
+    @ensure_db_initialized
+    async def get_channel_members(self, channel_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all members of a channel.
+        
+        Args:
+            channel_id: Channel ID
+            
+        Returns:
+            List of member dictionaries
+        """
+        if not self.db:
+            return []
+        
+        try:
+            members = await self.db.get_channel_members(channel_id)
+            return members
+            
+        except Exception as e:
+            self.logger.error(f"Error getting channel members: {e}")
+            return []
+    
+    @ensure_db_initialized
+    async def is_channel_member(self,
+                               channel_id: str,
+                               agent_name: str,
+                               agent_project_id: Optional[str] = None) -> bool:
+        """
+        Check if an agent is a member of a channel.
+        
+        Args:
+            channel_id: Channel ID
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            
+        Returns:
+            True if agent is a member, False otherwise
+        """
+        members = await self.get_channel_members(channel_id)
+        for member in members:
+            if (member['agent_name'] == agent_name and 
+                member['agent_project_id'] == agent_project_id):
+                return True
+        return False
+    
+    @ensure_db_initialized
+    async def send_message_to_channel(self,
+                                     channel_id: str,
+                                     sender_id: str,
+                                     sender_project_id: Optional[str],
+                                     content: str,
+                                     metadata: Optional[Dict] = None,
+                                     thread_id: Optional[str] = None) -> Optional[int]:
+        """
+        Send a message to a channel.
+        
+        Args:
+            channel_id: Target channel
+            sender_id: Sender agent name
+            sender_project_id: Sender's project ID
+            content: Message content
+            metadata: Optional metadata
+            thread_id: Optional thread ID
+            
+        Returns:
+            Message ID if successful, None otherwise
+        """
+        if not self.db:
+            return None
+        
+        try:
+            message_id = await self.db.send_message(
+                channel_id=channel_id,
+                sender_id=sender_id,
+                sender_project_id=sender_project_id,
+                content=content,
+                metadata=metadata,
+                thread_id=thread_id
+            )
+            return message_id
+            
+        except ValueError as e:
+            self.logger.error(f"Cannot send message: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error sending message: {e}")
+            return None

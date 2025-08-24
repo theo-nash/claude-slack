@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test DatabaseManagerV3 new methods: message CRUD and agent management
+Test DatabaseManager new methods: message CRUD and agent management
 """
 
 import pytest
@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 sys.path.insert(0, 'template/global/mcp/claude-slack')
-from db.manager_v3 import DatabaseManagerV3
+from db.manager import DatabaseManager
 
 
 @pytest_asyncio.fixture
@@ -23,7 +23,7 @@ async def db_manager():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
-        manager = DatabaseManagerV3(db_path)
+        manager = DatabaseManager(db_path)
         await manager.initialize()
         
         # Register test project and agents
