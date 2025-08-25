@@ -16,8 +16,7 @@ directory and stores the session context in the SQLite database.
 import os
 import sys
 import json
-import sqlite3
-import hashlib
+import asyncio
 import logging
 import traceback
 from datetime import datetime
@@ -29,7 +28,7 @@ claude_config_dir = os.environ.get('CLAUDE_CONFIG_DIR', os.path.expanduser('~/.c
 claude_slack_dir = os.path.join(claude_config_dir, 'claude-slack')
 mcp_dir = os.path.join(claude_slack_dir, 'mcp')
 sys.path.insert(0, mcp_dir)
-sys.path.insert(0, os.path.join(mcp_dir, 'db'))
+sys.path.insert(0, os.path.join(mcp_dir, 'sessions'))
 sys.path.insert(0, os.path.join(claude_config_dir, 'hooks'))
 
 try:
@@ -39,29 +38,13 @@ except ImportError:
     # Fallback if environment_config not available yet
     USE_ENV_CONFIG = False
 
-# Import db_helpers for connection management
+# Import SessionManager for proper abstraction
 try:
-    from db_helpers import connect
+    from sessions.manager import SessionManager
+    HAS_SESSION_MANAGER = True
 except ImportError:
-    # Fallback if db_helpers not available
-    from contextlib import contextmanager
-    
-    @contextmanager
-    def connect(db_path: str, writer: bool = False):
-        conn = sqlite3.connect(str(db_path), timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA foreign_keys=ON")
-            yield conn
-            if writer:
-                conn.commit()
-        except Exception:
-            if writer:
-                conn.rollback()
-            raise
-        finally:
-            conn.close()
+    HAS_SESSION_MANAGER = False
+    SessionManager = None
 
 # Set up logging - use new centralized logging system
 try:
@@ -88,9 +71,9 @@ except ImportError:
     def log_json_data(l, m, d, level=None): pass
     def log_db_result(l, o, s, d=None): pass
 
-def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool:
+async def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool:
     """
-    Record tool call with session, tool name, and inputs for precise session tracking.
+    Record tool call using SessionManager for proper abstraction.
     
     Args:
         session_id: Current session ID
@@ -103,57 +86,44 @@ def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -> bool
     try:
         logger.debug(f"Recording tool call: session={session_id}, tool={tool_name}")
         
-        # Database path - use environment config if available
-        if USE_ENV_CONFIG:
-            db_path = env_config.db_path
+        # Use SessionManager if available
+        if HAS_SESSION_MANAGER:
+            # Database path - use environment config if available
+            if USE_ENV_CONFIG:
+                db_path = env_config.db_path
+            else:
+                db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
+            
+            logger.debug(f"Using SessionManager with database: {db_path}")
+            
+            # Ensure database directory exists
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create SessionManager instance
+            session_mgr = SessionManager(str(db_path))
+            
+            # Use SessionManager's record_tool_call method
+            is_new = await session_mgr.record_tool_call(
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_inputs=tool_inputs
+            )
+            
+            if is_new:
+                logger.info(f"Recorded new tool call for session {session_id}")
+            else:
+                logger.debug(f"Duplicate tool call skipped for session {session_id}")
+            
+            log_db_result(logger, 'record_tool_call', True, {
+                'session_id': session_id,
+                'tool': tool_name,
+                'is_new': is_new
+            })
+            return True
         else:
-            db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
-        
-        logger.debug(f"Using database: {db_path}")
-        
-        # Ensure database directory exists
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Use connection helper for proper management
-        with connect(db_path, writer=True) as conn:
-            # Create hash of tool inputs for efficient matching
-            inputs_json = json.dumps(tool_inputs, sort_keys=True)
-            inputs_hash = hashlib.sha256(inputs_json.encode()).hexdigest()[:16]
-            
-            logger.debug(f"Tool inputs hash: {inputs_hash}")
-            
-            # Record the tool call
-            cursor = conn.execute("""
-                INSERT INTO tool_calls (session_id, tool_name, tool_inputs_hash, tool_inputs)
-                VALUES (?, ?, ?, ?)
-            """, (session_id, tool_name, inputs_hash, inputs_json))
-            
-            tool_call_id = cursor.lastrowid
-            logger.info(f"Recorded tool call with ID {tool_call_id}")
-            
-            # Also update session activity
-            cursor = conn.execute("""
-                UPDATE sessions
-                SET updated_at = datetime('now')
-                WHERE id=?
-            """, (session_id,))
-            
-            sessions_updated = cursor.rowcount
-            logger.debug(f"Updated {sessions_updated} session(s)")
-        
-        log_db_result(logger, 'record_tool_call', True, {
-            'session_id': session_id,
-            'tool': tool_name,
-            'hash': inputs_hash,
-            'sessions_updated': sessions_updated
-        })
-        return True
-        
-    except sqlite3.OperationalError as e:
-        # Database is locked or other operational error
-        logger.warning(f"Database unavailable: {e}, falling back to file storage")
-        log_db_result(logger, 'record_tool_call', False, {'error': str(e), 'fallback': 'file'})
-        return update_session_context_file(session_id, tool_name, tool_inputs)
+            # Fallback if SessionManager not available
+            logger.warning("SessionManager not available, falling back to file storage")
+            return update_session_context_file(session_id, tool_name, tool_inputs)
         
     except Exception as e:
         logger.error(f"Error recording tool call: {e}\n{traceback.format_exc()}")
@@ -238,7 +208,8 @@ def main():
         logger.info(f"Processing slack tool: {tool_name}")
         
         # Record the tool call with inputs for precise session tracking
-        success = record_tool_call(session_id, tool_name, tool_input)
+        # Run async function in sync context
+        success = asyncio.run(record_tool_call(session_id, tool_name, tool_input))
         
         if success:
             logger.info("Tool call successfully recorded")
