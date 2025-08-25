@@ -282,12 +282,15 @@ class ConfigSyncManager(DatabaseInitializer):
         
         # Plan registration for each discovered agent
         for agent in discovered_agents:
+            # Determine project_id based on agent scope
+            agent_project_id = project_id if agent.scope == 'project' else None
+            
             # Check if agent already registered
-            existing = await self.db.get_agent(agent.name, agent.project_id if agent.scope == 'project' else None)
+            existing = await self.db.get_agent(agent.name, agent_project_id)
             if not existing:
                 action = RegisterAgentAction(
                     name=agent.name,
-                    project_id=project_id if agent.scope == 'project' else None,
+                    project_id=agent_project_id,
                     description=agent.description,
                     dm_policy=agent.dm_policy,
                     discoverable=agent.discoverable

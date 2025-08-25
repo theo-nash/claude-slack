@@ -804,18 +804,14 @@ class DatabaseManager:
                            f"Use add_channel_member for {row[0]} channels.")
         
         # In unified model, subscription is just membership with invited_by='self'
-        await self.add_channel_member(
-            conn,
-            channel_id=channel_id,
-            agent_name=agent_name,
-            agent_project_id=agent_project_id,
-            invited_by='self',
-            source=source,
-            can_leave=True,
-            can_send=True,
-            can_invite=True,  # Open channels allow invites
-            can_manage=False
-        )
+        # Note: Don't pass conn - add_channel_member has its own @with_connection
+        await conn.execute("""
+            INSERT OR REPLACE INTO channel_members 
+            (channel_id, agent_name, agent_project_id, invited_by, source,
+             can_leave, can_send, can_invite, can_manage, is_from_default, joined_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (channel_id, agent_name, agent_project_id, 'self', source,
+              True, True, True, False, False))
     
     @with_connection(writer=True)
     async def unsubscribe_from_channel(self, conn,
@@ -823,12 +819,11 @@ class DatabaseManager:
                                       agent_project_id: Optional[str],
                                       channel_id: str):
         """Unsubscribe from a channel (unified model: remove membership)"""
-        await self.remove_channel_member(
-            conn,
-            channel_id=channel_id,
-            agent_name=agent_name,
-            agent_project_id=agent_project_id
-        )
+        await conn.execute("""
+            DELETE FROM channel_members
+            WHERE channel_id = ? AND agent_name = ? 
+              AND agent_project_id IS NOT DISTINCT FROM ?
+        """, (channel_id, agent_name, agent_project_id))
     
     # ============================================================================
     # Agent Discovery
