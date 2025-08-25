@@ -7,15 +7,22 @@ This provides a unified approach using the standard channel/message infrastructu
 while maintaining privacy and searchability.
 """
 
+import sys
 import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from db.manager_v3 import DatabaseManagerV3
+try:
+    from db.manager import DatabaseManager
+    from db.initialization import DatabaseInitializer, ensure_db_initialized
+except ImportError as e:
+    print(f"Import error in NotesManager: {e}", file=sys.stderr)
+    DatabaseManager = None
+    DatabaseInitializer = object  # Fallback to object if not available
+    ensure_db_initialized = lambda f: f  # No-op decorator
 
-
-class NotesManager:
+class NotesManager(DatabaseInitializer):
     """Manages agent notes using private channels"""
     
     def __init__(self, db_path: str):
@@ -25,7 +32,17 @@ class NotesManager:
         Args:
             db_path: Path to the database
         """
-        self.db = DatabaseManagerV3(db_path)
+        
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
+        
+        if DatabaseManager:
+            self.db = DatabaseManager(db_path)
+            self.db_manager = self.db  # Fixed typo: was db_maanaber
+        else:
+            self.db = None
+            self.db_manager = None
+            
         self.logger = logging.getLogger(__name__)
     
     async def initialize(self):
@@ -47,6 +64,7 @@ class NotesManager:
         scope = agent_project_id if agent_project_id else 'global'
         return f"notes:{agent_name}:{scope}"
     
+    @ensure_db_initialized
     async def ensure_notes_channel(self, 
                                   agent_name: str, 
                                   agent_project_id: Optional[str] = None) -> str:
@@ -84,18 +102,25 @@ class NotesManager:
             created_by_project_id=agent_project_id
         )
         
-        # Add agent as the sole member (owner)
-        # For private channels, membership is sufficient - no subscription needed
+        # Add agent as the sole member using unified model
+        # For private channels, they cannot leave (can_leave=False)
         await self.db.add_channel_member(
             channel_id=channel_id,
             agent_name=agent_name,
             agent_project_id=agent_project_id,
-            role='owner'
+            invited_by='system',  # System creates notes channels
+            source='system',
+            can_leave=False,  # Cannot leave notes channel
+            can_send=True,
+            can_invite=False,  # No one else can be invited
+            can_manage=True,  # Agent manages their own notes
+            is_from_default=False
         )
         
         self.logger.info(f"Created notes channel for {agent_name}: {channel_id}")
         return channel_id
     
+    @ensure_db_initialized
     async def write_note(self,
                         agent_name: str,
                         agent_project_id: Optional[str],
@@ -141,6 +166,7 @@ class NotesManager:
         self.logger.debug(f"Note written for {agent_name}: {message_id}")
         return message_id
     
+    @ensure_db_initialized
     async def search_notes(self,
                           agent_name: str,
                           agent_project_id: Optional[str],
@@ -213,6 +239,7 @@ class NotesManager:
         
         return results
     
+    @ensure_db_initialized
     async def get_recent_notes(self,
                               agent_name: str,
                               agent_project_id: Optional[str],
@@ -258,6 +285,7 @@ class NotesManager:
             limit=limit
         )
     
+    @ensure_db_initialized
     async def peek_agent_notes(self,
                               target_agent_name: str,
                               target_project_id: Optional[str],
@@ -298,6 +326,7 @@ class NotesManager:
             limit=limit
         )
     
+    @ensure_db_initialized
     async def delete_note(self,
                          agent_name: str,
                          agent_project_id: Optional[str],
@@ -313,11 +342,12 @@ class NotesManager:
         Returns:
             True if deleted, False if not found or not authorized
         """
-        # For now, we don't have a delete_message method in DatabaseManagerV3
+        # For now, we don't have a delete_message method in DatabaseManager
         # This would need to be added if we want to support deletion
         self.logger.warning(f"Note deletion not yet implemented: {note_id}")
         return False
     
+    @ensure_db_initialized
     async def tag_note(self,
                       agent_name: str,
                       agent_project_id: Optional[str],
@@ -335,6 +365,6 @@ class NotesManager:
         Returns:
             True if tagged, False if not found
         """
-        # This would require an update_message_metadata method in DatabaseManagerV3
+        # This would require an update_message_metadata method in DatabaseManager
         self.logger.warning(f"Note tagging not yet implemented: {note_id}")
         return False

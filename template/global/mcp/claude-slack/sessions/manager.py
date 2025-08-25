@@ -29,11 +29,11 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from db.manager_v3 import DatabaseManagerV3
+    from db.manager import DatabaseManager
     from db.initialization import DatabaseInitializer, ensure_db_initialized
 except ImportError as e:
     print(f"Import error in SessionManager: {e}", file=sys.stderr)
-    DatabaseManagerV3 = None
+    DatabaseManager = None
     DatabaseInitializer = object  # Fallback to object if not available
     ensure_db_initialized = lambda f: f  # No-op decorator
 
@@ -84,15 +84,19 @@ class SessionManager(DatabaseInitializer):
         Args:
             db_path: Path to SQLite database
         """
+        
+        # Initialize parent class (DatabaseInitializer)
+        super().__init__()
+        
         self.db_path = db_path
         self.logger = get_logger('SessionManager', component='manager')
         
-        # Initialize DatabaseManagerV3
-        if DatabaseManagerV3:
-            self.db_manager = DatabaseManagerV3(db_path)
+        # Initialize DatabaseManager
+        if DatabaseManager:
+            self.db_manager = DatabaseManager(db_path)
         else:
             self.db_manager = None
-            self.logger.error("DatabaseManagerV3 not available")
+            self.logger.error("DatabaseManager not available")
         
         # Simple in-memory cache for performance
         self._cache = {}
@@ -143,6 +147,7 @@ class SessionManager(DatabaseInitializer):
         """
         return hashlib.sha256(project_path.encode()).hexdigest()[:32]
     
+    @ensure_db_initialized
     async def register_session(self, session_id: str, 
                               project_path: Optional[str] = None,
                               project_name: Optional[str] = None,
@@ -176,7 +181,7 @@ class SessionManager(DatabaseInitializer):
             
             self.logger.info(f"Registering session {session_id} (scope: {scope})")
             
-            # Use DatabaseManagerV3 to register session
+            # Use DatabaseManager to register session
             await self.db_manager.register_session(
                 session_id=session_id,
                 project_id=project_id,
@@ -199,6 +204,7 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error registering session: {e}")
             return False
     
+    @ensure_db_initialized
     async def get_session_context(self, session_id: str) -> Optional[SessionContext]:
         """
         Get context for a specific session.
@@ -225,7 +231,7 @@ class SessionManager(DatabaseInitializer):
         try:
             self.logger.debug(f"Looking up session {session_id} in database")
             
-            # Use DatabaseManagerV3 to get session
+            # Use DatabaseManager to get session
             session_data = await self.db_manager.get_session(session_id)
             
             if session_data:
@@ -256,6 +262,7 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error getting session context: {e}")
             return None
     
+    @ensure_db_initialized
     async def get_current_session_context(self) -> Optional[SessionContext]:
         """
         Get context for the current/most recent session.
@@ -274,6 +281,7 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
+    @ensure_db_initialized
     async def get_most_recent_session_id(self) -> Optional[str]:
         """
         Get the most recently active session ID.
@@ -299,6 +307,7 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
+    @ensure_db_initialized    
     async def get_project_context(self, project_id: str) -> Optional[ProjectContext]:
         """
         Get project information by ID.
@@ -314,7 +323,7 @@ class SessionManager(DatabaseInitializer):
             return None
         
         try:
-            # Use DatabaseManagerV3 to get project
+            # Use DatabaseManager to get project
             project_data = await self.db_manager.get_project(project_id)
             
             if project_data:
@@ -329,6 +338,7 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
+    @ensure_db_initialized
     async def register_project(self, project_path: str, project_name: Optional[str] = None) -> str:
         """
         Register a project in the database.
@@ -350,7 +360,7 @@ class SessionManager(DatabaseInitializer):
             return project_id
         
         try:
-            # Use DatabaseManagerV3 to register project
+            # Use DatabaseManager to register project
             await self.db_manager.register_project(
                 project_id=project_id,
                 project_path=project_path,
@@ -364,6 +374,7 @@ class SessionManager(DatabaseInitializer):
         
         return project_id
     
+    @ensure_db_initialized
     async def match_tool_call_session(self, tool_name: str, tool_inputs: Dict[str, Any]) -> Optional[str]:
         """
         Match a tool call to its session by looking up recent tool calls.
@@ -405,6 +416,7 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
+    @ensure_db_initialized
     async def record_tool_call(self, session_id: str, tool_name: str, tool_inputs: Dict[str, Any]) -> bool:
         """
         Record a tool call for session tracking.
@@ -422,7 +434,7 @@ class SessionManager(DatabaseInitializer):
             return False
         
         try:
-            # Use DatabaseManagerV3 to record tool call with deduplication
+            # Use DatabaseManager to record tool call with deduplication
             is_new = await self.db_manager.record_tool_call(
                 session_id=session_id,
                 tool_name=tool_name,
@@ -441,6 +453,7 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error recording tool call: {e}")
             return False
     
+    @ensure_db_initialized
     async def cleanup_old_sessions(self, max_age_hours: int = 24) -> int:
         """
         Clean up old sessions from the database.
@@ -456,7 +469,7 @@ class SessionManager(DatabaseInitializer):
             return 0
         
         try:
-            # Use DatabaseManagerV3 to cleanup old sessions
+            # Use DatabaseManager to cleanup old sessions
             count = await self.db_manager.cleanup_old_sessions(hours=max_age_hours)
             
             # Also cleanup old tool calls
@@ -472,7 +485,7 @@ class SessionManager(DatabaseInitializer):
             return 0
     
     # Convenience methods for backwards compatibility
-    
+    @ensure_db_initialized
     async def get_current_context(self, tool_name: str = None, 
                                  tool_inputs: dict = None) -> Tuple[Optional[str], Optional[str], 
                                                                    Optional[str], Optional[str]]:

@@ -151,16 +151,17 @@ class RegisterAgentAction(Action):
     
     def __init__(self, name: str, project_id: Optional[str] = None,
                  description: Optional[str] = None, dm_policy: str = 'open',
-                 discoverable: str = 'public'):
+                 discoverable: str = 'public', create_notes_channel: bool = True):
         super().__init__(ActionPhase.AGENTS)
         self.name = name
         self.project_id = project_id
         self.description = description
         self.dm_policy = dm_policy
         self.discoverable = discoverable
+        self.create_notes_channel = create_notes_channel
     
     async def execute(self, db_manager) -> ActionResult:
-        """Register the agent"""
+        """Register the agent and create notes channel"""
         try:
             # Check if agent already exists
             existing = await db_manager.get_agent(self.name, self.project_id)
@@ -182,12 +183,30 @@ class RegisterAgentAction(Action):
                 discoverable=self.discoverable
             )
             
+            # Create notes channel if requested
+            notes_channel_created = False
+            if self.create_notes_channel:
+                try:
+                    # Import here to avoid circular dependency
+                    from notes.manager import NotesManager
+                    notes_mgr = NotesManager(db_manager.db_path)
+                    notes_channel_id = await notes_mgr.ensure_notes_channel(
+                        agent_name=self.name,
+                        agent_project_id=self.project_id
+                    )
+                    notes_channel_created = True
+                    self.logger.debug(f"Created notes channel for {self.name}: {notes_channel_id}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to create notes channel for {self.name}: {e}")
+            
             return ActionResult(
                 success=True,
                 action_type='register_agent',
                 target=self.name,
-                message=f'Registered agent: {self.name}',
-                changes={'registered': True, 'project_id': self.project_id}
+                message=f'Registered agent: {self.name}' + 
+                        (' with notes channel' if notes_channel_created else ''),
+                changes={'registered': True, 'project_id': self.project_id,
+                        'notes_channel': notes_channel_created}
             )
             
         except Exception as e:
