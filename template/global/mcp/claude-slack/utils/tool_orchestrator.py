@@ -51,7 +51,8 @@ class MCPToolOrchestrator(DatabaseInitializer):
         "create_channel", "list_channels", "join_channel", "leave_channel",
         "invite_to_channel", "list_my_channels", "send_channel_message",
         "send_direct_message", "get_messages", "search_messages",
-        "write_note", "search_my_notes", "get_recent_notes", "peek_agent_notes"
+        "write_note", "search_my_notes", "get_recent_notes", "peek_agent_notes",
+        "list_agents"  # Added list_agents
     }
     
     def __init__(self, db_path: str):
@@ -373,79 +374,53 @@ class MCPToolOrchestrator(DatabaseInitializer):
         limit = args.get("limit", 100)
         unread_only = args.get("unread_only", False)
         
-        # Get agent's channels
-        channels = await self.channels.list_channels_for_agent(
-            agent['name'], agent['project_id']
+        # Get all messages accessible to the agent
+        messages = await self.db.get_messages(
+            agent_name=agent['name'],
+            agent_project_id=agent['project_id'],
+            limit=limit,
+            since=since
         )
         
-        # Build response structure
-        response = {
-            "global_messages": {
-                "direct_messages": [],
-                "channel_messages": {},
-                "notes": []
-            },
-            "project_messages": None
-        }
+        if not messages:
+            return self._success_response("No recent messages")
         
-        # Get global channel messages
-        global_channels = [c for c in channels if c['scope'] == 'global']
-        for channel in global_channels:
-            messages = await self.db.get_channel_messages(
-                channel['id'], since=since, limit=limit // 5
-            )
-            if messages:
-                response["global_messages"]["channel_messages"][channel['name']] = messages
+        # Group messages by channel type and scope
+        channel_messages = {}
+        dm_messages = []
         
-        # Get global DMs
-        global_dms = await self.db.get_direct_messages(
-            agent['name'], scope='global', since=since, limit=limit // 5
-        )
-        response["global_messages"]["direct_messages"] = global_dms
-        
-        # Get agent's global notes
-        global_notes = await self.notes.get_recent_notes(
-            agent['name'], None, limit=limit // 5
-        )
-        if global_notes:
-            response["global_messages"]["notes"] = global_notes
-        
-        # Get project messages if in project context
-        if context.project_id:
-            response["project_messages"] = {
-                "project_id": context.project_id,
-                "project_name": context.project_name,
-                "direct_messages": [],
-                "channel_messages": {},
-                "notes": []
-            }
-            
-            # Get project channel messages
-            project_channels = [c for c in channels if c['scope'] == 'project']
-            for channel in project_channels:
-                messages = await self.db.get_channel_messages(
-                    channel['id'], since=since, limit=limit // 5
-                )
-                if messages:
-                    response["project_messages"]["channel_messages"][channel['name']] = messages
-            
-            # Get project DMs
-            project_dms = await self.db.get_direct_messages(
-                agent['name'], scope='project', project_id=context.project_id,
-                since=since, limit=limit // 5
-            )
-            response["project_messages"]["direct_messages"] = project_dms
-            
-            # Get agent's project notes
-            project_notes = await self.notes.get_recent_notes(
-                agent['name'], context.project_id, limit=limit // 5
-            )
-            if project_notes:
-                response["project_messages"]["notes"] = project_notes
+        for msg in messages:
+            if msg.get('channel_type') == 'dm':
+                dm_messages.append(msg)
+            else:
+                channel_name = msg.get('channel_name', msg['channel_id'])
+                if channel_name not in channel_messages:
+                    channel_messages[channel_name] = []
+                channel_messages[channel_name].append(msg)
         
         # Format response
-        formatted = format_messages_concise(response, agent['name'])
-        return self._success_response(formatted)
+        formatted = []
+        
+        if dm_messages:
+            formatted.append(f"=== Direct Messages ({len(dm_messages)}) ===")
+            for msg in dm_messages[:10]:  # Limit to 10 most recent
+                formatted.append(
+                    f"[{msg['timestamp'][:16]}] {msg['sender_id']}: {msg['content'][:100]}"
+                )
+        
+        if channel_messages:
+            formatted.append(f"\n=== Channel Messages ===")
+            for channel_name, msgs in list(channel_messages.items())[:5]:  # Top 5 channels
+                formatted.append(f"\n#{channel_name} ({len(msgs)} messages):")
+                for msg in msgs[:5]:  # Top 5 messages per channel
+                    formatted.append(
+                        f"  [{msg['timestamp'][:16]}] {msg['sender_id']}: {msg['content'][:80]}"
+                    )
+        
+        if not formatted:
+            return self._success_response("No recent messages")
+            
+        return self._success_response('\n'.join(formatted))
     
     async def handle_search_messages(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Search messages across channels and DMs"""
@@ -456,12 +431,11 @@ class MCPToolOrchestrator(DatabaseInitializer):
         if not query:
             return self._error_response("Search query is required")
         
-        # Search based on scope
+        # Search messages accessible to the agent
         results = await self.db.search_messages(
-            query=query,
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
-            scope=scope,
+            query=query,
             limit=limit
         )
         
@@ -469,11 +443,12 @@ class MCPToolOrchestrator(DatabaseInitializer):
             return self._success_response("No messages found")
         
         # Format results
-        formatted = []
+        formatted = [f"Found {len(results)} messages matching '{query}':\n"]
         for msg in results:
+            channel_name = msg.get('channel_name', msg['channel_id'])
             formatted.append(
-                f"[{msg['timestamp']}] {msg['sender_id']} in {msg['channel_id']}: "
-                f"{msg['content'][:100]}..."
+                f"[{msg['timestamp'][:16]}] {msg['sender_id']} in #{channel_name}: "
+                f"{msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}"
             )
         
         return self._success_response('\n'.join(formatted))
@@ -510,7 +485,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         
         return self._success_response('\n'.join(formatted))
     
-    async def handle_list_agents(self, args: Dict, agent: Optional[Dict], 
+    async def handle_list_agents(self, args: Dict, agent: Dict, 
                                 context: ProjectContext) -> Dict:
         """List discoverable agents"""
         scope = args.get("scope", "all")
@@ -518,16 +493,12 @@ class MCPToolOrchestrator(DatabaseInitializer):
         include_unavailable = args.get("include_unavailable", False)
         
         # Get discoverable agents using DatabaseManager
-        if agent:
-            # Use the discovering agent's perspective
-            agents = await self.db.get_discoverable_agents(
-                agent_name=agent['name'],
-                agent_project_id=agent['project_id'],
-                include_unavailable=include_unavailable
-            )
-        else:
-            # No agent context - can't discover agents
-            return self._success_response("Agent context required to discover other agents")
+        # Use the discovering agent's perspective
+        agents = await self.db.get_discoverable_agents(
+            agent_name=agent['name'],
+            agent_project_id=agent['project_id'],
+            include_unavailable=include_unavailable
+        )
         
         if not agents:
             return self._success_response("No discoverable agents found")
@@ -628,13 +599,12 @@ class MCPToolOrchestrator(DatabaseInitializer):
     async def handle_get_recent_notes(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Get agent's recent notes"""
         limit = args.get("limit", 20)
-        session_id = args.get("session_id")
+        session_id = args.get("session_id")  # Not used by current implementation
         
         notes = await self.notes.get_recent_notes(
             agent['name'],
             agent['project_id'],
-            limit=limit,
-            session_id=session_id
+            limit=limit
         )
         
         if not notes:
@@ -663,8 +633,10 @@ class MCPToolOrchestrator(DatabaseInitializer):
         
         # Get notes (read-only peek)
         notes = await self.notes.peek_agent_notes(
-            target['name'],
-            target['project_id'],
+            target_agent_name=target['name'],
+            target_project_id=target['project_id'],
+            requester_name=agent['name'],
+            requester_project_id=agent['project_id'],
             query=query,
             limit=limit
         )
