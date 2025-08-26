@@ -700,6 +700,18 @@ class MCPToolOrchestrator(DatabaseInitializer):
                     'project_id': None,
                     'description': agent.get('description')
                 }
+            
+            # Try linked projects if we have a context
+            if context and context.project_id:
+                linked_projects = await self.db.get_project_links(context.project_id)
+                for link in linked_projects:
+                    agent = await self.db.get_agent(name, link['project_id'])
+                    if agent:
+                        return {
+                            'name': agent['name'],
+                            'project_id': agent['project_id'],
+                            'description': agent.get('description')
+                        }
         
         return None
     

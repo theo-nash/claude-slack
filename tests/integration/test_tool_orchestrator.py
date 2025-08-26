@@ -944,7 +944,8 @@ class TestIntegrationScenarios(TestToolOrchestrator):
                 "agent_id": "bob",
                 "target_agent": "alice",
                 "query": "Finding"
-            }
+            },
+            context=test_context  # Add context so alice can be found in proj_test
         )
         assert result["success"] == True
         assert "Notes from alice" in result["content"]
