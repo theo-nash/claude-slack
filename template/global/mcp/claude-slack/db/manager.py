@@ -26,18 +26,33 @@ except ImportError:
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
+# Optional HybridStore for v4 semantic search
+try:
+    from .hybrid_store import HybridStore, RankingProfiles
+    HYBRID_STORE_AVAILABLE = True
+except ImportError:
+    HybridStore = None
+    RankingProfiles = None
+    HYBRID_STORE_AVAILABLE = False
+
 class DatabaseManager:
     """Manages SQLite database operations for claude-slack v3 with unified channels"""
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, enable_hybrid_store: bool = True):
         """
         Initialize database manager
         
         Args:
             db_path: Path to SQLite database file
+            enable_hybrid_store: Whether to enable ChromaDB for semantic search (v4)
         """
         self.db_path = db_path
         self.logger = get_logger('DatabaseManager', component='manager')
+        
+        # Store the flag, but don't initialize HybridStore yet
+        # It needs the schema to exist first
+        self.enable_hybrid_store = enable_hybrid_store
+        self.hybrid_store = None
     
     async def initialize(self):
         """Initialize database and ensure schema exists"""
@@ -57,10 +72,24 @@ class DatabaseManager:
                 with open(schema_path, 'r') as f:
                     schema = f.read()
                     await conn.executescript(schema)
+        
+        # Now initialize HybridStore after schema exists
+        if self.enable_hybrid_store and HYBRID_STORE_AVAILABLE:
+            try:
+                self.hybrid_store = HybridStore(self.db_path)
+                self.logger.info("HybridStore initialized for semantic search")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize HybridStore: {e}")
+                self.hybrid_store = None
     
     async def close(self):
         """Close database connection (no-op with connection pooling)"""
-        pass
+        if self.hybrid_store:
+            self.hybrid_store.close()
+    
+    def has_semantic_search(self) -> bool:
+        """Check if semantic search is available"""
+        return self.hybrid_store is not None
     
     # ============================================================================
     # Project Management
@@ -610,15 +639,37 @@ class DatabaseManager:
         if not await cursor.fetchone():
             raise ValueError(f"Agent {sender_id} does not have access to channel {channel_id}")
         
+        # Extract confidence from metadata if present
+        confidence = None
+        if metadata and isinstance(metadata, dict):
+            confidence = metadata.get('confidence')
+        
         # Insert the message
         cursor = await conn.execute("""
             INSERT INTO messages 
-            (channel_id, sender_id, sender_project_id, content, metadata, thread_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (channel_id, sender_id, sender_project_id, content, metadata, thread_id, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (channel_id, sender_id, sender_project_id, content,
-              json.dumps(metadata) if metadata else None, thread_id))
+              json.dumps(metadata) if metadata else None, thread_id, confidence))
         
         message_id = cursor.lastrowid
+        
+        # Also store in HybridStore for semantic search (async, non-blocking)
+        if self.hybrid_store:
+            try:
+                # Add to ChromaDB for semantic search (message already in SQLite)
+                await self.hybrid_store.add_to_chroma(
+                    message_id=message_id,
+                    channel_id=channel_id,
+                    sender_id=sender_id,
+                    sender_project_id=sender_project_id,
+                    content=content,
+                    metadata=metadata,
+                    confidence=confidence
+                )
+            except Exception as e:
+                # Log but don't fail the message send
+                self.logger.warning(f"Failed to add to ChromaDB: {e}")
         
         self.logger.info(f"Message {message_id} sent to channel {channel_id} by {sender_id}")
         return message_id
@@ -1396,34 +1447,123 @@ class DatabaseManager:
                             agent_name: str,
                             agent_project_id: Optional[str],
                             query: str,
-                            limit: int = 50) -> List[Dict]:
-        """Search messages in accessible channels using FTS"""
-        cursor = await conn.execute("""
-            SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
-                   ac.channel_name, ac.channel_type
-            FROM messages m
-            INNER JOIN messages_fts fts ON m.id = fts.rowid
-            INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
-            WHERE fts.content MATCH ?
-              AND ac.agent_name = ? 
-              AND ac.agent_project_id IS NOT DISTINCT FROM ?
-            ORDER BY m.timestamp DESC
-            LIMIT ?
-        """, (query, agent_name, agent_project_id, limit))
+                            limit: int = 50,
+                            # v4 semantic search parameters
+                            semantic_search: bool = True,
+                            ranking_profile: str = "balanced",
+                            channel_ids: Optional[List[str]] = None,
+                            message_type: Optional[str] = None,
+                            min_confidence: Optional[float] = None,
+                            since: Optional[datetime] = None) -> List[Dict]:
+        """
+        Search messages in accessible channels.
         
-        rows = await cursor.fetchall()
-        return [
-            {
-                'id': row[0],
-                'channel_id': row[1],
-                'sender_id': row[2],
-                'content': row[3],
-                'timestamp': row[4],
-                'channel_name': row[5],
-                'channel_type': row[6]
-            }
-            for row in rows
-        ]
+        Uses semantic search with HybridStore when available (v4),
+        falls back to SQLite FTS otherwise.
+        
+        Args:
+            agent_name: Agent performing the search
+            agent_project_id: Agent's project ID
+            query: Search query
+            limit: Maximum results
+            semantic_search: Use semantic search if available (v4)
+            ranking_profile: One of 'recent', 'quality', 'balanced', 'similarity'
+            channel_ids: Filter to specific channels
+            message_type: Filter by message type from metadata
+            min_confidence: Minimum confidence threshold
+            since: Only messages after this time
+        
+        Returns:
+            List of matching messages with scores (if semantic)
+        """
+        
+        # If HybridStore is available and semantic search is enabled, use it
+        if self.hybrid_store and semantic_search:
+            # First get accessible channels for this agent if not specified
+            if not channel_ids:
+                cursor = await conn.execute("""
+                    SELECT channel_id FROM agent_channels
+                    WHERE agent_name = ? 
+                      AND agent_project_id IS NOT DISTINCT FROM ?
+                """, (agent_name, agent_project_id))
+                
+                accessible_channels = [row[0] for row in await cursor.fetchall()]
+                channel_ids = accessible_channels
+            
+            # Use HybridStore for semantic search with ranking
+            results = await self.hybrid_store.search(
+                query=query,
+                channel_ids=channel_ids,
+                message_type=message_type,
+                min_confidence=min_confidence,
+                since=since,
+                limit=limit,
+                ranking_profile=ranking_profile
+            )
+            
+            # Add channel names for consistency with existing format
+            for result in results:
+                cursor = await conn.execute("""
+                    SELECT name, channel_type FROM channels
+                    WHERE id = ?
+                """, (result['channel_id'],))
+                row = await cursor.fetchone()
+                if row:
+                    result['channel_name'] = row[0]
+                    result['channel_type'] = row[1]
+            
+            return results
+        
+        # Fall back to FTS search (existing behavior)
+        else:
+            cursor = await conn.execute("""
+                SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
+                       ac.channel_name, ac.channel_type, m.confidence, m.metadata
+                FROM messages m
+                INNER JOIN messages_fts fts ON m.id = fts.rowid
+                INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+                WHERE fts.content MATCH ?
+                  AND ac.agent_name = ? 
+                  AND ac.agent_project_id IS NOT DISTINCT FROM ?
+                ORDER BY m.timestamp DESC
+                LIMIT ?
+            """, (query, agent_name, agent_project_id, limit))
+            
+            rows = await cursor.fetchall()
+            results = []
+            for row in rows:
+                result = {
+                    'id': row[0],
+                    'channel_id': row[1],
+                    'sender_id': row[2],
+                    'content': row[3],
+                    'timestamp': row[4],
+                    'channel_name': row[5],
+                    'channel_type': row[6],
+                    'confidence': row[7]
+                }
+                
+                # Parse metadata if present
+                if row[8]:
+                    result['metadata'] = json.loads(row[8])
+                    
+                    # Apply message_type filter if specified
+                    if message_type and result['metadata'].get('type') != message_type:
+                        continue
+                
+                # Apply confidence filter
+                if min_confidence and result.get('confidence', 0) < min_confidence:
+                    continue
+                    
+                # Apply time filter
+                if since:
+                    msg_time = datetime.fromisoformat(result['timestamp'])
+                    if msg_time < since:
+                        continue
+                
+                results.append(result)
+            
+            return results[:limit]
     
     # ============================================================================
     # Message CRUD Operations

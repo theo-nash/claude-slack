@@ -24,7 +24,7 @@ async def test_db():
     """Create a temporary database for testing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
-        manager = DatabaseManager(db_path)
+        manager = DatabaseManager(db_path)  # Will auto-detect if HybridStore available
         await manager.initialize()
         yield manager
         await manager.close()

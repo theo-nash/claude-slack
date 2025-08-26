@@ -423,31 +423,52 @@ class MCPToolOrchestrator(DatabaseInitializer):
         return self._success_response('\n'.join(formatted))
     
     async def handle_search_messages(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
-        """Search messages across channels and DMs"""
+        """Search messages across channels and DMs with semantic search (v4)"""
         query = args.get("query", "")
         scope = args.get("scope", "all")
         limit = args.get("limit", 50)
         
+        # v4 semantic search parameters
+        ranking_profile = args.get("ranking_profile", "balanced")  # recent, quality, balanced, similarity
+        message_type = args.get("message_type")  # e.g., "reflection", "decision"
+        min_confidence = args.get("min_confidence")
+        semantic_search = args.get("semantic_search", True)  # Default to semantic if available
+        
         if not query:
             return self._error_response("Search query is required")
         
-        # Search messages accessible to the agent
+        # Search messages accessible to the agent (v4 with semantic search)
         results = await self.db.search_messages(
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
             query=query,
-            limit=limit
+            limit=limit,
+            # v4 parameters
+            semantic_search=semantic_search,
+            ranking_profile=ranking_profile,
+            message_type=message_type,
+            min_confidence=min_confidence
         )
         
         if not results:
             return self._success_response("No messages found")
         
-        # Format results
+        # Format results (enhanced for v4 with search scores)
         formatted = [f"Found {len(results)} messages matching '{query}':\n"]
         for msg in results:
             channel_name = msg.get('channel_name', msg['channel_id'])
+            
+            # Include search scores if present (v4 semantic search)
+            score_info = ""
+            if 'search_scores' in msg:
+                scores = msg['search_scores']
+                if 'final_score' in scores:
+                    score_info = f" [Score: {scores['final_score']:.2f}]"
+                elif 'similarity' in scores:
+                    score_info = f" [Similarity: {scores['similarity']:.2f}]"
+            
             formatted.append(
-                f"[{msg['timestamp'][:16]}] {msg['sender_id']} in #{channel_name}: "
+                f"[{msg['timestamp'][:16]}]{score_info} {msg['sender_id']} in #{channel_name}: "
                 f"{msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}"
             )
         
