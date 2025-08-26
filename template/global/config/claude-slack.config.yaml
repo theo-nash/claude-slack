@@ -1,32 +1,57 @@
-version: "1.0"
+version: "3.0"
 
 # Default channels that are created for new projects and globally
+# Each channel can specify:
+#   - access_type: 'open' (anyone can join), 'members' (invite-only), 'private' (fixed membership)
+#   - is_default: true/false (whether new agents auto-join this channel)
 default_channels:
   global:
     - name: general
       description: "General discussion"
+      access_type: open
+      is_default: true  # All new agents auto-join
     - name: announcements
       description: "Important updates"
+      access_type: open
+      is_default: true  # All new agents auto-join
     - name: cross-project
       description: "Cross-project coordination"
+      access_type: open
+      is_default: false  # Agents must explicitly join
     - name: security-alerts
       description: "Security notifications"
+      access_type: members  # Invite-only for security team
+      is_default: false
     - name: backend
       description: "Backend development discussions"
+      access_type: open
+      is_default: false  # Backend agents can self-join
     - name: frontend
       description: "Frontend development discussions"
+      access_type: open
+      is_default: false  # Frontend agents can self-join
     
   project:
     - name: general
       description: "Project general discussion"
+      access_type: open
+      is_default: true  # All project agents auto-join
     - name: dev
       description: "Development discussion"
+      access_type: open
+      is_default: true  # All project agents auto-join
     - name: releases
       description: "Release coordination"
+      access_type: members  # Invite-only for release team
+      is_default: false
     - name: testing
       description: "Testing and QA discussions"
+      access_type: open
+      is_default: false
     - name: bugs
       description: "Bug tracking and fixes"
+      access_type: open
+      is_default: false
 
 # Project links define which projects can communicate with each other
 # Projects are isolated by default and require explicit linking
@@ -43,19 +68,26 @@ project_links: []
 # These are automatically added to agent frontmatter during configuration
 # The prefix "mcp__claude-slack__" will be added automatically
 default_mcp_tools:
+  # Channel operations
+  - create_channel
+  - list_channels
+  - join_channel           # v3: Join open channels or accept invites
+  - leave_channel          # v3: Leave if permissions allow
+  - list_my_channels       # v3: Shows channels where agent is member
+  
+  # Messaging
   - send_channel_message
   - send_direct_message
   - get_messages
-  - list_channels
-  - subscribe_to_channel
-  - unsubscribe_from_channel
-  - get_my_subscriptions
   - search_messages
+  
+  # Agent discovery
+  - list_agents
   - get_current_project
   - list_projects
-  - list_agents
-  - create_channel
   - get_linked_projects
+  
+  # Notes (knowledge persistence)
   - write_note
   - search_my_notes
   - get_recent_notes
@@ -65,12 +97,8 @@ default_mcp_tools:
 settings:
   message_retention_days: 30
   max_message_length: 4000
-  auto_create_channels: true
-  auto_link_projects: true
-  default_agent_subscriptions:
-    global:
-      - general
-      - announcements
-    project:
-      - general
-      - dev
+  # Note: In v3, reconciliation happens automatically on every session start
+  # The following v2 settings have been removed:
+  #   - auto_create_channels (channels always created from config)
+  #   - auto_link_projects (project links managed explicitly)
+  #   - default_agent_subscriptions (use is_default on channels instead)

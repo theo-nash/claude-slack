@@ -50,9 +50,9 @@ class ClaudeSlackInstaller {
         if (this.testMode) {
             console.log(chalk.gray('[TEST MODE] Running in test mode - using temp directory\n'));
         }
-        console.log(chalk.cyan.bold('\n🚀 Claude-Slack Installer\n'));
+        console.log(chalk.cyan.bold('\n🚀 Claude-Slack v3 Installer\n'));
         console.log('Channel-based messaging system for Claude Code agents');
-        console.log(chalk.yellow('Installing GLOBALLY with project isolation support\n'));
+        console.log(chalk.yellow('Installing GLOBALLY with auto-configuration support\n'));
 
         try {
             // 1. Check prerequisites
@@ -175,23 +175,24 @@ class ClaudeSlackInstaller {
         console.log(`  • ${chalk.bold('Installation Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR)}`);
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('Hooks')}: Registered in settings.json`);
+        console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
 
         if (this.hasProject) {
             console.log(`  • ${chalk.bold('Project')}: ${this.projectDir}`);
-            console.log(`    - Will add example agent with scoped subscriptions`);
+            console.log(`    - Will add example agent`);
         }
 
-        console.log(chalk.cyan('\n📚 Features:'));
-        console.log('  • Project isolation with scoped channels');
-        console.log('  • Global vs project message separation');
-        console.log('  • Automatic project detection');
-        console.log('  • Frontmatter-based subscriptions');
+        console.log(chalk.cyan('\n🎯 Claude-Slack v3 Features:'));
+        console.log('  • Unified membership model (no roles)');
+        console.log('  • Auto-configuration from YAML config');
+        console.log('  • Agent discovery with DM policies');
+        console.log('  • Private notes channels for agents');
+        console.log('  • Automatic reconciliation on session start');
 
         const response = await prompts({
             type: 'confirm',
             name: 'proceed',
-            message: 'Proceed with installation?',
+            message: 'Proceed with v3 installation?',
             initial: true
         });
 
@@ -213,8 +214,8 @@ class ClaudeSlackInstaller {
         const mcpTarget = path.join(claudeSlackDir, 'mcp');
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
-        // Ensure all manager directories are properly copied
-        const managerDirs = ['sessions', 'channels', 'subscriptions', 'projects', 'log_manager', 'utils', 'db', 'frontmatter'];
+        // Ensure all v3 manager directories are properly copied
+        const managerDirs = ['sessions', 'channels', 'agents', 'notes', 'projects', 'config', 'log_manager', 'utils', 'db', 'frontmatter'];
         for (const dir of managerDirs) {
             const dirSource = path.join(globalTemplateDir, 'mcp', 'claude-slack', dir);
             const dirTarget = path.join(mcpTarget, dir);
@@ -231,10 +232,17 @@ class ClaudeSlackInstaller {
             }
         }
 
-        // Copy config file into claude-slack/config
+        // Copy config directory and YAML configuration
         const configSource = path.join(globalTemplateDir, 'config');
         const configTarget = path.join(claudeSlackDir, 'config');
         await fs.copy(configSource, configTarget, { overwrite: false });
+        
+        // Ensure YAML config is copied (critical for v3 auto-configuration)
+        const configYamlSource = path.join(globalTemplateDir, 'config', 'claude-slack.config.yaml');
+        const configYamlTarget = path.join(claudeSlackDir, 'config', 'claude-slack.config.yaml');
+        if (!fs.existsSync(configYamlTarget)) {
+            await fs.copy(configYamlSource, configYamlTarget);
+        }
 
         // Copy scripts into claude-slack/scripts
         const scriptsSource = path.join(globalTemplateDir, 'scripts');
@@ -269,10 +277,11 @@ class ClaudeSlackInstaller {
         // First, create requirements.txt if it doesn't exist at the claude-slack level
         const requirementsPath = path.join(claudeSlackDir, 'requirements.txt');
         if (!fs.existsSync(requirementsPath)) {
-            const requirements = `# Claude-Slack MCP Server Requirements
+            const requirements = `# Claude-Slack v3 MCP Server Requirements
 mcp>=0.1.0
 aiosqlite>=0.19.0
 pyyaml>=6.0
+python-dateutil>=2.8.0
 `;
             await fs.writeFile(requirementsPath, requirements);
         }
@@ -308,7 +317,7 @@ pyyaml>=6.0
     }
 
     async initializeDatabase() {
-        this.spinner = ora('Initializing SQLite database...').start();
+        this.spinner = ora('Initializing database with v3 schema...').start();
 
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const dataDir = path.join(claudeSlackDir, 'data');
@@ -405,15 +414,14 @@ print('Database initialized successfully')
 
     async createWrapperScripts(scriptsDir) {
         // Create wrapper scripts that use the venv Python
-        // Handle platform-specific paths
+        // V3: Only manage_project_links is needed - everything else is automatic
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const venvPython = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
         if (process.platform === 'win32') {
-            // Windows batch files
-            // Note: configure_agents and register_project_agents removed - setup is now automatic
+            // Windows batch file for project linking
             const linksBat = `@echo off
 REM Wrapper script for manage_project_links.py using venv Python
 set SCRIPT_DIR=%~dp0
@@ -422,8 +430,7 @@ set VENV_PYTHON="${venvPython}"
 `;
             await fs.writeFile(path.join(scriptsDir, 'manage_project_links.bat'), linksBat);
         } else {
-            // Unix/Linux/Mac shell scripts
-            // Note: configure_agents and register_project_agents removed - setup is now automatic
+            // Unix/Linux/Mac shell script for project linking
             const linksWrapper = `#!/bin/bash
 # Wrapper script for manage_project_links.py using venv Python
 SCRIPT_DIR="$( cd "$( dirname "\${BASH_SOURCE[0]}" )" && pwd )"
@@ -652,30 +659,35 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
     }
 
     displaySuccess() {
-        console.log(chalk.green.bold('\n✅ Claude-Slack installed successfully!\n'));
+        console.log(chalk.green.bold('\n✅ Claude-Slack v3 installed successfully!\n'));
 
         console.log(chalk.cyan('📚 Installation Summary:'));
-        console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, MCP_SERVER_DIR)}`);
+        console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
         console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
         console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
-        console.log(`  • ${chalk.bold('Managers')}: SessionManager, ChannelManager, SubscriptionManager, ProjectSetupManager`);
 
         console.log(chalk.cyan('\n🐛 Debug Logging:'));
         console.log('  • Enable debug logs: export CLAUDE_SLACK_DEBUG=1');
         console.log(`  • Log files: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'logs')}/*.log`);
         console.log('  • Logs show hook execution, database operations, and errors');
 
-        console.log(chalk.cyan('\n🚀 Quick Start Guide:'));
-        console.log('  1. Restart Claude Code to load the MCP server');
-        console.log('  2. Projects are auto-detected when you have a .claude/ directory');
-        console.log('  3. Agents are auto-configured with MCP tools on session start');
-        console.log('  4. Use /slack-status to verify your context');
-        console.log('  5. Start using channels immediately!');
-        console.log('  ');
-        console.log(chalk.cyan('🏗️  Architecture:'));
-        console.log('  • SessionManager: Manages session contexts and project detection');
-        console.log('  • ChannelManager: Handles channel CRUD operations');
-        console.log('  • SubscriptionManager: Manages agent-channel relationships\n');
+        console.log(chalk.cyan('\n🎯 Auto-Configuration:'));
+        console.log('  • Channels created automatically from config YAML');
+        console.log('  • Notes channels created for each agent');
+        console.log('  • Agent subscriptions managed via reconciliation');
+        console.log('  • Everything happens on first session start!');
+        console.log('');
+        console.log(chalk.cyan('🚀 Quick Start:'));
+        console.log('  1. Restart Claude Code');
+        console.log('  2. Start a new session - everything auto-configures!');
+        console.log('  3. Use /slack-status to verify');
+        console.log('');
+        console.log(chalk.cyan('🏗️  V3 Architecture:'));
+        console.log('  • Unified membership model (no roles)');
+        console.log('  • ConfigSyncManager handles all setup');
+        console.log('  • Agent discovery with DM policies');
+        console.log('  • Private notes channels for memory\n');
 
         console.log(chalk.cyan('🔧 Project Linking (Optional):'));
         console.log(chalk.gray('  (Only needed for cross-project communication)'));
@@ -691,14 +703,17 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log('  • /slack-inbox - Check unread messages');
         console.log('  • /slack-subscribe #channel - Join a channel\n');
 
-        console.log(chalk.cyan('🔍 Project Isolation:'));
+        console.log(chalk.cyan('🔧 Configuration:'));
+        console.log(`  • Edit defaults: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
+        console.log('  • Changes apply on next session start');
+        console.log('');
         if (this.hasProject) {
-            console.log(`  • Current project: ${chalk.green(this.projectDir)}`);
-            console.log('  • Project channels are separate from global channels');
-            console.log('  • Agent subscriptions use scoped format (global: vs project:)');
+            console.log(chalk.cyan('📁 Project Context:'));
+            console.log(`  • Project detected: ${chalk.green(this.projectDir)}`);
+            console.log('  • Project channels will be created automatically');
+            console.log('  • Agents use scoped subscriptions (global: vs project:)');
         } else {
-            console.log('  • No project detected - using global context only');
-            console.log('  • Create a .claude directory in your project for project channels');
+            console.log(chalk.gray('📁 No project detected - global context only'));
         }
 
         console.log(chalk.blue('\n📖 For documentation: https://github.com/yourusername/claude-slack'));

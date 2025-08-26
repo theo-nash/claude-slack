@@ -234,6 +234,26 @@ class FrontmatterParser:
         dm_pref = frontmatter.get('direct_messages', 'enabled')
         agent_data['direct_messages'] = dm_pref != 'disabled'
         
+        # Extract DM policy and discoverability (v3)
+        dm_policy = frontmatter.get('dm_policy', 'open')
+        if dm_policy not in ['open', 'restricted', 'closed']:
+            dm_policy = 'open'
+        agent_data['dm_policy'] = dm_policy
+        
+        # Support both 'visibility' (user-facing) and 'discoverable' (internal)
+        visibility = frontmatter.get('visibility', frontmatter.get('discoverable', 'public'))
+        if visibility not in ['public', 'project', 'private']:
+            visibility = 'public'
+        agent_data['discoverable'] = visibility  # Use internal name
+        
+        # Extract DM whitelist for restricted policy
+        dm_whitelist = frontmatter.get('dm_whitelist', [])
+        if isinstance(dm_whitelist, str):
+            dm_whitelist = [dm_whitelist]
+        elif not isinstance(dm_whitelist, list):
+            dm_whitelist = []
+        agent_data['dm_whitelist'] = dm_whitelist
+        
         # Extract message preferences
         msg_prefs = frontmatter.get('message_preferences', {})
         if isinstance(msg_prefs, dict):

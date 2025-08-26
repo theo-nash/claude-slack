@@ -266,19 +266,25 @@ class ConfigManager:
         """
         import copy
         
-        # Deep copy defaults
-        merged = copy.deepcopy(self.DEFAULT_CONFIG)
+        # Start with an empty dict and only add defaults for missing top-level keys
+        merged = {}
         
-        # Update with loaded values
-        if "version" in config:
-            merged["version"] = config["version"]
+        # Version - use loaded or default
+        merged["version"] = config.get("version", self.DEFAULT_CONFIG["version"])
         
+        # Channels - use ONLY what's in the config, don't merge with defaults
+        # This ensures we don't add channels that weren't explicitly configured
         if "default_channels" in config:
             merged["default_channels"] = config["default_channels"]
+        else:
+            # Only use empty structure if no channels are specified at all
+            merged["default_channels"] = {"global": [], "project": []}
         
-        if "project_links" in config:
-            merged["project_links"] = config["project_links"]
+        # Project links - use loaded or empty list
+        merged["project_links"] = config.get("project_links", [])
         
+        # Settings - merge with defaults (these are system settings, not content)
+        merged["settings"] = copy.deepcopy(self.DEFAULT_CONFIG.get("settings", {}))
         if "settings" in config:
             merged["settings"].update(config["settings"])
         

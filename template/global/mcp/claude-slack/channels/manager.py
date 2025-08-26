@@ -30,11 +30,6 @@ except ImportError as e:
     ensure_db_initialized = lambda f: f  # No-op decorator
 
 try:
-    from config_manager import get_config_manager
-except ImportError:
-    get_config_manager = None
-
-try:
     from log_manager import get_logger
 except ImportError:
     import logging
@@ -120,8 +115,8 @@ class ChannelManager(DatabaseInitializer):
         if scope == 'global':
             return f"global:{name}"
         elif scope == 'project' and project_id:
-            project_id_short = project_id[:8] if len(project_id) > 8 else project_id
-            return f"proj_{project_id_short}:{name}"
+            # Use project_id as-is (it's already like "proj_test1")
+            return f"{project_id}:{name}"
         else:
             return f"global:{name}"
     
@@ -360,7 +355,7 @@ class ChannelManager(DatabaseInitializer):
                                      agent_project_id: Optional[str] = None,
                                      include_archived: bool = False) -> List[Dict[str, Any]]:
         """
-        List all channels accessible to an agent.
+        List all channels the agent is currently a member of.
         
         Args:
             agent_name: Agent name
@@ -368,13 +363,13 @@ class ChannelManager(DatabaseInitializer):
             include_archived: Include archived channels
             
         Returns:
-            List of channel dictionaries
+            List of channel dictionaries (channels agent is member of)
         """
         if not self.db:
             return []
         
         try:
-            # Use DatabaseManagerV3 to get agent's channels
+            # Use DatabaseManagerV3 to get agent's channels (where they're a member)
             channels = await self.db.get_agent_channels(
                 agent_name=agent_name,
                 agent_project_id=agent_project_id,
@@ -384,6 +379,115 @@ class ChannelManager(DatabaseInitializer):
             
         except Exception as e:
             self.logger.error(f"Error listing channels: {e}")
+            return []
+    
+    @ensure_db_initialized
+    async def list_available_channels(self,
+                                     agent_name: str,
+                                     agent_project_id: Optional[str] = None,
+                                     scope_filter: str = 'all',
+                                     include_archived: bool = False) -> List[Dict[str, Any]]:
+        """
+        List all channels available/discoverable to an agent (including ones they could join).
+        
+        This includes:
+        - Channels they're already members of
+        - Open channels they could join (respecting scope access)
+        - Members/private channels they can see but can't self-join
+        
+        Args:
+            agent_name: Agent name
+            agent_project_id: Agent's project ID
+            scope_filter: 'all', 'global', or 'project'
+            include_archived: Include archived channels
+            
+        Returns:
+            List of channel dictionaries with membership status
+        """
+        if not self.db:
+            return []
+        
+        try:
+            result = []
+            
+            # Get all channels from database
+            all_channels = await self.db.get_channels_by_scope(
+                scope='all',
+                project_id=None
+            )
+            
+            # Get channels agent is already member of
+            member_channels = await self.db.get_agent_channels(
+                agent_name=agent_name,
+                agent_project_id=agent_project_id,
+                include_archived=True  # Get all to check membership
+            )
+            member_channel_ids = {ch['id'] for ch in member_channels}
+            
+            for channel in all_channels:
+                # Skip archived if not requested
+                if channel.get('is_archived') and not include_archived:
+                    continue
+                
+                # Apply scope filter
+                if scope_filter != 'all':
+                    if channel['scope'] != scope_filter:
+                        continue
+                
+                # Determine visibility and access
+                is_member = channel['id'] in member_channel_ids
+                can_see = False
+                can_join = False
+                access_reason = ""
+                
+                # Determine if agent can see this channel
+                if is_member:
+                    can_see = True
+                    access_reason = "member"
+                elif channel['scope'] == 'global':
+                    can_see = True
+                    can_join = (channel['access_type'] == 'open')
+                    access_reason = "global channel"
+                elif channel['scope'] == 'project':
+                    # Same project
+                    if agent_project_id == channel['project_id']:
+                        can_see = True
+                        can_join = (channel['access_type'] == 'open')
+                        access_reason = "same project"
+                    # Linked projects
+                    elif agent_project_id and await self.db.check_projects_linked(
+                        agent_project_id, channel['project_id']
+                    ):
+                        can_see = True
+                        can_join = (channel['access_type'] == 'open')
+                        access_reason = "linked project"
+                    # Global agent
+                    elif agent_project_id is None:
+                        can_see = True
+                        can_join = (channel['access_type'] == 'open')
+                        access_reason = "global agent access"
+                
+                # Add to result if visible
+                if can_see:
+                    result.append({
+                        'id': channel['id'],
+                        'channel_type': channel.get('channel_type', 'channel'),
+                        'access_type': channel.get('access_type', 'open'),
+                        'scope': channel['scope'],
+                        'name': channel['name'],
+                        'description': channel.get('description'),
+                        'project_id': channel.get('project_id'),
+                        'is_default': channel.get('is_default', False),
+                        'is_archived': channel.get('is_archived', False),
+                        'is_member': is_member,
+                        'can_join': can_join and not is_member,
+                        'access_reason': access_reason
+                    })
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error listing available channels: {e}")
             return []
     
     # Note: Old add_channel_member, remove_channel_member, subscribe_to_channel, 
@@ -492,6 +596,8 @@ class ChannelManager(DatabaseInitializer):
         Join an open channel (self-service subscription).
         
         This is the unified API for subscribing to open channels.
+        Enforces scope restrictions: agents can only self-join channels 
+        they have natural access to (same project, linked projects, or global).
         
         Args:
             agent_name: Agent name
@@ -505,15 +611,38 @@ class ChannelManager(DatabaseInitializer):
             return False
         
         try:
-            # Get channel info to verify it's open
+            # Get channel info to verify it's open and check scope
             channel = await self.db.get_channel(channel_id)
             if not channel:
                 self.logger.error(f"Channel {channel_id} not found")
                 return False
             
+            # Check 1: Channel must be open for self-service joining
             if channel['access_type'] != 'open':
-                self.logger.error(f"Channel {channel_id} is not open for self-service joining")
+                self.logger.error(f"Channel {channel_id} is not open for self-service joining (type={channel['access_type']})")
                 return False
+            
+            # Check 2: Scope eligibility - critical for project isolation
+            if channel['scope'] == 'project':
+                channel_project_id = channel['project_id']
+                
+                # Allow if same project
+                if agent_project_id == channel_project_id:
+                    pass  # Same project - allowed
+                # Allow if projects are linked
+                elif agent_project_id and await self.db.check_projects_linked(agent_project_id, channel_project_id):
+                    self.logger.info(f"Allowing cross-project join: projects {agent_project_id} and {channel_project_id} are linked")
+                # Allow if agent is global (no project_id)
+                elif agent_project_id is None:
+                    self.logger.info(f"Allowing global agent to join project channel {channel_id}")
+                else:
+                    self.logger.error(
+                        f"Agent from project {agent_project_id} cannot self-join "
+                        f"channel {channel_id} from project {channel_project_id}. "
+                        f"Projects are not linked. Cross-project access requires invitation."
+                    )
+                    return False
+            # Global channels: any agent can self-join (no check needed)
             
             # Add as member with invited_by='self'
             await self.db.add_channel_member(
@@ -543,13 +672,16 @@ class ChannelManager(DatabaseInitializer):
                               inviter_name: str,
                               inviter_project_id: Optional[str]) -> bool:
         """
-        Invite an agent to a members channel.
+        Invite an agent to a members-only channel.
+        
+        Open channels don't need invitations - agents can self-join.
+        Private channels (DMs) have fixed membership.
         
         Args:
-            channel_id: Target channel
+            channel_id: Target channel (must be members-only)
             invitee_name: Agent to invite
             invitee_project_id: Invitee's project ID
-            inviter_name: Agent doing the inviting
+            inviter_name: Agent doing the inviting (must be a member)
             inviter_project_id: Inviter's project ID
             
         Returns:
@@ -565,9 +697,16 @@ class ChannelManager(DatabaseInitializer):
                 self.logger.error(f"Channel {channel_id} not found")
                 return False
             
-            # Check if inviter can invite
+            # Only allow invitations to members-only channels
+            if channel['access_type'] == 'open':
+                self.logger.error(
+                    f"Cannot invite to open channel {channel_id}. "
+                    f"Open channels allow self-service joining via join_channel."
+                )
+                return False
+            
             if channel['access_type'] == 'private':
-                self.logger.error("Cannot invite to private channels")
+                self.logger.error("Cannot invite to private channels (DMs have fixed membership)")
                 return False
             
             # For members channels, check if inviter has permission
@@ -740,3 +879,255 @@ class ChannelManager(DatabaseInitializer):
         except Exception as e:
             self.logger.error(f"Error applying default channels: {e}")
             return added_count
+    
+    @ensure_db_initialized
+    async def send_message(self,
+                          channel_id: str,
+                          sender_name: str,
+                          sender_project_id: Optional[str],
+                          content: str,
+                          metadata: Optional[Dict] = None,
+                          thread_id: Optional[str] = None) -> int:
+        """
+        Send a message to a channel with validation.
+        
+        Raises:
+            ValueError: If validation fails
+            
+        Returns:
+            Message ID
+        """
+        # Validate content
+        if not content or not content.strip():
+            raise ValueError("Cannot send empty message")
+        
+        # Get member record with permissions in one query
+        members = await self.db.get_channel_members(channel_id)
+        sender_member = next(
+            (m for m in members
+             if m['agent_name'] == sender_name
+             and m['agent_project_id'] == sender_project_id),
+            None
+        )
+        
+        if not sender_member:
+            raise ValueError(f"Agent {sender_name} is not a member of channel {channel_id}")
+        
+        if not sender_member.get('can_send', True):
+            raise ValueError(f"Agent {sender_name} does not have send permission")
+        
+        # Validate mentions (warning only)
+        mentions = await self._validate_mentions(channel_id, content)
+        if mentions and metadata is not None:
+            metadata['mentions'] = mentions
+        elif mentions and metadata is None:
+            metadata = {'mentions': mentions}
+        
+        # Send via database (will do its own permission check as safety net)
+        try:
+            message_id = await self.db.send_message(
+                channel_id=channel_id,
+                sender_id=sender_name,
+                sender_project_id=sender_project_id,
+                content=content,
+                metadata=metadata,
+                thread_id=thread_id
+            )
+            self.logger.info(f"Message {message_id} sent to {channel_id} by {sender_name}")
+            return message_id
+        except ValueError as e:
+            # Database-level permission check failed
+            self.logger.error(f"Database rejected message: {e}")
+            raise
+    
+    async def _validate_mentions(self, channel_id: str, content: str) -> List[str]:
+        """
+        Validate @mentions in message content.
+        
+        Handles various mention formats:
+        - Simple: @alice
+        - Hyphenated: @backend-engineer
+        - Project-scoped: @alice:proj_123
+        
+        Args:
+            channel_id: Channel the message is being sent to
+            content: Message content
+            
+        Returns:
+            List of valid mentioned agent names
+        """
+        import re
+        # Pattern matches: @word, @hyphen-word, @word:project
+        mentions = re.findall(r'@([\w-]+(?::[\w-]+)?)', content)
+        if not mentions:
+            return []
+        
+        # Get channel members to validate mentions
+        members = await self.db.get_channel_members(channel_id)
+        
+        # Build lookup sets for validation
+        member_names = {m['agent_name'] for m in members}
+        # Also track project-scoped names
+        member_full_ids = {
+            f"{m['agent_name']}:{m['agent_project_id']}" if m['agent_project_id'] else m['agent_name']
+            for m in members
+        }
+        
+        valid_mentions = []
+        for mentioned in mentions:
+            # Check if it's a simple name or project-scoped
+            if ':' in mentioned:
+                # Project-scoped mention (e.g., @alice:proj_123)
+                if mentioned in member_full_ids:
+                    valid_mentions.append(mentioned)
+                else:
+                    self.logger.warning(f"Mentioned agent @{mentioned} is not in channel {channel_id}")
+            else:
+                # Simple mention (e.g., @alice or @backend-engineer)
+                if mentioned in member_names:
+                    valid_mentions.append(mentioned)
+                else:
+                    self.logger.warning(f"Mentioned agent @{mentioned} is not in channel {channel_id}")
+        
+        return valid_mentions
+    
+    @ensure_db_initialized
+    async def send_direct_message(self,
+                                 sender_name: str,
+                                 sender_project_id: Optional[str],
+                                 recipient_name: str,
+                                 recipient_project_id: Optional[str],
+                                 content: str,
+                                 metadata: Optional[Dict] = None) -> int:
+        """
+        Send a direct message to another agent (creates DM channel if needed).
+        
+        This is a convenience method that handles DM channel creation/retrieval
+        and sends the message in one operation.
+        
+        Args:
+            sender_name: Agent sending the message
+            sender_project_id: Sender's project ID
+            recipient_name: Agent receiving the message
+            recipient_project_id: Recipient's project ID
+            content: Message content
+            metadata: Optional metadata
+            
+        Returns:
+            Message ID
+            
+        Raises:
+            ValueError: If DM is not allowed between agents or validation fails
+        """
+        # Get or create DM channel
+        try:
+            dm_channel_id = await self.db.create_or_get_dm_channel(
+                sender_name, sender_project_id,
+                recipient_name, recipient_project_id
+            )
+        except ValueError as e:
+            # DM not allowed between these agents
+            self.logger.error(f"Cannot create DM channel: {e}")
+            raise
+        
+        # Use the unified send_message method
+        return await self.send_message(
+            channel_id=dm_channel_id,
+            sender_name=sender_name,
+            sender_project_id=sender_project_id,
+            content=content,
+            metadata=metadata
+        )
+    
+    @ensure_db_initialized
+    async def get_channel_messages(self,
+                                  channel_id: str,
+                                  requester_name: str,
+                                  requester_project_id: Optional[str],
+                                  limit: int = 100,
+                                  since: Optional[str] = None) -> List[Dict]:
+        """
+        Get messages from a channel (with permission check).
+        
+        Args:
+            channel_id: Channel to get messages from
+            requester_name: Agent requesting messages
+            requester_project_id: Requester's project ID
+            limit: Maximum number of messages to return
+            since: Optional timestamp to get messages since
+            
+        Returns:
+            List of message dictionaries
+            
+        Raises:
+            ValueError: If requester is not a member
+        """
+        # Verify requester is a member
+        is_member = await self.db.is_channel_member(
+            channel_id, requester_name, requester_project_id
+        )
+        if not is_member:
+            raise ValueError(f"Agent {requester_name} is not a member of {channel_id}")
+        
+        # Get messages from database
+        # Note: get_messages expects different parameters, using get_channel_messages instead
+        messages = await self.db.get_messages(
+            agent_name=requester_name,
+            agent_project_id=requester_project_id,
+            channel_id=channel_id,
+            limit=limit,
+            since=since
+        )
+        
+        self.logger.debug(f"Retrieved {len(messages)} messages from {channel_id}")
+        return messages
+    
+    @ensure_db_initialized
+    async def send_to_channel(self,
+                            channel_name: str,
+                            scope: str,
+                            sender_name: str,
+                            sender_project_id: Optional[str],
+                            content: str,
+                            metadata: Optional[Dict] = None,
+                            project_id: Optional[str] = None) -> int:
+        """
+        Send message to a named channel (resolves channel_id).
+        
+        This is a convenience method that constructs the channel_id
+        from the channel name and scope.
+        
+        Args:
+            channel_name: Channel name (without scope prefix)
+            scope: 'global' or 'project'
+            sender_name: Agent sending the message
+            sender_project_id: Sender's project ID
+            content: Message content
+            metadata: Optional metadata
+            project_id: Project ID for project-scoped channels (defaults to sender's)
+            
+        Returns:
+            Message ID
+            
+        Raises:
+            ValueError: If validation fails or channel doesn't exist
+        """
+        # For project scope, use provided project_id or sender's project
+        if scope == 'project':
+            project_id = project_id or sender_project_id
+            if not project_id:
+                raise ValueError("Project ID required for project-scoped channels")
+        else:
+            project_id = None
+        
+        # Build channel ID
+        channel_id = self.get_scoped_channel_id(channel_name, scope, project_id)
+        
+        # Send the message
+        return await self.send_message(
+            channel_id=channel_id,
+            sender_name=sender_name,
+            sender_project_id=sender_project_id,
+            content=content,
+            metadata=metadata
+        )

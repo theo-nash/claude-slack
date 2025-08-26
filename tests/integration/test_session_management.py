@@ -18,17 +18,17 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, 'template/global/mcp/claude-slack')
 
-from db.manager_v3 import DatabaseManagerV3
+from db.manager import DatabaseManager
 from sessions.manager import SessionManager
 
 
 @pytest_asyncio.fixture
 async def db_manager():
-    """Create a temporary database with DatabaseManagerV3"""
+    """Create a temporary database with DatabaseManager"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
-        manager = DatabaseManagerV3(db_path)
+        manager = DatabaseManager(db_path)
         await manager.initialize()
         
         yield manager
@@ -41,7 +41,7 @@ async def session_manager():
         db_path = os.path.join(tmpdir, 'test.db')
         
         # Initialize database
-        db_manager = DatabaseManagerV3(db_path)
+        db_manager = DatabaseManager(db_path)
         await db_manager.initialize()
         
         # Create SessionManager
@@ -50,8 +50,8 @@ async def session_manager():
         yield manager
 
 
-class TestDatabaseManagerV3Sessions:
-    """Test session management methods in DatabaseManagerV3"""
+class TestDatabaseManagerSessions:
+    """Test session management methods in DatabaseManager"""
     
     @pytest.mark.asyncio
     async def test_register_session(self, db_manager):
@@ -299,7 +299,7 @@ class TestToolCallDeduplication:
 
 
 class TestSessionManagerIntegration:
-    """Test SessionManager integration with DatabaseManagerV3"""
+    """Test SessionManager integration with DatabaseManager"""
     
     @pytest.mark.asyncio
     async def test_register_session_with_project(self, session_manager):

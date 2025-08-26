@@ -1,29 +1,37 @@
-# 💬 Claude Slack: Slack for Subagents
+# 💬 Claude Slack v3: Unified Communication for AI Agents
 
-> Channel-based messaging infrastructure for Claude Code agents - Slack-like communication for AI collaboration
+> Auto-configuring channel-based messaging infrastructure for Claude Code agents - zero-setup Slack-like collaboration
 
 [![npm version](https://img.shields.io/npm/v/claude-slack.svg?cache=300)](https://www.npmjs.com/package/claude-slack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 🎯 Overview
 
-Claude-Slack brings **structured team communication** to Claude Code agents through channels and direct messages. Think of it as Slack for your AI agents - with project isolation, subscription management, and a unified message interface that enables sophisticated multi-agent collaboration.
+Claude-Slack v3 brings **automatic, permission-based communication** to Claude Code agents. Everything configures itself on first session - channels, agents, notes, and permissions are all handled automatically through YAML configuration and intelligent reconciliation.
+
+### ✨ What's New in v3
+
+- **🚀 Zero Configuration**: Everything sets up automatically on session start
+- **🔐 Unified Membership Model**: Permission-based access without complex roles
+- **📝 Private Notes System**: Agents maintain knowledge across sessions
+- **🤖 Agent Discovery**: Smart visibility controls with DM policies
+- **⚙️ YAML-Driven Setup**: Define channels and defaults in simple config
 
 ## 🏗️ Architecture
 
 ### 🔑 Core Concepts
 
-📺 **Channels** → Persistent topic-focused message streams that organize communication around specific domains or coordination needs.
+📺 **Auto-Provisioned Channels** → Channels created automatically from YAML config on first session - no manual setup required.
 
-🔒 **Project Isolation** → Clean separation between global and project-specific message spaces, with automatic context detection based on working directory.
+🔐 **Permission-Based Access** → Fine-grained permissions (`can_send`, `can_invite`, `can_leave`, `can_delete`) replace complex role hierarchies.
 
-📬 **Subscription Management** → Agents control their information exposure through channel subscriptions stored in frontmatter.
+🤖 **Smart Agent Discovery** → Agents set visibility (`public`, `project`, `private`) and DM policies (`open`, `restricted`, `closed`) for controlled interactions.
 
-📝 **Agent Notes** → Private workspace for agents to persist learnings, reflections, and context across sessions - discoverable but not strictly private to enable collective intelligence.
+📝 **Persistent Notes** → Private single-member channels for agents to maintain knowledge across sessions with full search capabilities.
 
-🎯 **Unified Interface** → Single `get_messages()` endpoint retrieves all communications (channels + DMs + notes) organized by scope.
+⚙️ **Configuration Reconciliation** → ConfigSyncManager automatically creates channels, registers agents, and manages permissions from YAML config.
 
-🧠 **Collective Intelligence** → Infrastructure designed to support META agents that can aggregate learnings across all agents for knowledge dissemination.
+🎯 **Unified Membership** → Single source of truth for all access control through the unified `channel_members` table.
 
 ### 📁 System Components
 
@@ -31,33 +39,32 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 ~/.claude/claude-slack/           # 🏠 Contained installation directory
 ├── mcp/                          # 🔧 MCP server implementation
 │   ├── server.py                # Main MCP server with tool handlers
-│   ├── projects/                # Project and setup management
-│   │   ├── mcp_tools_manager.py  # MCP tool configuration
-│   │   └── setup_manager.py      # Agent registration and setup
-│   ├── subscriptions/           # Channel subscription management
-│   │   └── manager.py           # SubscriptionManager with auto-provisioning
-│   ├── db/                      # Database layer with initialization patterns
-│   │   ├── manager.py           # Centralized database operations
-│   │   ├── initialization.py    # Database initialization decorators
-│   │   └── schema.sql           # Database schema with notes support
+│   ├── agents/                  # 🤖 Agent lifecycle and discovery (NEW)
+│   │   └── manager.py           # AgentManager with DM policies
+│   ├── notes/                   # 📝 Private notes system (NEW)
+│   │   └── manager.py           # NotesManager for knowledge persistence
+│   ├── config/                  # ⚙️ Configuration management (NEW)
+│   │   ├── manager.py           # ConfigManager for YAML handling
+│   │   └── sync_manager.py      # ConfigSyncManager for auto-setup
+│   ├── channels/                # 📺 Channel operations (v3)
+│   │   └── manager.py           # Unified membership model
+│   ├── projects/                # Project management
+│   ├── sessions/                # Session lifecycle
+│   ├── db/                      # Database layer (v3 schema)
+│   │   ├── manager.py           # Enhanced with v3 operations
+│   │   └── schema.sql           # Unified membership schema
 │   └── utils/                   # Utility modules
-│       └── formatting.py        # Token-efficient message formatting
-├── venv/                        # 🐍 Python virtual environment (shared)
+├── venv/                        # 🐍 Python virtual environment
 ├── config/
-│   └── claude-slack.config.yaml # ⚙️ Configuration and defaults
+│   └── claude-slack.config.yaml # ⚙️ Auto-configuration source
 ├── hooks/
-│   ├── slack_session_start.py  # 🚀 Project registration and setup
+│   ├── slack_session_start.py  # 🚀 Auto-configures everything
 │   └── slack_pre_tool_use.py   # 🔍 Project context detection
 ├── scripts/                     # 🛠️ Administrative CLI tools
-│   └── manage_project_links.py # Cross-project communication control
+│   └── manage_project_links.py # Cross-project communication
 ├── data/
-│   └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
-└── logs/                        # 📝 Application and hook logs
-    ├── server.log
-    ├── debug.log
-    └── hooks/
-        ├── session_start.log
-        └── pre_tool_use.log
+│   └── claude-slack.db         # 💾 SQLite database (v3 schema)
+└── logs/                        # 📝 Application logs
 ```
 
 ## 🚀 Installation
@@ -67,7 +74,16 @@ Claude-Slack brings **structured team communication** to Claude Code agents thro
 npx claude-slack
 ```
 
-The system installs to `~/.claude/claude-slack/` in a contained directory structure and **automatically configures agents** when a Claude Code session starts. No manual setup required! Agents are discovered and registered from their frontmatter metadata.
+### 🎯 What Happens Automatically
+
+1. **First Session**: ConfigSyncManager runs on session start
+2. **Channel Creation**: All channels from `claude-slack.config.yaml` are created
+3. **Agent Registration**: Your agent is registered with metadata from frontmatter
+4. **Notes Provisioning**: Private notes channel created for your agent
+5. **Permission Setup**: Appropriate permissions configured based on YAML
+6. **Ready to Go**: Start using channels immediately - no manual setup!
+
+The system installs to `~/.claude/claude-slack/` and handles everything through intelligent reconciliation.
 
 ## 💡 Usage
 
@@ -93,22 +109,63 @@ messages = get_messages()
 
 ### 🤖 Agent Configuration
 
-Agents subscribe to channels through frontmatter in their markdown files:
+Agents configure channel membership through frontmatter:
 
 ```yaml
 ---
 name: backend-engineer
+description: "Handles API and database operations"
+
+# Channel Configuration (v3 - Working Features)
 channels:
-  global:      # 🌍 Channels available everywhere
+  # Explicit subscriptions (always join these)
+  global:                # 🌍 Global channels
     - general
     - announcements
-    - security-alerts
-  project:     # 📁 Channels only in this project
+  project:               # 📁 Project-specific channels
     - dev
     - api
-    - testing
+  
+  # Exclusion features (v3 - WORKING)
+  exclude:               # Won't auto-join even if is_default=true
+    - random
+    - social
+  
+  never_default: false   # Set true to opt-out of ALL defaults
 ---
 ```
+
+#### Channel Membership Priority (Working)
+
+1. **`never_default: true`** → Blocks ALL default channels ✅
+2. **`exclude` list** → Blocks specific default channels ✅
+3. **`is_default: true` channels** → Auto-adds remaining defaults ✅
+4. **Explicit subscriptions** → Always honored regardless of defaults ✅
+
+#### Agent Discovery Settings (v3 - Working!)
+
+```yaml
+# Agent Discovery Configuration
+visibility: public        # public | project | private
+dm_policy: open          # open | restricted | closed
+dm_whitelist:            # For restricted policy only
+  - frontend-engineer
+  - security-auditor
+```
+
+- **Visibility**: Controls who can discover the agent
+  - `public`: All agents can discover
+  - `project`: Only same/linked project agents
+  - `private`: Not discoverable
+  
+- **DM Policy**: Controls who can send DMs
+  - `open`: Anyone can DM
+  - `restricted`: Only whitelist can DM
+  - `closed`: No DMs allowed
+
+#### Features Not Yet Implemented
+
+- **Message preferences** (auto-subscribe patterns, muted channels) - parsed but not used
 
 ### 🤖 Agent Communication
 
@@ -116,48 +173,66 @@ Agents communicate automatically using MCP tools. The system handles all message
 
 ## ⚙️ Configuration
 
-The system configuration is managed through `~/.claude/config/claude-slack.config.yaml`:
+The system auto-configures from `~/.claude/claude-slack/config/claude-slack.config.yaml`:
 
 ```yaml
-version: "1.0"
+version: "3.0"
 
-# Default channels created automatically
+# Channels created automatically on first session
 default_channels:
   global:    # Created once, available everywhere
     - name: general
       description: "General discussion"
+      access_type: open      # Anyone can join
+      is_default: true       # Auto-add new agents
     - name: announcements
       description: "Important updates"
+      access_type: open
+      is_default: true       # Auto-add new agents
   project:   # Created for each new project
     - name: general
       description: "Project general discussion"
+      access_type: open
+      is_default: true       # Auto-add project agents
     - name: dev
       description: "Development discussion"
+      access_type: open
+      is_default: true       # Auto-add project agents
 
-# MCP tools available to agents
+# MCP tools (auto-added to agents)
 default_mcp_tools:
-  - send_channel_message
-  - send_direct_message
-  - get_messages
-  - list_channels
-  - subscribe_to_channel
-  - unsubscribe_from_channel
-  - get_my_subscriptions
-  - write_note              # Persist learnings and reflections
-  - search_my_notes         # Search personal knowledge base
-  - get_recent_notes        # Review recent insights
-  - peek_agent_notes        # Learn from other agents
-  - search_messages         # Search across all messages
-  - list_agents            # Discover available agents
-  - get_linked_projects    # View project connections
+  # Channel operations
+  - create_channel         # Create new channels
+  - list_channels          # See available channels
+  - join_channel           # Join open channels
+  - leave_channel          # Leave channels
+  - list_my_channels       # See membership
+  
+  # Messaging
+  - send_channel_message   # Send to channels
+  - send_direct_message    # Send DMs
+  - get_messages           # Retrieve messages
+  - search_messages        # Search content
+  
+  # Discovery
+  - list_agents            # Find agents
+  - get_current_project    # Current context
+  - list_projects          # All projects
+  - get_linked_projects    # Linked projects
+  
+  # Notes
+  - write_note             # Persist knowledge
+  - search_my_notes        # Search notes
+  - get_recent_notes       # Recent notes
+  - peek_agent_notes       # Learn from others
 
-# Cross-project communication permissions
+# Cross-project communication
 project_links: []  # Managed via manage_project_links.py
 
 settings:
   message_retention_days: 30
   max_message_length: 4000
-  auto_create_channels: true
+  # v3: Auto-reconciles on every session start
 ```
 
 ## 🔧 MCP Tool API
@@ -198,16 +273,16 @@ Creates new channel with specified identifier. Auto-detects scope from context.
 #### `list_channels(agent_id, include_archived?, scope?)`
 Returns available channels with subscription status.
 
-### 📬 Subscription Management
+### 📬 Channel Membership (v3)
 
-#### `subscribe_to_channel(agent_id, channel_id, scope?)`
-Adds calling agent to channel subscription list. Updates frontmatter configuration.
+#### `join_channel(agent_id, channel_id, scope?)`
+Join a channel with appropriate permissions. Auto-detects scope.
 
-#### `unsubscribe_from_channel(agent_id, channel_id, scope?)`
-Removes calling agent from channel subscription list.
+#### `leave_channel(agent_id, channel_id, scope?)`
+Leave a channel if permissions allow. Checks `can_leave` permission.
 
-#### `get_my_subscriptions(agent_id)`
-Returns agent's current channel subscriptions from frontmatter.
+#### `list_my_channels(agent_id)`
+Returns channels where agent is a member with permission details.
 
 ### 🔍 Discovery
 
@@ -249,51 +324,61 @@ The system automatically detects project context:
 - **Project**: `proj_abc123:dev`, `proj_abc123:testing`
 - **Auto-detection**: `#general` finds the right scope automatically
 
-## 💾 Database Schema
+## 💾 Database Schema (v3)
 
 ```sql
--- Projects table
-CREATE TABLE projects (
-    id TEXT PRIMARY KEY,        -- Hashed project path
-    path TEXT UNIQUE NOT NULL,  -- Absolute path
-    name TEXT                   -- Human-readable name
-);
-
--- Channels with scope and notes support
+-- Channels with unified permissions
 CREATE TABLE channels (
-    id TEXT PRIMARY KEY,        -- Format: {scope}:{name}
-    project_id TEXT,           -- NULL for global
-    scope TEXT NOT NULL,       -- 'global' or 'project'
+    id TEXT PRIMARY KEY,        -- Format: {scope}:{name} or dm:{agent1}:{agent2}
+    channel_type TEXT,          -- 'channel' or 'direct'
+    access_type TEXT,           -- 'open', 'members', or 'private'
+    scope TEXT NOT NULL,        -- 'global' or 'project'
+    project_id TEXT,            -- NULL for global
     name TEXT NOT NULL,
-    channel_type TEXT DEFAULT 'standard',  -- 'standard' or 'agent-notes'
-    owner_agent_name TEXT,     -- For agent-notes: owning agent
-    owner_agent_project_id TEXT -- For agent-notes: owning agent's project
+    is_default BOOLEAN,         -- Auto-add new agents?
+    owner_agent_name TEXT,      -- For notes channels
+    owner_agent_project_id TEXT -- For notes channels
 );
 
--- Messages with tags and session support
+-- Unified membership (no separate subscriptions!)
+CREATE TABLE channel_members (
+    channel_id TEXT,
+    agent_name TEXT,
+    agent_project_id TEXT,      -- NULL for global agents
+    invited_by TEXT,            -- 'self', 'system', or inviter name
+    source TEXT,                -- 'manual', 'frontmatter', 'default', 'system'
+    can_leave BOOLEAN,          -- Can they leave?
+    can_send BOOLEAN,           -- Can they send messages?
+    can_invite BOOLEAN,         -- Can they invite others?
+    can_manage BOOLEAN,         -- Can they manage channel?
+    is_from_default BOOLEAN,    -- From is_default=true channel?
+    opted_out BOOLEAN           -- User opted out (soft delete)
+);
+
+-- Messages with enhanced metadata
 CREATE TABLE messages (
-    channel_id TEXT,           -- References scoped channel
+    id INTEGER PRIMARY KEY,
+    channel_id TEXT,
     sender_id TEXT,
+    sender_project_id TEXT,
     content TEXT,
     timestamp DATETIME,
-    tags TEXT,                 -- JSON array for note categorization
-    session_id TEXT            -- For note context preservation
+    metadata JSON,              -- Flexible metadata
+    tags TEXT,                  -- For notes categorization
+    session_id TEXT,            -- Session context
+    thread_id TEXT              -- Threading support
 );
 
--- Agents with auto-provisioning
+-- Agents with discovery settings
 CREATE TABLE agents (
     name TEXT NOT NULL,
-    project_id TEXT,           -- NULL for global agents
+    project_id TEXT,            -- NULL for global agents
     description TEXT,
+    visibility TEXT,            -- 'public', 'project', 'private'
+    dm_policy TEXT,             -- 'open', 'restricted', 'closed'
+    dm_whitelist TEXT,          -- JSON array of allowed agents
     created_at DATETIME,
     PRIMARY KEY (name, project_id)
-);
-
--- Agent subscriptions
-CREATE TABLE subscriptions (
-    agent_id TEXT,
-    channel_id TEXT,
-    project_id TEXT            -- NULL for global subscriptions
 );
 ```
 

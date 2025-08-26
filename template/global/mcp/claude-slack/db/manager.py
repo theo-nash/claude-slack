@@ -20,11 +20,6 @@ from .db_helpers import with_connection, aconnect
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from config_manager import ConfigManager
-except ImportError:
-    ConfigManager = None
-
-try:
     from log_manager import get_logger
 except ImportError:
     import logging
@@ -98,6 +93,132 @@ class DatabaseManager:
                 'metadata': json.loads(row[5]) if row[5] else {}
             }
         return None
+    
+    @with_connection(writer=False)
+    async def list_projects(self, conn) -> List[Dict]:
+        """List all registered projects"""
+        cursor = await conn.execute("""
+            SELECT id, path, name, created_at, last_active, metadata
+            FROM projects
+            ORDER BY last_active DESC, name ASC
+        """)
+        rows = await cursor.fetchall()
+        
+        projects = []
+        for row in rows:
+            projects.append({
+                'id': row[0],
+                'path': row[1],
+                'name': row[2],
+                'created_at': row[3],
+                'last_active': row[4],
+                'metadata': json.loads(row[5]) if row[5] else {}
+            })
+        return projects
+    
+    @with_connection(writer=False)
+    async def get_project_links(self, conn, project_id: str) -> List[Dict]:
+        """Get all projects linked to the given project"""
+        cursor = await conn.execute("""
+            SELECT 
+                CASE 
+                    WHEN pl.project_a_id = ? THEN p.id
+                    ELSE p2.id
+                END as linked_project_id,
+                CASE 
+                    WHEN pl.project_a_id = ? THEN p.name
+                    ELSE p2.name
+                END as linked_project_name,
+                CASE 
+                    WHEN pl.project_a_id = ? THEN p.path
+                    ELSE p2.path
+                END as linked_project_path,
+                pl.link_type,
+                pl.enabled,
+                pl.created_at
+            FROM project_links pl
+            LEFT JOIN projects p ON p.id = pl.project_b_id
+            LEFT JOIN projects p2 ON p2.id = pl.project_a_id
+            WHERE (pl.project_a_id = ? OR pl.project_b_id = ?)
+                AND pl.enabled = TRUE
+            ORDER BY linked_project_name
+        """, (project_id, project_id, project_id, project_id, project_id))
+        
+        rows = await cursor.fetchall()
+        
+        links = []
+        for row in rows:
+            links.append({
+                'project_id': row[0],
+                'project_name': row[1],
+                'project_path': row[2],
+                'link_type': row[3],
+                'enabled': row[4],
+                'created_at': row[5]
+            })
+        return links
+    
+    @with_connection(writer=True)
+    async def add_project_link(self, conn,
+                                project_a_id: str,
+                                project_b_id: str,
+                                link_type: str = 'bidirectional',
+                                created_by: Optional[str] = None) -> bool:
+        """Create a link between two projects for cross-project communication"""
+        # Ensure consistent ordering (smaller ID first)
+        if project_a_id > project_b_id:
+            project_a_id, project_b_id = project_b_id, project_a_id
+            if link_type == 'a_to_b':
+                link_type = 'b_to_a'
+            elif link_type == 'b_to_a':
+                link_type = 'a_to_b'
+
+        try:
+            await conn.execute("""
+                INSERT OR REPLACE INTO project_links
+                (project_a_id, project_b_id, link_type, enabled, created_by, created_at)
+                VALUES (?, ?, ?, TRUE, ?, CURRENT_TIMESTAMP)
+            """, (project_a_id, project_b_id, link_type, created_by))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    @with_connection(writer=True)
+    async def remove_project_link(self, conn,
+                                project_a_id: str,
+                                project_b_id: str) -> bool:
+        """Remove a link between two projects"""
+        # Handle both orderings
+        result = await conn.execute("""
+            DELETE FROM project_links
+            WHERE (project_a_id = ? AND project_b_id = ?)
+                OR (project_a_id = ? AND project_b_id = ?)
+        """, (project_a_id, project_b_id, project_b_id, project_a_id))
+        return result.rowcount > 0
+
+    @with_connection(writer=False)
+    async def check_projects_linked(self, conn,
+                                    project_a_id: str,
+                                    project_b_id: str) -> bool:
+        """Check if two projects are linked"""
+        cursor = await conn.execute("""
+            SELECT enabled, link_type
+            FROM project_links
+            WHERE ((project_a_id = ? AND project_b_id = ?)
+                OR (project_a_id = ? AND project_b_id = ?))
+                AND enabled = TRUE
+        """, (project_a_id, project_b_id, project_b_id, project_a_id))
+
+        row = await cursor.fetchone()
+        if not row:
+            return False
+
+        # Check directionality
+        enabled, link_type = row
+        if link_type == 'bidirectional':
+            return True
+        # Additional logic for directional links...
+        return enabled
     
     # ============================================================================
     # Agent Management
@@ -205,6 +326,11 @@ class DatabaseManager:
         Returns:
             channel_id
         """
+        # Validate access_type
+        valid_access_types = {'open', 'members', 'private'}
+        if access_type not in valid_access_types:
+            raise ValueError(f"Invalid access_type '{access_type}'. Must be one of: {valid_access_types}")
+        
         try:
             await conn.execute("""
                 INSERT INTO channels 
@@ -264,17 +390,17 @@ class DatabaseManager:
                 VALUES (?, 'direct', 'private', ?, ?, CURRENT_TIMESTAMP)
             """, (channel_id, scope, channel_id))
             
-            # Add both agents as members
+            # Add both agents as members (with can_leave=FALSE for DMs)
             await conn.execute("""
                 INSERT INTO channel_members 
-                (channel_id, agent_name, agent_project_id, role, can_send)
-                VALUES (?, ?, ?, 'member', TRUE)
+                (channel_id, agent_name, agent_project_id, invited_by, can_leave, can_send, can_invite, source)
+                VALUES (?, ?, ?, 'system', FALSE, TRUE, FALSE, 'system')
             """, (channel_id, agent1_name, agent1_project_id))
             
             await conn.execute("""
                 INSERT INTO channel_members 
-                (channel_id, agent_name, agent_project_id, role, can_send)
-                VALUES (?, ?, ?, 'member', TRUE)
+                (channel_id, agent_name, agent_project_id, invited_by, can_leave, can_send, can_invite, source)
+                VALUES (?, ?, ?, 'system', FALSE, TRUE, FALSE, 'system')
             """, (channel_id, agent2_name, agent2_project_id))
             
             self.logger.info(f"Created DM channel: {channel_id}")
@@ -724,9 +850,11 @@ class DatabaseManager:
         
         if scope == 'global':
             query += " AND scope = 'global'"
-        elif scope == 'project' and project_id:
-            query += " AND scope = 'project' AND project_id = ?"
-            params.append(project_id)
+        elif scope == 'project':
+            query += " AND scope = 'project'"
+            if project_id:
+                query += " AND project_id = ?"
+                params.append(project_id)
         # scope == 'all' returns everything
         
         cursor = await conn.execute(query, params)
@@ -762,13 +890,14 @@ class DatabaseManager:
                                actions_taken: str, success: bool,
                                error_message: Optional[str] = None):
         """Track configuration sync in history table"""
+        from datetime import datetime, timezone
         await conn.execute("""
             INSERT INTO config_sync_history
             (config_hash, config_snapshot, scope, project_id, 
              actions_taken, success, error_message, applied_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (config_hash, config_snapshot, scope, project_id,
-              actions_taken, success, error_message))
+              actions_taken, success, error_message, datetime.now(timezone.utc).isoformat()))
     
     @with_connection(writer=False)
     async def get_last_sync_hash(self, conn) -> Optional[str]:
@@ -782,48 +911,6 @@ class DatabaseManager:
         """)
         row = await cursor.fetchone()
         return row[0] if row else None
-    
-    @with_connection(writer=True) 
-    async def subscribe_to_channel(self, conn,
-                                  agent_name: str,
-                                  agent_project_id: Optional[str],
-                                  channel_id: str,
-                                  source: str = 'manual'):
-        """Subscribe to a channel (unified model: self-joined membership)"""
-        # Check if channel is open
-        cursor = await conn.execute(
-            "SELECT access_type FROM channels WHERE id = ?", (channel_id,)
-        )
-        row = await cursor.fetchone()
-        
-        if not row:
-            raise ValueError(f"Channel {channel_id} not found")
-        
-        if row[0] != 'open':
-            raise ValueError(f"Channel {channel_id} is not open for subscriptions. "
-                           f"Use add_channel_member for {row[0]} channels.")
-        
-        # In unified model, subscription is just membership with invited_by='self'
-        # Note: Don't pass conn - add_channel_member has its own @with_connection
-        await conn.execute("""
-            INSERT OR REPLACE INTO channel_members 
-            (channel_id, agent_name, agent_project_id, invited_by, source,
-             can_leave, can_send, can_invite, can_manage, is_from_default, joined_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (channel_id, agent_name, agent_project_id, 'self', source,
-              True, True, True, False, False))
-    
-    @with_connection(writer=True)
-    async def unsubscribe_from_channel(self, conn,
-                                      agent_name: str,
-                                      agent_project_id: Optional[str],
-                                      channel_id: str):
-        """Unsubscribe from a channel (unified model: remove membership)"""
-        await conn.execute("""
-            DELETE FROM channel_members
-            WHERE channel_id = ? AND agent_name = ? 
-              AND agent_project_id IS NOT DISTINCT FROM ?
-        """, (channel_id, agent_name, agent_project_id))
     
     # ============================================================================
     # Agent Discovery
@@ -1472,29 +1559,25 @@ class DatabaseManager:
         Returns:
             True if deleted, False if not found or not authorized
         """
-        # Verify the agent is the sender or has admin rights
+        # Verify the agent is the sender (only senders can delete their messages)
         cursor = await conn.execute("""
-            SELECT m.sender_id, m.sender_project_id, m.channel_id,
-                   cm.role
+            SELECT m.sender_id, m.sender_project_id, m.channel_id
             FROM messages m
-            LEFT JOIN channel_members cm ON 
-                m.channel_id = cm.channel_id
-                AND cm.agent_name = ?
-                AND cm.agent_project_id IS NOT DISTINCT FROM ?
             WHERE m.id = ?
-        """, (agent_name, agent_project_id, message_id))
+        """, (message_id,))
         
         row = await cursor.fetchone()
         if not row:
             return False
         
-        sender_id, sender_project_id, channel_id, member_role = row
+        sender_id, sender_project_id, channel_id = row
         
-        # Check authorization: sender or channel admin
-        is_sender = (sender_id == agent_name and sender_project_id == agent_project_id)
-        is_admin = member_role in ('owner', 'admin')
+        # Check authorization: only the sender can delete their own message
+        is_sender = (sender_id == agent_name and 
+                    sender_project_id == agent_project_id)
         
-        if not (is_sender or is_admin):
+        if not is_sender:
+            self.logger.debug(f"Agent {agent_name} cannot delete message {message_id} (not sender)")
             return False
         
         # Perform soft delete by updating content

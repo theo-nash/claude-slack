@@ -151,13 +151,15 @@ class RegisterAgentAction(Action):
     
     def __init__(self, name: str, project_id: Optional[str] = None,
                  description: Optional[str] = None, dm_policy: str = 'open',
-                 discoverable: str = 'public', create_notes_channel: bool = True):
+                 discoverable: str = 'public', metadata: Optional[Dict] = None,
+                 create_notes_channel: bool = True):
         super().__init__(ActionPhase.AGENTS)
         self.name = name
         self.project_id = project_id
         self.description = description
         self.dm_policy = dm_policy
         self.discoverable = discoverable
+        self.metadata = metadata or {}
         self.create_notes_channel = create_notes_channel
     
     async def execute(self, db_manager) -> ActionResult:
@@ -180,8 +182,33 @@ class RegisterAgentAction(Action):
                 project_id=self.project_id,
                 description=self.description,
                 dm_policy=self.dm_policy,
-                discoverable=self.discoverable
+                discoverable=self.discoverable,
+                metadata=self.metadata
             )
+            
+            # Set up DM whitelist if policy is restricted
+            if self.dm_policy == 'restricted' and self.metadata.get('dm_whitelist'):
+                whitelist = self.metadata['dm_whitelist']
+                for allowed_agent in whitelist:
+                    # Parse agent name which might include project scope
+                    if ':' in allowed_agent:
+                        other_name, other_project = allowed_agent.split(':', 1)
+                    else:
+                        other_name = allowed_agent
+                        other_project = None
+                    
+                    try:
+                        await db_manager.set_dm_permission(
+                            agent_name=self.name,
+                            agent_project_id=self.project_id,
+                            other_agent_name=other_name,
+                            other_agent_project_id=other_project,
+                            permission='allow',
+                            reason='Whitelist from agent configuration'
+                        )
+                        self.logger.debug(f"Added DM whitelist entry: {self.name} allows {other_name}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to add DM whitelist entry for {other_name}: {e}")
             
             # Create notes channel if requested
             notes_channel_created = False

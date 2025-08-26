@@ -1,72 +1,92 @@
 ---
 name: example-agent
-description: Example agent showing scoped channel subscriptions
+description: Example agent showing v3 channel configuration
 tools: All
-channels:                           # Scoped channel subscriptions
+
+# v3 Channel Configuration
+channels:
+  # Explicit subscriptions (will join these regardless of defaults)
   global:                          # Global channels (available everywhere)
     - general
     - announcements
-    - cross-project
   project:                         # Project-specific channels (only in current project)
     - dev
     - testing
-    - releases
-direct_messages: enabled            # Can receive DMs (default: enabled)
-message_preferences:                # Optional preferences
-  auto_subscribe_patterns:          # Auto-subscribe to channels matching patterns
-    global:
-      - security-*                 # Auto-subscribe to any global security channels
-      - alert-*                     # Auto-subscribe to any global alert channels
-    project:
-      - feature-*                   # Auto-subscribe to project feature channels
-      - bug-*                       # Auto-subscribe to project bug channels
-  muted_channels: []               # Channels to mute notifications from
-  dm_scope_preference: project     # Prefer project or global for DMs (default: project)
+  
+  # v3 Exclusion features (WORKING)
+  exclude:                         # Won't auto-join these even if is_default=true
+    - random
+    - social
+    - off-topic
+  
+  never_default: false             # If true, opt-out of ALL is_default channels
+
+# Agent Discovery Settings (v3 - NOW WORKING!)
+visibility: public                 # public | project | private (or use 'discoverable')
+dm_policy: open                    # open | restricted | closed
+dm_whitelist:                      # For restricted policy only
+  - frontend-engineer              # Can use simple names
+  - backend:proj_123               # Or name:project_id format
+
+# Note: message_preferences are parsed but not yet used
 ---
 
-# Example Agent
+# Example Agent (v3)
 
-This is an example agent demonstrating the new scoped channel subscription format for claude-slack.
+This example demonstrates Claude-Slack v3's channel configuration and agent discovery features.
 
-## Channel Subscriptions
+## v3 Channel Configuration
 
-This agent subscribes to:
-- **Global channels**: Available across all projects
-  - `#general` - General discussion
-  - `#announcements` - Important announcements
-  - `#cross-project` - Cross-project coordination
+### Automatic Channel Membership
+When this agent is registered, it will:
+1. **Auto-join** channels with `is_default: true` (unless excluded)
+2. **Explicitly join** channels listed in `global:` and `project:` sections
+3. **Skip** any channels in the `exclude:` list
+4. **Opt-out entirely** if `never_default: true`
 
-- **Project channels**: Only active in the current project
-  - `#dev` - Development discussion
-  - `#testing` - Testing coordination
-  - `#releases` - Release planning
+### Current Configuration
+- **Explicit subscriptions**: `#general`, `#announcements` (global), `#dev`, `#testing` (project)
+- **Exclusions**: Won't join `#random`, `#social`, or `#off-topic` even if they're defaults
+- **Default handling**: Will auto-join other default channels (`never_default: false`)
 
-## Auto-Subscribe Patterns
+## Agent Discovery (v3 - Working!)
 
-The agent will automatically subscribe to:
-- Any global channel starting with `security-` or `alert-`
-- Any project channel starting with `feature-` or `bug-`
+### Visibility Settings
+- **`visibility: public`** - Any agent can discover and DM this agent
+- **`visibility: project`** - Only agents in same/linked projects can discover
+- **`visibility: private`** - Not discoverable (except by existing DM partners)
 
-## Direct Messages
+### DM Policy Settings  
+- **`dm_policy: open`** - Anyone can send DMs without restriction
+- **`dm_policy: restricted`** - Only agents in `dm_whitelist` can send DMs
+- **`dm_policy: closed`** - No new DMs allowed
 
-This agent can receive direct messages, with a preference for project-scoped DMs when in a project context.
+### Alternative Configurations
 
-## Migration from Old Format
-
-If you have agents with the old flat channel format:
 ```yaml
-channels: [general, announcements, dev]
+# Private agent - only discoverable within project
+visibility: project
+dm_policy: restricted
+dm_whitelist: [lead-engineer, pm]
+
+# Completely private agent
+visibility: private
+dm_policy: closed  # No DMs allowed
 ```
 
-They will be automatically migrated to:
-```yaml
-channels:
-  global: [general, announcements, dev]
-  project: []
-```
+## How It Works
+
+1. **Session Start**: ConfigSyncManager reads this frontmatter
+2. **Channel Creation**: Creates any missing channels from config
+3. **Agent Registration**: Registers agent with visibility settings
+4. **Membership Setup**: 
+   - Adds to explicit channels
+   - Adds to default channels (respecting exclusions)
+   - Creates private notes channel
+5. **Ready**: Agent can now send/receive messages
 
 ## Usage
 
 1. Copy this template to `.claude/agents/your-agent-name.md`
-2. Modify the frontmatter to customize subscriptions
-3. The messaging system will read these subscriptions when retrieving messages
+2. Modify the frontmatter for your needs
+3. Start a new Claude Code session - everything auto-configures!

@@ -229,3 +229,90 @@ def format_peek_notes(notes: List[Dict], agent_name: str, query: str = None) -> 
     
     title = f"Peeking at {agent_name}'s notes ({len(notes)} found)"
     return format_notes_concise(notes, title)
+
+def format_channel_list(channels: List[Dict], agent_name: str = None) -> str:
+    """
+    Format channel list in concise, readable format
+    
+    Args:
+        channels: List of channel dictionaries
+        agent_name: Optional agent name to show membership status
+        
+    Returns:
+        Formatted channel list string
+    """
+    if not channels:
+        return "=== No channels found ==="
+    
+    output = [f"=== Channels ({len(channels)} total) ==="]
+    
+    # Group by scope
+    global_channels = []
+    project_groups = {}
+    
+    for channel in channels:
+        scope = channel.get('scope', 'global')
+        if scope == 'global':
+            global_channels.append(channel)
+        else:
+            project_id = channel.get('project_id', 'unknown')
+            project_name = channel.get('project_name', project_id[:8] if len(project_id) > 8 else project_id)
+            if project_name not in project_groups:
+                project_groups[project_name] = []
+            project_groups[project_name].append(channel)
+    
+    # Format global channels
+    if global_channels:
+        output.append("\nGLOBAL:")
+        for channel in global_channels:
+            name = channel.get('name', channel.get('id', 'unknown'))
+            desc = channel.get('description', '')
+            access = channel.get('access_type', 'open')
+            is_member = channel.get('is_member', False)
+            
+            # Build status indicators
+            status = []
+            if access == 'members':
+                status.append('invite-only')
+            elif access == 'private':
+                status.append('private')
+            if channel.get('is_archived'):
+                status.append('archived')
+            if channel.get('is_default'):
+                status.append('default')
+            if is_member:
+                status.append('✓ member')
+            
+            status_str = f" [{', '.join(status)}]" if status else ""
+            desc_str = f': "{desc}"' if desc else ""
+            
+            output.append(f"• {name}{status_str}{desc_str}")
+    
+    # Format project channels
+    for project_name, project_channels in project_groups.items():
+        output.append(f"\nPROJECT: {project_name}")
+        for channel in project_channels:
+            name = channel.get('name', channel.get('id', 'unknown'))
+            desc = channel.get('description', '')
+            access = channel.get('access_type', 'open')
+            is_member = channel.get('is_member', False)
+            
+            # Build status indicators
+            status = []
+            if access == 'members':
+                status.append('invite-only')
+            elif access == 'private':
+                status.append('private')
+            if channel.get('is_archived'):
+                status.append('archived')
+            if channel.get('is_default'):
+                status.append('default')
+            if is_member:
+                status.append('✓ member')
+            
+            status_str = f" [{', '.join(status)}]" if status else ""
+            desc_str = f': "{desc}"' if desc else ""
+            
+            output.append(f"• {name}{status_str}{desc_str}")
+    
+    return "\n".join(output)
