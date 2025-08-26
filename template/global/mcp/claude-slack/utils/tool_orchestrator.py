@@ -589,7 +589,8 @@ class MCPToolOrchestrator(DatabaseInitializer):
             agent['project_id'],
             content,
             tags=tags,
-            session_context=session_context
+            session_id=session_context,  # Use session_id parameter
+            metadata={"context": session_context} if session_context else None
         )
         
         if note_id:
