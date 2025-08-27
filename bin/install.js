@@ -50,9 +50,9 @@ class ClaudeSlackInstaller {
         if (this.testMode) {
             console.log(chalk.gray('[TEST MODE] Running in test mode - using temp directory\n'));
         }
-        console.log(chalk.cyan.bold('\n🚀 Claude-Slack v3 Installer\n'));
-        console.log('Channel-based messaging system for Claude Code agents');
-        console.log(chalk.yellow('Installing GLOBALLY with auto-configuration support\n'));
+        console.log(chalk.cyan.bold('\n🚀 Claude-Slack v4 Installer\n'));
+        console.log('Semantic knowledge infrastructure for Claude Code agents');
+        console.log(chalk.yellow('Installing GLOBALLY with semantic search capabilities\n'));
 
         try {
             // 1. Check prerequisites
@@ -174,7 +174,8 @@ class ClaudeSlackInstaller {
 
         console.log(`  • ${chalk.bold('Installation Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR)}`);
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
-        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('SQLite Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('ChromaDB Vectors')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
         console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
 
         if (this.hasProject) {
@@ -182,17 +183,26 @@ class ClaudeSlackInstaller {
             console.log(`    - Will add example agent`);
         }
 
-        console.log(chalk.cyan('\n🎯 Claude-Slack v3 Features:'));
-        console.log('  • Unified membership model (no roles)');
-        console.log('  • Auto-configuration from YAML config');
-        console.log('  • Agent discovery with DM policies');
-        console.log('  • Private notes channels for agents');
-        console.log('  • Automatic reconciliation on session start');
+        console.log(chalk.cyan('\n🎯 Claude-Slack v4 Features:'));
+        console.log('  • 🔍 Semantic search with vector embeddings (ChromaDB)');
+        console.log('  • 📊 Intelligent ranking (similarity + confidence + time decay)');
+        console.log('  • 💡 Agent reflections with breadcrumbs');
+        console.log('  • ⚙️ Auto-configuration from YAML config');
+        console.log('  • 🤖 Agent discovery with DM policies');
+        console.log('  • 📝 Private notes channels for agent memory');
+        console.log('  • ✨ Automatic reconciliation on session start');
+        
+        console.log(chalk.green('\n💡 Semantic Search Info:'));
+        console.log('  • ChromaDB will be installed automatically');
+        console.log('  • Embedding model will be pre-downloaded (~80MB)');
+        console.log('  • No first-run delays - ready immediately');
+        console.log('  • Falls back to keyword search if unavailable');
+        console.log('  • No heavy ML frameworks required!');
 
         const response = await prompts({
             type: 'confirm',
             name: 'proceed',
-            message: 'Proceed with v3 installation?',
+            message: 'Proceed with v4 installation?',
             initial: true
         });
 
@@ -214,7 +224,7 @@ class ClaudeSlackInstaller {
         const mcpTarget = path.join(claudeSlackDir, 'mcp');
         await fs.copy(mcpSource, mcpTarget, { overwrite: false });
         
-        // Ensure all v3 manager directories are properly copied
+        // Ensure all v4 manager directories are properly copied
         const managerDirs = ['sessions', 'channels', 'agents', 'notes', 'projects', 'config', 'log_manager', 'utils', 'db', 'frontmatter'];
         for (const dir of managerDirs) {
             const dirSource = path.join(globalTemplateDir, 'mcp', 'claude-slack', dir);
@@ -237,7 +247,7 @@ class ClaudeSlackInstaller {
         const configTarget = path.join(claudeSlackDir, 'config');
         await fs.copy(configSource, configTarget, { overwrite: false });
         
-        // Ensure YAML config is copied (critical for v3 auto-configuration)
+        // Ensure YAML config is copied (critical for v4 auto-configuration)
         const configYamlSource = path.join(globalTemplateDir, 'config', 'claude-slack.config.yaml');
         const configYamlTarget = path.join(claudeSlackDir, 'config', 'claude-slack.config.yaml');
         if (!fs.existsSync(configYamlTarget)) {
@@ -258,6 +268,7 @@ class ClaudeSlackInstaller {
         const dataDir = path.join(claudeSlackDir, 'data');
         await fs.ensureDir(dataDir);
         await fs.ensureDir(path.join(dataDir, 'backups'));
+        await fs.ensureDir(path.join(dataDir, 'chroma'));  // v4: ChromaDB vector storage
         
         // Ensure log directories exist in claude-slack/logs
         const logDir = path.join(claudeSlackDir, 'logs');
@@ -270,18 +281,24 @@ class ClaudeSlackInstaller {
     }
 
     async setupPythonEnvironment() {
-        this.spinner = ora('Setting up Python environment...').start();
+        this.spinner = ora('Setting up Python environment with v4 dependencies...').start();
 
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
 
         // First, create requirements.txt if it doesn't exist at the claude-slack level
         const requirementsPath = path.join(claudeSlackDir, 'requirements.txt');
         if (!fs.existsSync(requirementsPath)) {
-            const requirements = `# Claude-Slack v3 MCP Server Requirements
+            const requirements = `# Claude-Slack v4 MCP Server Requirements
+# Core dependencies
 mcp>=0.1.0
 aiosqlite>=0.19.0
 pyyaml>=6.0
 python-dateutil>=2.8.0
+
+# v4 Semantic Search (highly recommended)
+# Enables AI-powered knowledge discovery
+chromadb>=0.4.22
+numpy>=1.24.0
 `;
             await fs.writeFile(requirementsPath, requirements);
         }
@@ -309,15 +326,150 @@ python-dateutil>=2.8.0
                 stdio: 'pipe'
             });
 
-            this.spinner.succeed('Python environment configured');
+            this.spinner.succeed('Python environment configured with semantic search capabilities');
+            
+            // Check if ChromaDB was successfully installed
+            await this.checkSemanticSearchDependencies();
+            
         } catch (error) {
             this.spinner.fail('Failed to setup Python environment');
             throw error;
         }
     }
 
+    async checkSemanticSearchDependencies() {
+        this.spinner = ora('Verifying v4 semantic search components...').start();
+        
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const pythonPath = process.platform === 'win32'
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
+
+        // Check for ChromaDB installation
+        const checkScript = `
+import sys
+import json
+results = {"chromadb": False, "numpy": False, "chromadb_version": None, "embedding_model": None}
+try:
+    import chromadb
+    results["chromadb"] = True
+    results["chromadb_version"] = chromadb.__version__
+    # Check if default embedding model will download
+    try:
+        from chromadb.utils import embedding_functions
+        ef = embedding_functions.DefaultEmbeddingFunction()
+        results["embedding_model"] = "all-MiniLM-L6-v2 (ready)"
+    except:
+        results["embedding_model"] = "Will download on first use (~80MB)"
+except ImportError:
+    pass
+try:
+    import numpy
+    results["numpy"] = True
+except ImportError:
+    pass
+print(json.dumps(results))
+`;
+
+        try {
+            const output = execSync(`${pythonPath} -c "${checkScript}"`, {
+                cwd: claudeSlackDir,
+                stdio: 'pipe',
+                encoding: 'utf8'
+            });
+            
+            const results = JSON.parse(output.trim());
+            
+            if (results.chromadb && results.numpy) {
+                this.spinner.succeed(`✅ v4 Semantic Search: ENABLED (ChromaDB ${results.chromadb_version})`);
+                console.log(chalk.green(`  • Vector embeddings: Automatic for all messages`));
+                console.log(chalk.green(`  • Embedding model: ${results.embedding_model}`));
+                console.log(chalk.green(`  • Search profiles: recent, quality, balanced, similarity`));
+                
+                // Pre-download embedding model if needed
+                if (results.embedding_model.includes('Will download')) {
+                    await this.predownloadEmbeddingModel();
+                }
+                
+            } else if (results.chromadb && !results.numpy) {
+                this.spinner.warn('⚠️ ChromaDB installed but NumPy missing - semantic search may be limited');
+                console.log(chalk.yellow('  Run: pip install numpy>=1.24.0'));
+            } else {
+                this.spinner.warn('⚠️ v4 Semantic Search: DISABLED (ChromaDB not installed)');
+                console.log(chalk.yellow('  • System will fall back to keyword search (FTS)'));
+                console.log(chalk.yellow('  • To enable: pip install chromadb>=0.4.22 numpy>=1.24.0'));
+                console.log(chalk.yellow('  • This is optional - system works without it'));
+            }
+        } catch (error) {
+            this.spinner.info('ℹ️ Could not verify semantic search components');
+            console.log(chalk.gray('  System will detect capabilities at runtime'));
+        }
+    }
+
+    async predownloadEmbeddingModel() {
+        this.spinner = ora('Downloading embedding model (all-MiniLM-L6-v2, ~80MB)...').start();
+        
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const pythonPath = process.platform === 'win32'
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
+
+        // Script to download and initialize the embedding model
+        const downloadScript = `
+import sys
+import os
+# Suppress sentence-transformers logging during download
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = os.path.expanduser('~/.cache/chroma')
+import logging
+logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
+
+try:
+    from chromadb.utils import embedding_functions
+    print("Downloading embedding model...", file=sys.stderr)
+    
+    # Initialize the embedding function - this triggers the download
+    ef = embedding_functions.DefaultEmbeddingFunction()
+    
+    # Test it with a sample text to ensure it's fully initialized
+    test_embedding = ef(["test initialization"])
+    
+    print("SUCCESS")
+except Exception as e:
+    print(f"ERROR: {e}")
+`;
+
+        try {
+            // Run with longer timeout for download (5 minutes)
+            const result = execSync(`${pythonPath} -c "${downloadScript}"`, {
+                cwd: claudeSlackDir,
+                encoding: 'utf8',
+                timeout: 300000, // 5 minute timeout
+                stdio: ['pipe', 'pipe', 'pipe']  // Capture stdout and stderr
+            });
+            
+            if (result.includes('SUCCESS')) {
+                this.spinner.succeed('✅ Embedding model downloaded and ready (all-MiniLM-L6-v2)');
+                console.log(chalk.green('  • First-run delay eliminated'));
+                console.log(chalk.green('  • Model cached in ~/.cache/chroma'));
+            } else {
+                this.spinner.warn('⚠️ Could not pre-download embedding model');
+                console.log(chalk.yellow('  • Model will download on first use'));
+            }
+        } catch (error) {
+            // Check if it was a timeout
+            if (error.code === 'ETIMEDOUT') {
+                this.spinner.warn('⚠️ Embedding model download timed out');
+                console.log(chalk.yellow('  • Model will download on first use'));
+                console.log(chalk.yellow('  • This may be due to slow internet connection'));
+            } else {
+                this.spinner.warn('⚠️ Could not pre-download embedding model');
+                console.log(chalk.yellow('  • Model will download on first use (~80MB)'));
+            }
+        }
+    }
+
     async initializeDatabase() {
-        this.spinner = ora('Initializing database with v3 schema...').start();
+        this.spinner = ora('Initializing database with v4 schema...').start();
 
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const dataDir = path.join(claudeSlackDir, 'data');
@@ -414,7 +566,7 @@ print('Database initialized successfully')
 
     async createWrapperScripts(scriptsDir) {
         // Create wrapper scripts that use the venv Python
-        // V3: Only manage_project_links is needed - everything else is automatic
+        // V4: Only manage_project_links is needed - everything else is automatic
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const venvPython = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
@@ -565,6 +717,49 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         }
     }
 
+    displaySemanticSearchStatus() {
+        // Quick check for ChromaDB status
+        const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const pythonPath = process.platform === 'win32'
+            ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
+            : path.join(claudeSlackDir, 'venv', 'bin', 'python');
+
+        try {
+            const checkScript = `
+import json
+result = {"enabled": False}
+try:
+    import chromadb
+    import numpy
+    result["enabled"] = True
+    result["version"] = chromadb.__version__
+except:
+    pass
+print(json.dumps(result))
+`;
+            const output = execSync(`${pythonPath} -c "${checkScript}"`, {
+                cwd: claudeSlackDir,
+                stdio: 'pipe',
+                encoding: 'utf8'
+            });
+            
+            const result = JSON.parse(output.trim());
+            
+            if (result.enabled) {
+                console.log(chalk.green('\n🔍 Semantic Search Status: ENABLED ✓'));
+                console.log(chalk.green(`  • ChromaDB ${result.version} installed`));
+                console.log(chalk.green('  • AI-powered search ready'));
+                console.log(chalk.green('  • Ranking profiles available'));
+            } else {
+                console.log(chalk.yellow('\n🔍 Semantic Search Status: FALLBACK MODE'));
+                console.log(chalk.yellow('  • Using keyword search (FTS)'));
+                console.log(chalk.yellow('  • Semantic features unavailable'));
+            }
+        } catch {
+            // Silent fail - not critical
+        }
+    }
+
     async migrateExistingAgents() {
         this.spinner = ora('Migrating existing agents to scoped format...').start();
 
@@ -659,23 +854,29 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
     }
 
     displaySuccess() {
-        console.log(chalk.green.bold('\n✅ Claude-Slack v3 installed successfully!\n'));
+        console.log(chalk.green.bold('\n✅ Claude-Slack v4 installed successfully!\n'));
 
         console.log(chalk.cyan('📚 Installation Summary:'));
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
-        console.log(`  • ${chalk.bold('Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('SQLite Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
+        console.log(`  • ${chalk.bold('ChromaDB Vectors')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
         console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
         console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
+        
+        // Check and display semantic search status
+        this.displaySemanticSearchStatus();
 
         console.log(chalk.cyan('\n🐛 Debug Logging:'));
         console.log('  • Enable debug logs: export CLAUDE_SLACK_DEBUG=1');
         console.log(`  • Log files: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'logs')}/*.log`);
         console.log('  • Logs show hook execution, database operations, and errors');
+        console.log(`  • ChromaDB data: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
 
         console.log(chalk.cyan('\n🎯 Auto-Configuration:'));
         console.log('  • Channels created automatically from config YAML');
         console.log('  • Notes channels created for each agent');
         console.log('  • Agent subscriptions managed via reconciliation');
+        console.log('  • Semantic search indexes built automatically');
         console.log('  • Everything happens on first session start!');
         console.log('');
         console.log(chalk.cyan('🚀 Quick Start:'));
@@ -683,11 +884,13 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log('  2. Start a new session - everything auto-configures!');
         console.log('  3. Use /slack-status to verify');
         console.log('');
-        console.log(chalk.cyan('🏗️  V3 Architecture:'));
-        console.log('  • Unified membership model (no roles)');
+        console.log(chalk.cyan('🏗️  V4 Architecture:'));
+        console.log('  • Hybrid storage: SQLite + ChromaDB');
+        console.log('  • Semantic search with vector embeddings');
+        console.log('  • Intelligent ranking with time decay');
+        console.log('  • Reflection-based knowledge capture');
         console.log('  • ConfigSyncManager handles all setup');
-        console.log('  • Agent discovery with DM policies');
-        console.log('  • Private notes channels for memory\n');
+        console.log('  • Private notes channels for agent memory\n');
 
         console.log(chalk.cyan('🔧 Project Linking (Optional):'));
         console.log(chalk.gray('  (Only needed for cross-project communication)'));
@@ -701,7 +904,15 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
         console.log('  • /slack-send #project:dev "Update" - Send to project channel');
         console.log('  • /slack-dm @agent "Private message" - Send direct message');
         console.log('  • /slack-inbox - Check unread messages');
-        console.log('  • /slack-subscribe #channel - Join a channel\n');
+        console.log('  • /slack-subscribe #channel - Join a channel');
+        console.log('  • /slack-search "query" - Semantic search across messages\n');
+
+        console.log(chalk.cyan('🔍 Semantic Search (v4 Feature):'));
+        console.log('  • Find by meaning, not just keywords');
+        console.log('  • Ranking profiles: recent, quality, balanced, similarity');
+        console.log('  • Time decay with configurable half-life');
+        console.log('  • Confidence-weighted results');
+        console.log('  • Agent reflections with breadcrumbs\n');
 
         console.log(chalk.cyan('🔧 Configuration:'));
         console.log(`  • Edit defaults: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
@@ -716,7 +927,14 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
             console.log(chalk.gray('📁 No project detected - global context only'));
         }
 
-        console.log(chalk.blue('\n📖 For documentation: https://github.com/yourusername/claude-slack'));
+        console.log(chalk.cyan('\n✨ V4 Semantic Search Tips:'));
+        console.log('  • Messages automatically get vector embeddings');
+        console.log('  • Use "recent" profile for debugging issues');
+        console.log('  • Use "quality" profile for proven solutions');
+        console.log('  • Reflections with high confidence persist longer');
+        console.log('  • Include breadcrumbs in reflections for better discovery\n');
+
+        console.log(chalk.blue('📖 For documentation: https://github.com/yourusername/claude-slack'));
         console.log(chalk.yellow('⚠️  Remember to restart Claude Code for changes to take effect!'));
     }
 }

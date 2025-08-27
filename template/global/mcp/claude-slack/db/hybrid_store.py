@@ -244,7 +244,18 @@ class HybridStore:
     
     def _calculate_decay(self, age_hours: float, half_life_hours: float) -> float:
         """Calculate exponential decay score based on age"""
-        return math.exp(-math.log(2) * age_hours / half_life_hours)
+        # Handle edge cases to prevent overflow
+        if age_hours < 0:
+            return 1.0  # Future messages get max score
+        if half_life_hours <= 0:
+            return 0.0  # Invalid half-life
+        
+        # Prevent overflow for very large ratios
+        ratio = age_hours / half_life_hours
+        if ratio > 100:  # Message is >100 half-lives old
+            return 0.0
+        
+        return math.exp(-math.log(2) * ratio)
     
     def _build_chroma_where(self, 
                            channel_ids: Optional[List[str]] = None,
@@ -354,19 +365,26 @@ class HybridStore:
                     msg['metadata'] = json.loads(msg['metadata'])
                 
                 # Apply filters that ChromaDB couldn't handle
-                if min_confidence and msg.get('confidence', 0) < min_confidence:
+                if min_confidence and (msg.get('confidence') or 0) < min_confidence:
                     continue
                 
-                msg_time = datetime.fromisoformat(msg['timestamp'])
+                # Parse timestamp - SQLite may return different formats
+                try:
+                    msg_time = datetime.fromisoformat(msg['timestamp'].replace(' ', 'T'))
+                except:
+                    # Fallback to parsing SQLite format
+                    from datetime import datetime as dt
+                    msg_time = dt.strptime(msg['timestamp'], '%Y-%m-%d %H:%M:%S')
+                
                 if since and msg_time < since:
                     continue
                 
                 # Calculate component scores
                 similarity_score = 1 - distance
-                confidence_score = msg.get('confidence', 0.5)
+                confidence_score = msg.get('confidence') or 0.5  # Handle None values
                 
                 # Calculate time decay
-                age_hours = (now - msg_time).total_seconds() / 3600
+                age_hours = max(0, (now - msg_time).total_seconds() / 3600)  # Ensure non-negative
                 decay_score = self._calculate_decay(
                     age_hours, profile.decay_half_life_hours
                 )
@@ -441,15 +459,18 @@ class HybridStore:
                         continue
                     msg['metadata'] = metadata
                 
+                # Ensure age_hours is non-negative
+                age_hours = max(0, msg.get('age_hours', 0))
+                
                 # Add decay score for consistency
                 decay_score = self._calculate_decay(
-                    msg['age_hours'], profile.decay_half_life_hours
+                    age_hours, profile.decay_half_life_hours
                 )
                 
                 msg['search_scores'] = {
                     'recency': decay_score,
-                    'confidence': msg.get('confidence', 0.5),
-                    'age_hours': msg['age_hours']
+                    'confidence': msg.get('confidence') or 0.5,
+                    'age_hours': age_hours
                 }
                 
                 results.append(msg)

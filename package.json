@@ -1,16 +1,22 @@
 {
   "name": "claude-slack",
-  "version": "3.0.0",
-  "description": "Channel-based messaging system for Claude Code agents - Slack-like communication infrastructure",
+  "version": "4.0.0",
+  "description": "Semantic knowledge infrastructure for Claude Code agents - AI-powered messaging with vector search and intelligent ranking",
   "keywords": [
     "claude",
     "claude-code",
+    "semantic-search",
+    "vector-embeddings",
     "messaging",
     "channels",
-    "slack",
+    "knowledge-management",
+    "ai-memory",
+    "chromadb",
     "mcp",
     "agent-communication",
-    "subagents"
+    "reflections",
+    "time-decay",
+    "slack"
   ],
   "homepage": "https://github.com/theo-nash/claude-slack#readme",
   "bugs": {
@@ -29,15 +35,17 @@
   "files": [
     "bin/",
     "template/",
+    "docs/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "setup": "node bin/install.js",
-    "test": "npm run test:installer && npm run test:integration",
+    "test": "npm run test:installer && npm run test:integration && npm run test:v4",
     "test:installer": "node tests/test_installer.js",
-    "test:integration": "bash tests/test_integration.sh"
+    "test:integration": "bash tests/test_integration.sh",
+    "test:v4": "cd template/global/mcp/claude-slack && python -m pytest ../../../../../../tests/integration/test_hybrid_store.py -v"
   },
   "dependencies": {
     "chalk": "^4.1.2",

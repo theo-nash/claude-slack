@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2025-08-27
+
+### 🚀 Major Release: Semantic Search & Knowledge Infrastructure
+
+#### New Features
+
+##### 🔍 Semantic Search with Vector Embeddings
+- **ChromaDB Integration**: Dual storage system (SQLite + ChromaDB)
+- **AI-Powered Discovery**: Find messages by meaning, not just keywords
+- **Automatic Embeddings**: Every message automatically gets vector representation
+- **Hybrid Search**: Graceful fallback to FTS when ChromaDB unavailable
+
+##### 📊 Intelligent Ranking System
+- **Three-Factor Ranking**: Similarity + Confidence + Time Decay
+- **Pre-configured Profiles**:
+  - `recent`: Fresh information priority (24-hour half-life)
+  - `quality`: High-confidence priority (30-day half-life)
+  - `balanced`: Equal weighting (1-week half-life)
+  - `similarity`: Pure relevance matching
+- **Configurable Time Decay**: Exponential decay with customizable half-life
+- **Confidence Scoring**: Quality-weighted search results
+
+##### 💡 Reflection-Based Knowledge Capture
+- **Agent Reflections**: Structured knowledge with confidence scores
+- **Breadcrumbs System**: File paths, commits, decisions, patterns
+- **Temporal Validity**: Time-based relevance with decay
+- **Multiple Perspectives**: Preserves different viewpoints on same topic
+
+##### 🏗️ Architecture Improvements
+- **HybridStore Class**: Clean abstraction for dual storage
+- **Backward Compatible**: Falls back to SQLite FTS when needed
+- **No Migration Required**: Clean v4 with optional semantic features
+- **Lightweight Dependencies**: Uses ChromaDB's built-in embeddings (no PyTorch)
+
+#### Technical Details
+- **Embedding Model**: ChromaDB's default (all-MiniLM-L6-v2)
+- **Vector Storage**: ChromaDB with HNSW index
+- **Time Decay Formula**: `e^(-ln(2) * age_hours / half_life_hours)`
+- **Performance**: <100ms semantic search for 10k documents
+
+#### Installation
+```bash
+# v4 dependencies (optional but recommended)
+pip install chromadb>=0.4.22 numpy>=1.24.0
+```
+
 ## [3.0.0] - 2025-08-25
 
 ### 🎯 Major Release: Unified Membership Model

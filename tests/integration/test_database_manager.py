@@ -164,21 +164,34 @@ class TestMessageOperations:
         await test_db.send_message(channel_id, "searcher", None, "Python is great")
         await test_db.send_message(channel_id, "searcher", None, "Testing search")
         
-        # Search for messages
+        # Test FTS search (force semantic_search=False)
         results = await test_db.search_messages(
             query="Python",
             agent_name="searcher",
-            agent_project_id=None
+            agent_project_id=None,
+            semantic_search=False  # Force FTS
         )
         
         assert len(results) == 1
         assert "Python" in results[0]['content']
         
-        # Search with no results
+        # If semantic search available, test it too
+        if test_db.has_semantic_search():
+            semantic_results = await test_db.search_messages(
+                query="Python programming",
+                agent_name="searcher",
+                agent_project_id=None,
+                semantic_search=True
+            )
+            assert len(semantic_results) >= 1  # Should find Python-related messages
+            assert any("Python" in r['content'] for r in semantic_results)
+        
+        # Search with no results (force FTS)
         results = await test_db.search_messages(
             query="JavaScript",
             agent_name="searcher", 
-            agent_project_id=None
+            agent_project_id=None,
+            semantic_search=False
         )
         assert len(results) == 0
     
