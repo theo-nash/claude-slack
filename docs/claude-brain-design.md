@@ -338,21 +338,138 @@ async def get_expertise_map(
 }
 ```
 
-### 2. Python API Usage
+### 2. Metadata Conventions (Claude-Brain Defines These)
+
+```python
+# claude-brain/conventions.py
+
+class MetadataConventions:
+    """
+    Claude-brain's conventions for metadata structure.
+    
+    These are NOT known to claude-slack - the infrastructure
+    just stores and queries arbitrary JSON.
+    """
+    
+    @staticmethod
+    def create_reflection_metadata(task, outcome, decisions, files, patterns, confidence):
+        """Our convention for reflection metadata."""
+        return {
+            "type": "reflection",
+            "outcome": outcome,
+            "confidence": confidence,
+            "breadcrumbs": {
+                "task": task,
+                "decisions": decisions or [],
+                "files": files or [],
+                "patterns": patterns or []
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    @staticmethod
+    def create_insight_metadata(domain, insight_type, impact_score):
+        """Our convention for insights."""
+        return {
+            "type": "insight",
+            "domain": domain,
+            "insight_type": insight_type,
+            "impact_score": impact_score
+        }
+    
+    @staticmethod
+    def query_for_breadcrumbs(decisions=None, files=None, patterns=None):
+        """Build metadata query using our breadcrumb convention."""
+        filters = {}
+        if decisions:
+            filters["metadata.breadcrumbs.decisions"] = {"$in": decisions}
+        if files:
+            filters["metadata.breadcrumbs.files"] = {"$contains": files[0]}
+        if patterns:
+            filters["metadata.breadcrumbs.patterns"] = {"$in": patterns}
+        return filters
+```
+
+### 3. Schema Registration and API Usage
 
 ```python
 # claude-brain/intelligence/context_engine.py
 
 from claude_slack import ClaudeSlackAPI
+from conventions import MetadataConventions
 
 class ContextEngine:
     def __init__(self):
         self.slack = ClaudeSlackAPI(
             db_path=os.environ["CLAUDE_SLACK_DB"]
         )
+        self.conventions = MetadataConventions
+        
+        # Register our schemas for optimal performance
+        self._register_schemas()
+    
+    def _register_schemas(self):
+        """Register claude-brain's metadata schemas with infrastructure."""
+        
+        # Register reflection schema
+        self.slack.register_schema(
+            "reflection",
+            schema_def={
+                "type": "string",
+                "outcome": "string",
+                "confidence": "float",
+                "breadcrumbs": {
+                    "task": "string",
+                    "files": ["string"],
+                    "decisions": ["string"],  
+                    "patterns": ["string"]
+                },
+                "session_context": "string",
+                "timestamp": "datetime"
+            },
+            indexed_fields=[
+                "type",
+                "outcome",
+                "confidence",
+                "breadcrumbs.task",
+                "breadcrumbs.decisions[]",  # Flatten array for search
+                "breadcrumbs.patterns[0]"   # Index first pattern
+            ]
+        )
+        
+        # Register insight schema  
+        self.slack.register_schema(
+            "insight",
+            schema_def={
+                "type": "string",
+                "domain": "string",
+                "insight_type": "string",
+                "impact_score": "float",
+                "related_tasks": ["string"]
+            },
+            indexed_fields=[
+                "type",
+                "domain",
+                "insight_type",
+                "impact_score"
+            ]
+        )
+        
+        # Register expertise schema
+        self.slack.register_schema(
+            "expertise_update",
+            schema_def={
+                "type": "string",
+                "agent_id": "string",
+                "domain": "string",
+                "expertise_delta": "float"
+            },
+            indexed_fields=["type", "agent_id", "domain"]
+        )
     
     async def build_context(self, task: str, depth: str) -> Context:
-        # Use infrastructure API for data retrieval
+        # Use infrastructure API with our registered schemas
+        # Queries now use natural paths and are automatically optimized
         
         # 1. Get recent related work
         recent = await self.slack.search(
@@ -361,20 +478,42 @@ class ContextEngine:
             limit=20
         )
         
-        # 2. Find high-confidence solutions
+        # 2. Find high-confidence solutions (uses registered schema)
         solutions = await self.slack.query_by_metadata({
-            "outcome": "success",
-            "confidence": {"$gte": 0.8}
+            "outcome": "success",           # Natural path
+            "confidence": {"$gte": 0.8}     # Automatically optimized
         })
         
-        # 3. Apply custom intelligence ranking
+        # 3. Query by breadcrumbs (registered fields)
+        related = await self.slack.query_by_metadata({
+            "breadcrumbs.decisions": {"$in": ["authentication", "jwt"]},
+            "breadcrumbs.patterns": {"$contains": "middleware"}
+        })
+        # Infrastructure automatically uses ChromaDB pre-filtering
+        
+        # 4. Apply custom intelligence ranking
         ranked = await self.slack.search_with_custom_ranker(
             query=task,
             ranker=self._intelligence_ranker
         )
         
-        # 4. Synthesize into context
-        return self._synthesize(recent, solutions, ranked, depth)
+        # 5. Synthesize into context
+        return self._synthesize(recent, solutions, related, ranked, depth)
+    
+    def _intelligence_ranker(self, message: Message, scores: Dict) -> float:
+        """Custom ranker that understands our metadata conventions."""
+        score = scores["similarity"]
+        
+        # We know about our "breadcrumbs" convention
+        breadcrumbs = message.metadata.get("breadcrumbs", {})
+        if "security" in breadcrumbs.get("decisions", []):
+            score *= 1.3
+        
+        # We know about our "outcome" convention
+        if message.metadata.get("outcome") == "success":
+            score *= 1.2
+            
+        return score
 ```
 
 ## Data Storage
@@ -468,6 +607,44 @@ await capture_insight(
     artifacts=["src/middleware/rateLimit.js"],
     success_factors=["Used established Redis pattern"]
 )
+```
+
+### How Claude-Brain Stores Using Its Conventions
+
+```python
+# Inside claude-brain's capture_insight implementation
+
+async def capture_insight_impl(task, outcome, key_learnings, artifacts, ...):
+    # 1. Use our metadata conventions
+    metadata = MetadataConventions.create_reflection_metadata(
+        task=task,
+        outcome=outcome,
+        decisions=key_learnings,  # Our convention
+        files=artifacts,
+        patterns=identify_patterns(key_learnings),
+        confidence=0.9 if outcome == "success" else 0.5
+    )
+    
+    # 2. Store via infrastructure (claude-slack is agnostic)
+    message_id = await slack_api.store_message(
+        channel_id=f"notes:{agent_id}",
+        sender_id=agent_id,
+        content=format_reflection(task, outcome, key_learnings),
+        metadata=metadata,  # Our structured JSON
+        confidence=metadata["confidence"]
+    )
+    
+    # 3. Intelligence layer processing (claude-brain specific)
+    patterns = await extract_patterns_from_learnings(key_learnings)
+    expertise = await update_expertise_scores(agent_id, task, outcome)
+    related = await find_related_insights(metadata)
+    
+    return {
+        "stored_id": message_id,
+        "patterns": patterns,
+        "expertise": expertise,
+        "related": related
+    }
 ```
 
 ## Implementation Roadmap

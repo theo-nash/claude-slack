@@ -65,7 +65,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         super().__init__()
         
         self.db_path = db_path
-        self.logger = get_logger('MCPToolOrchestrator', component='orchestrator')
+        self.logger = get_logger('MCPToolOrchestrator', component='manager')
         
         # Initialize only the managers we actually use
         self.db = DatabaseManager(db_path)

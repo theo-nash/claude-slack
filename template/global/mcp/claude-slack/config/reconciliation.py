@@ -61,7 +61,7 @@ class Action(ABC):
         self.phase = phase
         self.status = ActionStatus.PENDING
         self.result: Optional[ActionResult] = None
-        self.logger = get_logger(self.__class__.__name__, component='reconciliation')
+        self.logger = get_logger(self.__class__.__name__, component='action')
     
     @abstractmethod
     async def execute(self, db_manager) -> ActionResult:
@@ -380,7 +380,7 @@ class ReconciliationPlan:
             ActionPhase.AGENTS: [],
             ActionPhase.ACCESS: []
         }
-        self.logger = get_logger('ReconciliationPlan', component='reconciliation')
+        self.logger = get_logger('ReconciliationPlan', component='manager')
         self.results: List[ActionResult] = []
     
     def add_action(self, action: Action):

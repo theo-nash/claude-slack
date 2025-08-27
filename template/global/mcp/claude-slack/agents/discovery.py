@@ -90,7 +90,7 @@ class AgentDiscoveryService:
     
     def __init__(self):
         """Initialize the discovery service"""
-        self.logger = get_logger('AgentDiscoveryService', component='discovery')
+        self.logger = get_logger('AgentDiscoveryService', component='manager')
     
     async def discover_project_agents(self, project_path: str) -> List[DiscoveredAgent]:
         """

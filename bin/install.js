@@ -607,7 +607,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
-        // Hook paths in claude-slack directory
+        // Hook paths in claude-slack directory (NOT global hooks)
         const sessionHookTarget = path.join(claudeSlackDir, 'hooks', 'slack_session_start.py');
         const preToolHookTarget = path.join(claudeSlackDir, 'hooks', 'slack_pre_tool_use.py');
 
@@ -696,7 +696,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 
         await fs.writeJson(settingsPath, settings, { spaces: 2 });
 
-        this.spinner.succeed('Hooks installed (SessionStart + PreToolUse)');
+        this.spinner.succeed('Hooks configured in settings.json (SessionStart + PreToolUse)');
     }
 
     async setupProjectAgents() {
@@ -861,7 +861,7 @@ print(json.dumps(result))
         console.log(`  • ${chalk.bold('SQLite Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
         console.log(`  • ${chalk.bold('ChromaDB Vectors')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
         console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
-        console.log(`  • ${chalk.bold('Hooks')}: SessionStart + PreToolUse`);
+        console.log(`  • ${chalk.bold('Hooks Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'hooks')} (SessionStart + PreToolUse)`);
         
         // Check and display semantic search status
         this.displaySemanticSearchStatus();

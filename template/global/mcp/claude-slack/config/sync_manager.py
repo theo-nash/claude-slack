@@ -59,7 +59,7 @@ class ConfigSyncManager(DatabaseInitializer):
         super().__init__()
         
         self.db_path = db_path
-        self.logger = get_logger('ConfigSyncManager', component='sync')
+        self.logger = get_logger('ConfigSyncManager', component='manager')
         
         # Initialize managers
         self.db = DatabaseManager(db_path)
