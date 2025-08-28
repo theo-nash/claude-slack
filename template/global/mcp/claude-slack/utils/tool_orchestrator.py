@@ -18,10 +18,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from db.manager import DatabaseManager
-from db.initialization import DatabaseInitializer, ensure_db_initialized
-from channels.manager import ChannelManager
-from notes.manager import NotesManager
 from utils.formatting import format_messages_concise, format_channel_list
 from log_manager import get_logger
 
@@ -35,7 +31,7 @@ class ProjectContext:
     transcript_path: Optional[str] = None
 
 
-class MCPToolOrchestrator(DatabaseInitializer):
+class MCPToolOrchestrator:
     """
     Orchestrates MCP tool execution with unified patterns.
     
@@ -55,26 +51,19 @@ class MCPToolOrchestrator(DatabaseInitializer):
         "list_agents"  # Added list_agents
     }
     
-    def __init__(self, db_path: str):
+    def __init__(self, api):
         """
         Initialize the orchestrator with all required managers.
         
         Args:
             db_path: Path to the SQLite database
         """
-        super().__init__()
         
-        self.db_path = db_path
         self.logger = get_logger('MCPToolOrchestrator', component='manager')
         
         # Initialize only the managers we actually use
-        self.db = DatabaseManager(db_path)
-        self.db_manager = self.db  # Required for DatabaseInitializer mixin
-        
-        self.channels = ChannelManager(db_path)
-        self.notes = NotesManager(db_path)
-    
-    @ensure_db_initialized
+        self.api = api
+            
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any],
                           context: Optional[ProjectContext] = None) -> Dict[str, Any]:
         """
@@ -142,7 +131,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         project_id = context.project_id if final_scope == 'project' else None
         
         # Create channel
-        channel_id = await self.channels.create_channel(
+        channel_id = await self.api.create_channel(
             name=channel_name,
             scope=final_scope,
             project_id=project_id,
@@ -156,7 +145,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
             return self._error_response(f"Failed to create channel '{channel_name}'")
         
         # Auto-join creator to the channel
-        await self.channels.join_channel(
+        await self.api.join_channel(
             agent['name'], agent['project_id'], channel_id
         )
         
@@ -167,19 +156,14 @@ class MCPToolOrchestrator(DatabaseInitializer):
     async def handle_list_channels(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """List available channels (discoverable, including joinable ones)"""
         scope_filter = args.get("scope", "all")
-        include_archived = args.get("include_archived", False)
         
-        channels = await self.channels.list_available_channels(
-            agent['name'], 
-            agent['project_id'],
+        channels = await self.api.list_channels(
+            agent_name=agent['name'], 
+            project_id=agent['project_id'],
             scope_filter=scope_filter,
             include_archived=include_archived
         )
-        
-        # Filter by scope if requested
-        if scope_filter != "all":
-            channels = [c for c in channels if c['scope'] == scope_filter]
-        
+                
         # Format response
         if not channels:
             return self._success_response("No channels found")
@@ -199,7 +183,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         channel_id = self._resolve_channel_id(channel_name, scope, context)
         
         # Join the channel
-        success = await self.channels.join_channel(
+        success = await self.api.join_channel(
             agent['name'], agent['project_id'], channel_id
         )
         
@@ -222,7 +206,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         channel_id = self._resolve_channel_id(channel_name, scope, context)
         
         # Leave the channel
-        success = await self.channels.leave_channel(
+        success = await self.api.leave_channel(
             agent['name'], agent['project_id'], channel_id
         )
         
@@ -249,7 +233,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
             return self._error_response(f"Agent '{invitee_name}' not found")
         
         # Perform invitation
-        success = await self.channels.invite_to_channel(
+        success = await self.api.invite_to_channel(
             channel_id,
             invitee['name'],
             invitee['project_id'],
@@ -265,12 +249,13 @@ class MCPToolOrchestrator(DatabaseInitializer):
             )
     
     async def handle_list_my_channels(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
-        """List agent's channels (replaces get_my_subscriptions)"""
-        channels = await self.channels.list_channels_for_agent(
-            agent['name'], 
-            agent['project_id']
+        """List agent's channels (replaces get_my_subscriptions)"""        
+        channels = await self.api.db.sqlite.get_agent_channels(
+            agent_name=agent['name'], 
+            project_id=agent['project_id']
         )
         
+        # Filter for only m
         # Group by scope
         global_channels = [c['name'] for c in channels if c['scope'] == 'global']
         project_channels = [c['name'] for c in channels if c['scope'] == 'project']
@@ -304,7 +289,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         channel_id = self._resolve_channel_id(channel_name, scope, context)
         
         # Check if agent is member of channel
-        is_member = await self.channels.is_channel_member(
+        is_member = await self.api.db.sqlite.is_channel_member(
             channel_id, agent['name'], agent['project_id']
         )
         
@@ -314,7 +299,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
             )
         
         # Send message
-        message_id = await self.db.send_message(
+        message_id = await self.api.send_message(
             channel_id=channel_id,
             sender_id=agent['name'],
             sender_project_id=agent['project_id'],
@@ -342,23 +327,13 @@ class MCPToolOrchestrator(DatabaseInitializer):
         recipient = await self._resolve_agent(recipient_name, context)
         if not recipient:
             return self._error_response(f"Agent '{recipient_name}' not found")
-        
-        # Create or get DM channel
-        dm_channel_id = await self.db.create_or_get_dm_channel(
-            agent['name'], agent['project_id'],
-            recipient['name'], recipient['project_id']
-        )
-        
-        if not dm_channel_id:
-            return self._error_response(
-                f"Cannot create DM with {recipient_name}. Check their DM policy."
-            )
-        
+                        
         # Send message
-        message_id = await self.db.send_message(
-            channel_id=dm_channel_id,
-            sender_id=agent['name'],
+        message_id = await self.api.send_direct_message(
+            sender_name=agent['name'],
+            recipient_name=recipient['name'],
             sender_project_id=agent['project_id'],
+            recipient_project_id=recipient['project_id']
             content=content,
             metadata=metadata
         )
@@ -375,7 +350,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         unread_only = args.get("unread_only", False)
         
         # Get all messages accessible to the agent
-        messages = await self.db.get_messages(
+        messages = await self.api.get_agent_messages(
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
             limit=limit,
@@ -432,19 +407,17 @@ class MCPToolOrchestrator(DatabaseInitializer):
         ranking_profile = args.get("ranking_profile", "balanced")  # recent, quality, balanced, similarity
         message_type = args.get("message_type")  # e.g., "reflection", "decision"
         min_confidence = args.get("min_confidence")
-        semantic_search = args.get("semantic_search", True)  # Default to semantic if available
         
         if not query:
             return self._error_response("Search query is required")
         
         # Search messages accessible to the agent (v4 with semantic search)
-        results = await self.db.search_messages(
+        results = await self.api.search_agent_messages(
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
             query=query,
             limit=limit,
             # v4 parameters
-            semantic_search=semantic_search,
             ranking_profile=ranking_profile,
             message_type=message_type,
             min_confidence=min_confidence
@@ -493,7 +466,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
     async def handle_list_projects(self, args: Dict, agent: Optional[Dict], 
                                   context: ProjectContext) -> Dict:
         """List all known projects"""
-        projects = await self.db.list_projects()
+        projects = await self.api.db.list_projects()
         
         if not projects:
             return self._success_response("No projects registered")
@@ -511,14 +484,11 @@ class MCPToolOrchestrator(DatabaseInitializer):
         """List discoverable agents"""
         scope = args.get("scope", "all")
         include_descriptions = args.get("include_descriptions", True)
-        include_unavailable = args.get("include_unavailable", False)
         
-        # Get discoverable agents using DatabaseManager
         # Use the discovering agent's perspective
-        agents = await self.db.get_discoverable_agents(
+        agents = await self.api.get_messagable_agents(
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
-            include_unavailable=include_unavailable
         )
         
         if not agents:
@@ -551,7 +521,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         if not context or not context.project_id:
             return self._success_response("No project context")
         
-        links = await self.db.get_project_links(context.project_id)
+        links = await self.api.db.sqlite.get_project_links(context.project_id)
         
         if not links:
             return self._success_response("No linked projects")
@@ -571,18 +541,18 @@ class MCPToolOrchestrator(DatabaseInitializer):
         content = args.get("content", "")
         tags = args.get("tags", [])
         session_context = args.get("session_context")
+        metadata = args.get("metadata")
         
         if not content:
             return self._error_response("Note content is required")
         
         # Write note
-        note_id = await self.notes.write_note(
-            agent['name'],
-            agent['project_id'],
-            content,
+        note_id = await self.api.write_note(
+            agent_name=agent['name'],
+            agent_project_id=agent['project_id'],
+            content=content,
             tags=tags,
-            session_id=session_context,  # Use session_id parameter
-            metadata={"context": session_context} if session_context else None
+            metadata=metadata
         )
         
         if note_id:
@@ -596,7 +566,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         tags = args.get("tags", [])
         limit = args.get("limit", 50)
         
-        notes = await self.notes.search_notes(
+        notes = await self.api.search_agent_notes(
             agent['name'],
             agent['project_id'],
             query=query,
@@ -622,7 +592,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         limit = args.get("limit", 20)
         session_id = args.get("session_id")  # Not used by current implementation
         
-        notes = await self.notes.get_recent_notes(
+        notes = await self.api.get_recent_notes(
             agent['name'],
             agent['project_id'],
             limit=limit
@@ -653,7 +623,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
             return self._error_response(f"Agent '{target_agent}' not found")
         
         # Get notes (read-only peek)
-        notes = await self.notes.peek_agent_notes(
+        notes = await self.api.peek_agent_notes(
             target_agent_name=target['name'],
             target_project_id=target['project_id'],
             requester_name=agent['name'],
@@ -704,7 +674,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
             project_id = context.project_id if context else None
         
         # Check if agent exists
-        agent = await self.db.get_agent(name, project_id)
+        agent = await self.api.get_agent(name, project_id)
         if agent:
             return {
                 'name': agent['name'],
@@ -714,7 +684,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         
         # Try global agent if project agent not found
         if project_id:
-            agent = await self.db.get_agent(name, None)
+            agent = await self.api.get_agent(name, None)
             if agent:
                 return {
                     'name': agent['name'],
@@ -724,9 +694,9 @@ class MCPToolOrchestrator(DatabaseInitializer):
             
             # Try linked projects if we have a context
             if context and context.project_id:
-                linked_projects = await self.db.get_project_links(context.project_id)
+                linked_projects = await self.api.db.sqlite.get_project_links(context.project_id)
                 for link in linked_projects:
-                    agent = await self.db.get_agent(name, link['project_id'])
+                    agent = await self.api.get_agent(name, link['project_id'])
                     if agent:
                         return {
                             'name': agent['name'],
@@ -749,7 +719,7 @@ class MCPToolOrchestrator(DatabaseInitializer):
         Resolve a project hint (name or partial ID) to full project ID.
         """
         # Could be project name or ID prefix
-        projects = await self.db.list_projects()
+        projects = await self.api.db.list_projects()
         
         for project in projects:
             if (project['name'] == project_hint or 

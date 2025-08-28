@@ -41,10 +41,12 @@ except ImportError:
 # Import SessionManager for proper abstraction
 try:
     from sessions.manager import SessionManager
+    from api.unified_api import ClaudeSlackAPI
     HAS_SESSION_MANAGER = True
 except ImportError:
     HAS_SESSION_MANAGER = False
     SessionManager = None
+    ClaudeSlackAPI = None
 
 # Set up logging - use new centralized logging system
 try:
@@ -86,24 +88,25 @@ async def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -
     try:
         logger.debug(f"Recording tool call: session={session_id}, tool={tool_name}")
         
-        # Use SessionManager if available
-        if HAS_SESSION_MANAGER:
+        # Use ClaudeSlackAPI if available
+        if ClaudeSlackAPI:
             # Database path - use environment config if available
             if USE_ENV_CONFIG:
                 db_path = env_config.db_path
             else:
                 db_path = Path(claude_slack_dir) / 'data' / 'claude-slack.db'
             
-            logger.debug(f"Using SessionManager with database: {db_path}")
+            logger.debug(f"Using ClaueSlackAPI with database: {db_path}")
             
             # Ensure database directory exists
             db_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Create SessionManager instance
-            session_mgr = SessionManager(str(db_path))
+            # Create api instance
+            api = ClaudeSlackAPI(db_path=db_path, enable_sematic_search=False)
+            await api.initialize()
             
-            # Use SessionManager's record_tool_call method
-            is_new = await session_mgr.record_tool_call(
+            # Use api's record_tool_call method
+            is_new = await api.db.record_tool_call(
                 session_id=session_id,
                 tool_name=tool_name,
                 tool_inputs=tool_inputs

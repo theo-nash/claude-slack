@@ -10,10 +10,13 @@ from .manager import (
     AgentInfo
 )
 
+from .mcp_tools_manager import MCPToolsManager
+
 __all__ = [
     'AgentManager',
     'DMPolicy',
     'Discoverability', 
     'DMPermission',
-    'AgentInfo'
+    'AgentInfo',
+    'MCPToolsManager'
 ]

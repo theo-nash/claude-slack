@@ -64,7 +64,7 @@ class Action(ABC):
         self.logger = get_logger(self.__class__.__name__, component='action')
     
     @abstractmethod
-    async def execute(self, db_manager) -> ActionResult:
+    async def execute(self, api) -> ActionResult:
         """Execute the action using the provided database manager"""
         pass
     
@@ -95,11 +95,11 @@ class CreateChannelAction(Action):
         self.description = description
         self.is_default = is_default
     
-    async def execute(self, db_manager) -> ActionResult:
+    async def execute(self, api) -> ActionResult:
         """Create the channel"""
         try:
             # Check if channel already exists
-            existing = await db_manager.get_channel(self.channel_id)
+            existing = await api.get_channel(self.channel_id)
             if existing:
                 self.logger.debug(f"Channel already exists: {self.channel_id}")
                 return ActionResult(
@@ -110,9 +110,7 @@ class CreateChannelAction(Action):
                 )
             
             # Create the channel
-            created_id = await db_manager.create_channel(
-                channel_id=self.channel_id,
-                channel_type=self.channel_type,
+            created_id = await api.create_channel(
                 access_type=self.access_type,
                 scope=self.scope,
                 name=self.name,
@@ -162,11 +160,11 @@ class RegisterAgentAction(Action):
         self.metadata = metadata or {}
         self.create_notes_channel = create_notes_channel
     
-    async def execute(self, db_manager) -> ActionResult:
+    async def execute(self, api) -> ActionResult:
         """Register the agent and create notes channel"""
         try:
             # Check if agent already exists
-            existing = await db_manager.get_agent(self.name, self.project_id)
+            existing = await api.get_agent(self.name, self.project_id)
             if existing:
                 self.logger.debug(f"Agent already exists: {self.name}")
                 return ActionResult(
@@ -177,7 +175,7 @@ class RegisterAgentAction(Action):
                 )
             
             # Register the agent
-            await db_manager.register_agent(
+            await api.register_agent(
                 name=self.name,
                 project_id=self.project_id,
                 description=self.description,
@@ -198,7 +196,7 @@ class RegisterAgentAction(Action):
                         other_project = None
                     
                     try:
-                        await db_manager.set_dm_permission(
+                        await api.db.sqlite.set_dm_permission(
                             agent_name=self.name,
                             agent_project_id=self.project_id,
                             other_agent_name=other_name,
@@ -215,9 +213,7 @@ class RegisterAgentAction(Action):
             if self.create_notes_channel:
                 try:
                     # Import here to avoid circular dependency
-                    from notes.manager import NotesManager
-                    notes_mgr = NotesManager(db_manager.db_path)
-                    notes_channel_id = await notes_mgr.ensure_notes_channel(
+                    notes_channel_id = await api.notes.ensure_notes_channel(
                         agent_name=self.name,
                         agent_project_id=self.project_id
                     )
@@ -271,11 +267,11 @@ class AddMembershipAction(Action):
         self.can_leave = can_leave
         self.can_invite = can_invite
     
-    async def execute(self, db_manager) -> ActionResult:
+    async def execute(self, api) -> ActionResult:
         """Add the membership"""
         try:
             # Check if membership already exists
-            existing = await db_manager.is_channel_member(
+            existing = await api.db.sqlite.is_channel_member(
                 self.channel_id, self.agent_name, self.agent_project_id
             )
             if existing:
@@ -288,7 +284,7 @@ class AddMembershipAction(Action):
                 )
             
             # Add the membership (unified model)
-            await db_manager.add_channel_member(
+            await api.db.add_channel_member(
                 channel_id=self.channel_id,
                 agent_name=self.agent_name,
                 agent_project_id=self.agent_project_id,
@@ -336,10 +332,10 @@ class RemoveMembershipAction(Action):
         self.agent_name = agent_name
         self.agent_project_id = agent_project_id
     
-    async def execute(self, db_manager) -> ActionResult:
+    async def execute(self, api) -> ActionResult:
         """Remove the membership"""
         try:
-            await db_manager.remove_channel_member(
+            await api.db.remove_channel_member(
                 channel_id=self.channel_id,
                 agent_name=self.agent_name,
                 agent_project_id=self.agent_project_id
@@ -399,12 +395,12 @@ class ReconciliationPlan:
             descriptions[phase.value] = [action.describe() for action in actions]
         return descriptions
     
-    async def execute(self, db_manager) -> Dict[str, Any]:
+    async def execute(self, api) -> Dict[str, Any]:
         """
         Execute the plan in phases.
         
         Args:
-            db_manager: DatabaseManager instance
+            api: ClaudeSlackAPI instance
             
         Returns:
             Dictionary with execution results
@@ -428,7 +424,7 @@ class ReconciliationPlan:
             for action in phase_actions:
                 try:
                     action.status = ActionStatus.EXECUTING
-                    result = await action.execute(db_manager)
+                    result = await action.execute(api)
                     action.result = result
                     self.results.append(result)
                     

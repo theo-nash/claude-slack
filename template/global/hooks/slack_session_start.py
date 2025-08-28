@@ -38,9 +38,11 @@ except ImportError:
 
 try:
     from config.sync_manager import ConfigSyncManager
+    from api.unified_api import ClaudeSlackAPI
 except ImportError as e:
     logger.error(f"Failed to import ConfigSyncManager: {e}")
     ConfigSyncManager = None
+    ClaudeSlackAPI = None
 
 try:
     from environment_config import env_config
@@ -76,8 +78,8 @@ def main():
         logger.debug("--- SessionStart Hook Processing ---")
         
         # Use ConfigSyncManager if available
-        if ConfigSyncManager:
-            logger.info("Using ConfigSyncManager for session initialization")
+        if (ConfigSyncManager and ClaudeSlackAPI):
+            logger.info("Using ConfigSyncManager and ClaudeSlackAPI for session initialization")
             
             # Database path
             if USE_ENV_CONFIG:
@@ -93,15 +95,28 @@ def main():
             db_path = Path(db_path)
             db_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # Initialize the api
+            api = ClaudeSlackAPI(db_path = db_path, qdrant_url=os.getenv('QDRANT_URL', 'http://localhost:6333'))
+            
+            # Initialize the API (required async call)
+            import asyncio
+            try:
+                asyncio.run(api.initialize())
+                logger.info("API initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize API: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                return 0
+            
             # Initialize sync manager
             try:
-                sync_manager = ConfigSyncManager(str(db_path))
+                sync_manager = ConfigSyncManager(api)
             except Exception as e:
                 logger.error(f"Failed to initialize ConfigSyncManager: {e}")
                 return 0
             
             # Initialize the session
-            import asyncio
             try:
                 results = asyncio.run(sync_manager.initialize_session(
                     session_id=session_id,

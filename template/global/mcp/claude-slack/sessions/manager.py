@@ -29,15 +29,6 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 try:
-    from db.manager import DatabaseManager
-    from db.initialization import DatabaseInitializer, ensure_db_initialized
-except ImportError as e:
-    print(f"Import error in SessionManager: {e}", file=sys.stderr)
-    DatabaseManager = None
-    DatabaseInitializer = object  # Fallback to object if not available
-    ensure_db_initialized = lambda f: f  # No-op decorator
-
-try:
     from log_manager import get_logger
 except ImportError:
     # Fallback to standard logging if new logging system not available
@@ -68,7 +59,7 @@ class ProjectContext:
     scope: str = 'project'
 
 
-class SessionManager(DatabaseInitializer):
+class SessionManager:
     """
     Manages session contexts for Claude-Slack.
     
@@ -77,26 +68,16 @@ class SessionManager(DatabaseInitializer):
     channels, subscriptions, or messaging - it purely manages session context.
     """
     
-    def __init__(self, db_path: str):
+    def __init__(self, api):
         """
         Initialize SessionManager.
         
         Args:
-            db_path: Path to SQLite database
+            api: ClaudeSlackAPI instance
         """
         
-        # Initialize parent class (DatabaseInitializer)
-        super().__init__()
-        
-        self.db_path = db_path
+        self.api = api
         self.logger = get_logger('SessionManager', component='manager')
-        
-        # Initialize DatabaseManager
-        if DatabaseManager:
-            self.db_manager = DatabaseManager(db_path)
-        else:
-            self.db_manager = None
-            self.logger.error("DatabaseManager not available")
         
         # Simple in-memory cache for performance
         self._cache = {}
@@ -147,7 +128,6 @@ class SessionManager(DatabaseInitializer):
         """
         return hashlib.sha256(project_path.encode()).hexdigest()[:32]
     
-    @ensure_db_initialized
     async def register_session(self, session_id: str, 
                               project_path: Optional[str] = None,
                               project_name: Optional[str] = None,
@@ -163,11 +143,7 @@ class SessionManager(DatabaseInitializer):
             
         Returns:
             True if successful
-        """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return False
-        
+        """        
         try:
             # Determine project context
             project_id = None
@@ -181,8 +157,8 @@ class SessionManager(DatabaseInitializer):
             
             self.logger.info(f"Registering session {session_id} (scope: {scope})")
             
-            # Use DatabaseManager to register session
-            await self.db_manager.register_session(
+            # Use ClaudeSlackAPI to register session
+            await self.api.db.register_session(
                 session_id=session_id,
                 project_id=project_id,
                 project_path=project_path,
@@ -204,7 +180,6 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error registering session: {e}")
             return False
     
-    @ensure_db_initialized
     async def get_session_context(self, session_id: str) -> Optional[SessionContext]:
         """
         Get context for a specific session.
@@ -224,15 +199,11 @@ class SessionManager(DatabaseInitializer):
         if cached:
             return cached
         
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return None
-        
         try:
             self.logger.debug(f"Looking up session {session_id} in database")
             
-            # Use DatabaseManager to get session
-            session_data = await self.db_manager.get_session(session_id)
+            # Use ClaudeSlackAPI to get session
+            session_data = await self.api.db.get_session(session_id)
             
             if session_data:
                 context = SessionContext(
@@ -262,7 +233,6 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error getting session context: {e}")
             return None
     
-    @ensure_db_initialized
     async def get_current_session_context(self) -> Optional[SessionContext]:
         """
         Get context for the current/most recent session.
@@ -281,21 +251,16 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
-    @ensure_db_initialized
     async def get_most_recent_session_id(self) -> Optional[str]:
         """
         Get the most recently active session ID.
         
         Returns:
             Session ID or None if no recent sessions
-        """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return None
-        
+        """        
         try:
             # Get active sessions from the last 5 minutes (0.083 hours)
-            active_sessions = await self.db_manager.get_active_sessions(hours=0.083)
+            active_sessions = await self.api.db.sqlite.get_active_sessions(hours=0.083)
             
             if active_sessions:
                 session_id = active_sessions[0]['id']
@@ -307,7 +272,6 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
-    @ensure_db_initialized    
     async def get_project_context(self, project_id: str) -> Optional[ProjectContext]:
         """
         Get project information by ID.
@@ -317,14 +281,10 @@ class SessionManager(DatabaseInitializer):
             
         Returns:
             ProjectContext object or None if not found
-        """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return None
-        
+        """        
         try:
-            # Use DatabaseManager to get project
-            project_data = await self.db_manager.get_project(project_id)
+            # Use ClaudeSlackAPI to get project
+            project_data = await self.api.db.get_project(project_id)
             
             if project_data:
                 return ProjectContext(
@@ -338,7 +298,6 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
-    @ensure_db_initialized
     async def register_project(self, project_path: str, project_name: Optional[str] = None) -> str:
         """
         Register a project in the database.
@@ -354,14 +313,10 @@ class SessionManager(DatabaseInitializer):
         
         if not project_name:
             project_name = os.path.basename(project_path)
-        
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return project_id
-        
+                
         try:
-            # Use DatabaseManager to register project
-            await self.db_manager.register_project(
+            # Use ClaudeSlackAPI to register project
+            await self.api.db.register_project(
                 project_id=project_id,
                 project_path=project_path,
                 project_name=project_name
@@ -374,7 +329,6 @@ class SessionManager(DatabaseInitializer):
         
         return project_id
     
-    @ensure_db_initialized
     async def match_tool_call_session(self, tool_name: str, tool_inputs: Dict[str, Any]) -> Optional[str]:
         """
         Match a tool call to its session by looking up recent tool calls.
@@ -388,18 +342,15 @@ class SessionManager(DatabaseInitializer):
         Returns:
             Session ID or None if no match found
         """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return None
         
         try:
             # For matching, we need to iterate through recent sessions
             # and check their tool calls
-            active_sessions = await self.db_manager.get_active_sessions(hours=1)
+            active_sessions = await self.api.db.sqlite.get_active_sessions(hours=1)
             
             for session in active_sessions:
                 session_id = session['id']
-                recent_calls = await self.db_manager.get_recent_tool_calls(
+                recent_calls = await self.api.db.get_recent_tool_calls(
                     session_id=session_id,
                     minutes=10
                 )
@@ -416,7 +367,6 @@ class SessionManager(DatabaseInitializer):
         
         return None
     
-    @ensure_db_initialized
     async def record_tool_call(self, session_id: str, tool_name: str, tool_inputs: Dict[str, Any]) -> bool:
         """
         Record a tool call for session tracking.
@@ -429,13 +379,10 @@ class SessionManager(DatabaseInitializer):
         Returns:
             True if recorded successfully (False if duplicate)
         """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return False
         
         try:
-            # Use DatabaseManager to record tool call with deduplication
-            is_new = await self.db_manager.record_tool_call(
+            # Use ClaudeSlackAPI to record tool call with deduplication
+            is_new = await self.api.db.record_tool_call(
                 session_id=session_id,
                 tool_name=tool_name,
                 tool_inputs=tool_inputs,
@@ -453,7 +400,6 @@ class SessionManager(DatabaseInitializer):
             self.logger.error(f"Error recording tool call: {e}")
             return False
     
-    @ensure_db_initialized
     async def cleanup_old_sessions(self, max_age_hours: int = 24) -> int:
         """
         Clean up old sessions from the database.
@@ -464,16 +410,13 @@ class SessionManager(DatabaseInitializer):
         Returns:
             Number of sessions cleaned up
         """
-        if not self.db_manager:
-            self.logger.error("Database manager not available")
-            return 0
         
         try:
-            # Use DatabaseManager to cleanup old sessions
-            count = await self.db_manager.cleanup_old_sessions(hours=max_age_hours)
+            # Use ClaudeSlackAPI to cleanup old sessions
+            count = await self.api.db.sqlite.cleanup_old_sessions(hours=max_age_hours)
             
             # Also cleanup old tool calls
-            await self.db_manager.cleanup_old_tool_calls(minutes=10)
+            await self.api.db.sqlite.cleanup_old_tool_calls(minutes=10)
             
             if count > 0:
                 self.logger.info(f"Cleaned up {count} old sessions")
@@ -485,7 +428,6 @@ class SessionManager(DatabaseInitializer):
             return 0
     
     # Convenience methods for backwards compatibility
-    @ensure_db_initialized
     async def get_current_context(self, tool_name: str = None, 
                                  tool_inputs: dict = None) -> Tuple[Optional[str], Optional[str], 
                                                                    Optional[str], Optional[str]]:

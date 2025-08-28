@@ -7,47 +7,24 @@ This provides a unified approach using the standard channel/message infrastructu
 while maintaining privacy and searchability.
 """
 
-import sys
 import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-try:
-    from db.manager import DatabaseManager
-    from db.initialization import DatabaseInitializer, ensure_db_initialized
-except ImportError as e:
-    print(f"Import error in NotesManager: {e}", file=sys.stderr)
-    DatabaseManager = None
-    DatabaseInitializer = object  # Fallback to object if not available
-    ensure_db_initialized = lambda f: f  # No-op decorator
 
-class NotesManager(DatabaseInitializer):
+class NotesManager:
     """Manages agent notes using private channels"""
     
-    def __init__(self, db_path: str):
+    def __init__(self, message_store):
         """
-        Initialize NotesManager
+        Initialize NotesManager with MessageStore.
         
         Args:
-            db_path: Path to the database
+            message_store: MessageStore instance for all storage operations
         """
-        
-        # Initialize parent class (DatabaseInitializer)
-        super().__init__()
-        
-        if DatabaseManager:
-            self.db = DatabaseManager(db_path)
-            self.db_manager = self.db  # Fixed typo: was db_maanaber
-        else:
-            self.db = None
-            self.db_manager = None
-            
+        self.store = message_store
         self.logger = logging.getLogger(__name__)
-    
-    async def initialize(self):
-        """Initialize the NotesManager (ensures DB is ready)"""
-        await self.db.initialize()
     
     @staticmethod
     def get_notes_channel_id(agent_name: str, agent_project_id: Optional[str] = None) -> str:
@@ -64,7 +41,6 @@ class NotesManager(DatabaseInitializer):
         scope = agent_project_id if agent_project_id else 'global'
         return f"notes:{agent_name}:{scope}"
     
-    @ensure_db_initialized
     async def ensure_notes_channel(self, 
                                   agent_name: str, 
                                   agent_project_id: Optional[str] = None) -> str:
@@ -82,7 +58,7 @@ class NotesManager(DatabaseInitializer):
         channel_id = self.get_notes_channel_id(agent_name, agent_project_id)
         
         # Check if channel exists
-        existing = await self.db.get_channel(channel_id)
+        existing = await self.store.get_channel(channel_id)
         if existing:
             return channel_id
         
@@ -90,7 +66,7 @@ class NotesManager(DatabaseInitializer):
         scope = 'project' if agent_project_id else 'global'
         
         # Create channel
-        await self.db.create_channel(
+        await self.store.create_channel(
             channel_id=channel_id,
             channel_type='channel',
             access_type='private',  # Private ensures only members can access
@@ -104,7 +80,7 @@ class NotesManager(DatabaseInitializer):
         
         # Add agent as the sole member using unified model
         # For private channels, they cannot leave (can_leave=False)
-        await self.db.add_channel_member(
+        await self.store.add_channel_member(
             channel_id=channel_id,
             agent_name=agent_name,
             agent_project_id=agent_project_id,
@@ -114,19 +90,17 @@ class NotesManager(DatabaseInitializer):
             can_send=True,
             can_invite=False,  # No one else can be invited
             can_manage=True,  # Agent manages their own notes
-            is_from_default=False
         )
         
         self.logger.info(f"Created notes channel for {agent_name}: {channel_id}")
         return channel_id
     
-    @ensure_db_initialized
     async def write_note(self,
                         agent_name: str,
                         agent_project_id: Optional[str],
                         content: str,
                         tags: Optional[List[str]] = None,
-                        session_id: Optional[str] = None,
+                        session_context: Optional[str] = None,
                         metadata: Optional[Dict[str, Any]] = None) -> int:
         """
         Write a note to an agent's notes channel.
@@ -136,7 +110,7 @@ class NotesManager(DatabaseInitializer):
             agent_project_id: Agent's project ID
             content: Note content
             tags: Optional tags for categorization
-            session_id: Optional session identifier
+            session_context: Optional session context or description
             metadata: Optional additional metadata
             
         Returns:
@@ -149,13 +123,12 @@ class NotesManager(DatabaseInitializer):
         note_metadata = {
             "type": "note",
             "tags": tags or [],
-            "session_id": session_id,
-            "created_at": datetime.utcnow().isoformat(),
+            "session_context": session_context,
             **(metadata or {})
         }
         
         # Send message to notes channel
-        message_id = await self.db.send_message(
+        message_id = await self.store.send_message(
             channel_id=channel_id,
             sender_id=agent_name,
             sender_project_id=agent_project_id,
@@ -166,23 +139,20 @@ class NotesManager(DatabaseInitializer):
         self.logger.debug(f"Note written for {agent_name}: {message_id}")
         return message_id
     
-    @ensure_db_initialized
     async def search_notes(self,
                           agent_name: str,
                           agent_project_id: Optional[str],
                           query: Optional[str] = None,
                           tags: Optional[List[str]] = None,
-                          session_id: Optional[str] = None,
                           limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Search an agent's notes.
+        Search an agent's notes using semantic search if available.
         
         Args:
             agent_name: Agent whose notes to search
             agent_project_id: Agent's project ID
-            query: Optional text to search for
+            query: Optional text to search for (uses semantic search if available)
             tags: Optional tags to filter by
-            session_id: Optional session to filter by
             limit: Maximum number of results
             
         Returns:
@@ -190,60 +160,53 @@ class NotesManager(DatabaseInitializer):
         """
         channel_id = self.get_notes_channel_id(agent_name, agent_project_id)
         
-        # Get all messages from the notes channel
-        messages = await self.db.get_messages(
+        # Build metadata filters
+        metadata_filters = {"type": "note"}
+        if tags:
+            # For simplicity, check if any tag matches
+            # In a more sophisticated implementation, you'd use $contains
+            pass  # TODO: Implement tag filtering in metadata_filters
+        
+        # Use search_agent_messages for permission-safe searching
+        # This will use semantic search if query is provided and Qdrant is available
+        messages = await self.store.search_agent_messages(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
-            channel_id=channel_id,
-            limit=limit * 2  # Get more initially for filtering
+            query=query,
+            channel_ids=[channel_id],  # Only search in notes channel
+            metadata_filters=metadata_filters,
+            limit=limit
         )
         
+        # Format results consistently
         results = []
         for msg in messages:
-            # Parse metadata
             metadata = msg.get('metadata', {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except json.JSONDecodeError:
-                    metadata = {}
             
-            # Skip non-note messages (shouldn't happen but be safe)
-            if metadata.get('type') != 'note':
-                continue
-            
-            # Apply filters
-            if query and query.lower() not in msg['content'].lower():
-                continue
-            
-            if session_id and metadata.get('session_id') != session_id:
-                continue
-            
+            # Filter by tags if specified (post-filter for now)
             if tags:
                 note_tags = metadata.get('tags', [])
                 if not any(tag in note_tags for tag in tags):
                     continue
             
-            # Format result
             results.append({
                 'id': msg['id'],
                 'content': msg['content'],
                 'tags': metadata.get('tags', []),
-                'session_id': metadata.get('session_id'),
+                'session_context': metadata.get('session_context'),
                 'timestamp': msg['timestamp'],
-                'metadata': metadata
+                'metadata': metadata,
+                # Include search score if available (from semantic search)
+                'search_score': msg.get('search_scores', {}).get('final_score') if msg.get('search_scores') else None
             })
-            
-            if len(results) >= limit:
-                break
         
         return results
     
-    @ensure_db_initialized
     async def get_recent_notes(self,
                               agent_name: str,
                               agent_project_id: Optional[str],
-                              limit: int = 20) -> List[Dict[str, Any]]:
+                              limit: int = 20,
+                              session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get recent notes for an agent.
         
@@ -251,6 +214,7 @@ class NotesManager(DatabaseInitializer):
             agent_name: Agent whose notes to retrieve
             agent_project_id: Agent's project ID
             limit: Maximum number of notes
+            session_id: Optional session ID to filter by
             
         Returns:
             List of recent notes
@@ -285,7 +249,6 @@ class NotesManager(DatabaseInitializer):
             limit=limit
         )
     
-    @ensure_db_initialized
     async def peek_agent_notes(self,
                               target_agent_name: str,
                               target_project_id: Optional[str],
@@ -325,46 +288,3 @@ class NotesManager(DatabaseInitializer):
             query=query,
             limit=limit
         )
-    
-    @ensure_db_initialized
-    async def delete_note(self,
-                         agent_name: str,
-                         agent_project_id: Optional[str],
-                         note_id: int) -> bool:
-        """
-        Delete a specific note.
-        
-        Args:
-            agent_name: Agent who owns the note
-            agent_project_id: Agent's project ID
-            note_id: ID of the note to delete
-            
-        Returns:
-            True if deleted, False if not found or not authorized
-        """
-        # For now, we don't have a delete_message method in DatabaseManager
-        # This would need to be added if we want to support deletion
-        self.logger.warning(f"Note deletion not yet implemented: {note_id}")
-        return False
-    
-    @ensure_db_initialized
-    async def tag_note(self,
-                      agent_name: str,
-                      agent_project_id: Optional[str],
-                      note_id: int,
-                      tags: List[str]) -> bool:
-        """
-        Add tags to an existing note.
-        
-        Args:
-            agent_name: Agent who owns the note
-            agent_project_id: Agent's project ID
-            note_id: ID of the note to tag
-            tags: Tags to add
-            
-        Returns:
-            True if tagged, False if not found
-        """
-        # This would require an update_message_metadata method in DatabaseManager
-        self.logger.warning(f"Note tagging not yet implemented: {note_id}")
-        return False

@@ -19,7 +19,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 from frontmatter.parser import FrontmatterParser
-from projects.mcp_tools_manager import MCPToolsManager
+from agents.mcp_tools_manager import MCPToolsManager
 
 try:
     from log_manager import get_logger

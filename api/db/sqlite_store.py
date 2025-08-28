@@ -986,6 +986,49 @@ class SQLiteStore:
         return [dict(zip(columns, row)) for row in rows]
     
     @with_connection(writer=False)
+    async def get_channels_by_projects(self, conn, project_ids: List[str]) -> List[Dict]:
+        """
+        Get all channels for specified project IDs efficiently in a single query.
+        
+        Args:
+            project_ids: List of project IDs. Special value "global" maps to NULL.
+                        Empty list returns no results.
+                        
+        Returns:
+            List of channel dictionaries
+        """
+        if not project_ids:
+            return []
+        
+        conditions = []
+        params = []
+        
+        # Separate "global" from actual project IDs
+        include_global = "global" in project_ids
+        actual_project_ids = [pid for pid in project_ids if pid != "global"]
+        
+        # Build conditions
+        if include_global:
+            conditions.append("project_id IS NULL")
+        
+        if actual_project_ids:
+            placeholders = ",".join("?" * len(actual_project_ids))
+            conditions.append(f"project_id IN ({placeholders})")
+            params.extend(actual_project_ids)
+        
+        # Build and execute query
+        query = f"""
+            SELECT * FROM channels 
+            WHERE is_archived = 0 
+            AND ({' OR '.join(conditions)})
+        """
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+    
+    @with_connection(writer=False)
     async def get_agents_by_scope(self, conn, scope: str = 'all',
                                  project_id: Optional[str] = None) -> List[Dict]:
         """Get agents filtered by scope"""

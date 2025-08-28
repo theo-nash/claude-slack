@@ -27,9 +27,6 @@ from config.reconciliation import (
     ActionResult
 )
 from agents.discovery import AgentDiscoveryService, DiscoveredAgent
-from db.manager import DatabaseManager
-from db.initialization import DatabaseInitializer, ensure_db_initialized
-from channels.manager import ChannelManager
 from sessions.manager import SessionManager
 from config.config_manager import get_config_manager
 from frontmatter.parser import FrontmatterParser
@@ -42,30 +39,26 @@ except ImportError:
         return logging.getLogger(name)
 
 
-class ConfigSyncManager(DatabaseInitializer):
+class ConfigSyncManager:
     """
     Unified configuration synchronization and project setup.
     Replaces ProjectSetupManager with reconciliation pattern.
     """
     
-    def __init__(self, db_path: str):
+    def __init__(self, api):
         """
         Initialize ConfigSyncManager with required components.
         
         Args:
-            db_path: Path to SQLite database
+            api: ClaudeSlackAPI instance
         """
-        # Initialize parent class (DatabaseInitializer)
-        super().__init__()
         
-        self.db_path = db_path
         self.logger = get_logger('ConfigSyncManager', component='manager')
         
+        self.api = api
+        
         # Initialize managers
-        self.db = DatabaseManager(db_path)
-        self.db_manager = self.db  # Required for DatabaseInitializer
-        self.channel_manager = ChannelManager(db_path)
-        self.session_manager = SessionManager(db_path)
+        self.session_manager = SessionManager(api)
         
         # Initialize services
         self.discovery = AgentDiscoveryService()
@@ -74,7 +67,6 @@ class ConfigSyncManager(DatabaseInitializer):
         # Ensure config exists
         self.config.ensure_config_exists()
     
-    @ensure_db_initialized
     async def initialize_session(self, session_id: str, cwd: str, 
                                 transcript_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -136,7 +128,6 @@ class ConfigSyncManager(DatabaseInitializer):
         
         return results
     
-    @ensure_db_initialized
     async def reconcile_all(self, scope: str = 'all', 
                            project_id: Optional[str] = None,
                            project_path: Optional[str] = None) -> Dict[str, Any]:
@@ -173,7 +164,7 @@ class ConfigSyncManager(DatabaseInitializer):
         await self._plan_channels(infra_plan, config, scope, project_id)
         
         if infra_plan.get_total_actions() > 0:
-            infra_results = await infra_plan.execute(self.db)
+            infra_results = await infra_plan.execute(self.api)
             all_results.extend(infra_results.get('results', []))
             total_executed += infra_results.get('executed', 0)
             total_failed += infra_results.get('failed', 0)
@@ -186,7 +177,7 @@ class ConfigSyncManager(DatabaseInitializer):
             await self._plan_agents(agents_plan, scope, project_id, project_path)
         
         if agents_plan.get_total_actions() > 0:
-            agents_results = await agents_plan.execute(self.db)
+            agents_results = await agents_plan.execute(self.api)
             all_results.extend(agents_results.get('results', []))
             total_executed += agents_results.get('executed', 0)
             total_failed += agents_results.get('failed', 0)
@@ -199,7 +190,7 @@ class ConfigSyncManager(DatabaseInitializer):
         await self._plan_explicit_subscriptions(access_plan, scope, project_id)
         
         if access_plan.get_total_actions() > 0:
-            access_results = await access_plan.execute(self.db)
+            access_results = await access_plan.execute(self.api)
             all_results.extend(access_results.get('results', []))
             total_executed += access_results.get('executed', 0)
             total_failed += access_results.get('failed', 0)
@@ -222,7 +213,6 @@ class ConfigSyncManager(DatabaseInitializer):
         
         return execution_results
     
-    @ensure_db_initialized
     async def reconcile_config(self, force: bool = False) -> Dict[str, Any]:
         """
         Reconcile configuration changes.
@@ -265,7 +255,7 @@ class ConfigSyncManager(DatabaseInitializer):
                 channel_id = f"global:{channel_config['name']}"
                 
                 # Check if channel exists
-                existing = await self.db.get_channel(channel_id)
+                existing = await self.api.get_channel(channel_id)
                 if not existing:
                     action = CreateChannelAction(
                         channel_id=channel_id,
@@ -286,7 +276,7 @@ class ConfigSyncManager(DatabaseInitializer):
                 channel_id = f"proj_{project_id_short}:{channel_config['name']}"
                 
                 # Check if channel exists
-                existing = await self.db.get_channel(channel_id)
+                existing = await self.api.get_channel(channel_id)
                 if not existing:
                     action = CreateChannelAction(
                         channel_id=channel_id,
@@ -330,7 +320,7 @@ class ConfigSyncManager(DatabaseInitializer):
             agent_project_id = project_id if agent.scope == 'project' else None
             
             # Check if agent already registered
-            existing = await self.db.get_agent(agent.name, agent_project_id)
+            existing = await self.api.get_agent(agent.name, agent_project_id)
             if not existing:
                 # Extract dm_whitelist from metadata if present
                 metadata = {}
@@ -349,7 +339,7 @@ class ConfigSyncManager(DatabaseInitializer):
         
         # Always register the 'assistant' agent for projects
         if scope in ['project', 'all'] and project_id:
-            assistant_exists = await self.db.get_agent('assistant', project_id)
+            assistant_exists = await self.api.get_agent('assistant', project_id)
             if not assistant_exists:
                 action = RegisterAgentAction(
                     name='assistant',
@@ -392,7 +382,7 @@ class ConfigSyncManager(DatabaseInitializer):
                     continue
                 
                 # Check if already a member
-                is_member = await self.db.is_channel_member(
+                is_member = await self.api.db.sqlite.is_channel_member(
                     channel['id'],
                     agent['name'],
                     agent.get('project_id')
@@ -499,13 +489,13 @@ class ConfigSyncManager(DatabaseInitializer):
             channel_id = f"proj_{project_id_short}:{channel_name}"
         
         # Check if channel exists
-        channel = await self.db.get_channel(channel_id)
+        channel = await self.api.get_channel(channel_id)
         if not channel:
             self.logger.debug(f"Channel {channel_id} does not exist, skipping subscription")
             return
         
         # Check if already a member
-        is_member = await self.db.is_channel_member(
+        is_member = await self.api.db.sqlite.is_channel_member(
             channel_id,
             agent['name'],
             agent.get('project_id')
@@ -547,8 +537,8 @@ class ConfigSyncManager(DatabaseInitializer):
         """
         Get all channels where is_default=true for the given scope.
         """
-        return await self.db.get_channels_by_scope(
-            scope=scope,
+        return await self.api.list_channels(
+            scope_filter=scope,
             project_id=project_id,
             is_default=True
         )
@@ -557,7 +547,7 @@ class ConfigSyncManager(DatabaseInitializer):
         """
         Get all agents eligible for the given scope.
         """
-        return await self.db.get_agents_by_scope(
+        return await self.api.list_agents(
             scope=scope,
             project_id=project_id
         )
@@ -622,7 +612,7 @@ class ConfigSyncManager(DatabaseInitializer):
                 project_path = project_context.project_path
             else:
                 # Fall back to querying database directly
-                project = await self.db.get_project(agent_project_id)
+                project = await self.api.db.get_project(agent_project_id)
                 if project and project.get('path'):
                     project_path = project['path']
                 else:
@@ -654,7 +644,7 @@ class ConfigSyncManager(DatabaseInitializer):
                 for r in execution_results.get('results', [])
             ])
             
-            await self.db.track_config_sync(
+            await self.api.db.sqlite.track_config_sync(
                 config_hash=config_hash,
                 config_snapshot=config_snapshot,
                 scope=scope,
@@ -669,14 +659,13 @@ class ConfigSyncManager(DatabaseInitializer):
     
     async def _get_last_sync_hash(self) -> Optional[str]:
         """Get the hash of the last successful sync."""
-        return await self.db.get_last_sync_hash()
+        return await self.api.db.sqlite.get_last_sync_hash()
     
     def _hash_config(self, config: Dict) -> str:
         """Generate a hash of the configuration for change detection."""
         config_str = json.dumps(config, sort_keys=True)
         return hashlib.sha256(config_str.encode()).hexdigest()
     
-    @ensure_db_initialized
     async def register_discovered_agent(self, agent: DiscoveredAgent) -> bool:
         """
         Register a single discovered agent.
@@ -713,7 +702,7 @@ class ConfigSyncManager(DatabaseInitializer):
             await self._plan_default_access_for_agent(plan, agent)
             
             # Execute the plan
-            results = await plan.execute(self.db)
+            results = await plan.execute(self.api)
             
             return results.get('success', False)
             

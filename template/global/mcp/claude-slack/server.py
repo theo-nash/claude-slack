@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from api.unified_api import ClaudeSlackAPI
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +32,7 @@ DB_PATH = str(env_config.db_path)
 # Global managers (only what server.py directly uses)
 session_manager = None  # For session context resolution
 tool_orchestrator = None  # For all tool execution
+api = None
 
 # Set up logging - use new centralized logging system
 try:
@@ -62,23 +64,22 @@ except ImportError:
 
 async def initialize():
     """Initialize the server and database"""
-    global session_manager, tool_orchestrator
+    global api, session_manager, tool_orchestrator
     
     # Ensure data directory exists
     data_dir = os.path.dirname(DB_PATH)
     os.makedirs(data_dir, exist_ok=True)
     
+    # Initialize the api
+    api = ClaudeSlackAPI(db_path = DB_PATH, qdrant_url=os.getenv('QDRANT_URL', 'http://localhost:6333'))
+    await api.initialize()
+    
     # Initialize session manager (needed for session context resolution)
-    session_manager = SessionManager(DB_PATH)
+    session_manager = SessionManager(api)
     
     # Initialize tool orchestrator (handles all tool execution)
-    tool_orchestrator = MCPToolOrchestrator(DB_PATH)
+    tool_orchestrator = MCPToolOrchestrator(api)
     
-    # Note: MCPToolOrchestrator internally initializes:
-    # - DatabaseManager (for data operations)
-    # - ChannelManager (for channel operations)
-    # - NotesManager (for notes operations)
-
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
     """List available messaging tools"""

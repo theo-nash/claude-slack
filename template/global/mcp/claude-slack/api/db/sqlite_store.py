@@ -12,7 +12,7 @@ import aiosqlite
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from .db_helpers import with_connection, aconnect
 
@@ -26,33 +26,18 @@ except ImportError:
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
-# Optional HybridStore for v4 semantic search
-try:
-    from .hybrid_store import HybridStore, RankingProfiles
-    HYBRID_STORE_AVAILABLE = True
-except ImportError:
-    HybridStore = None
-    RankingProfiles = None
-    HYBRID_STORE_AVAILABLE = False
-
-class DatabaseManager:
+class SQLiteStore:
     """Manages SQLite database operations for claude-slack v3 with unified channels"""
     
-    def __init__(self, db_path: str, enable_hybrid_store: bool = True):
+    def __init__(self, db_path: str):
         """
         Initialize database manager
         
         Args:
             db_path: Path to SQLite database file
-            enable_hybrid_store: Whether to enable ChromaDB for semantic search (v4)
         """
         self.db_path = db_path
-        self.logger = get_logger('DatabaseManager', component='manager')
-        
-        # Store the flag, but don't initialize HybridStore yet
-        # It needs the schema to exist first
-        self.enable_hybrid_store = enable_hybrid_store
-        self.hybrid_store = None
+        self.logger = get_logger('SQLiteStore', component='manager')
     
     async def initialize(self):
         """Initialize database and ensure schema exists"""
@@ -72,24 +57,10 @@ class DatabaseManager:
                 with open(schema_path, 'r') as f:
                     schema = f.read()
                     await conn.executescript(schema)
-        
-        # Now initialize HybridStore after schema exists
-        if self.enable_hybrid_store and HYBRID_STORE_AVAILABLE:
-            try:
-                self.hybrid_store = HybridStore(self.db_path)
-                self.logger.info("HybridStore initialized for semantic search")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize HybridStore: {e}")
-                self.hybrid_store = None
     
     async def close(self):
         """Close database connection (no-op with connection pooling)"""
-        if self.hybrid_store:
-            self.hybrid_store.close()
-    
-    def has_semantic_search(self) -> bool:
-        """Check if semantic search is available"""
-        return self.hybrid_store is not None
+        pass  # Connection pooling handles this
     
     # ============================================================================
     # Project Management
@@ -371,6 +342,23 @@ class DatabaseManager:
             
             self.logger.info(f"Created {channel_type} channel: {channel_id} "
                            f"(access_type={access_type}, scope={scope})")
+            
+            # If it's a members or private channel with a creator, add them as a member
+            if access_type in ['members', 'private'] and created_by:
+                # Call the internal method with the existing connection to avoid nested connections
+                await self._add_channel_member_internal(
+                    conn,  # Pass the existing connection
+                    channel_id=channel_id,
+                    agent_name=created_by,
+                    agent_project_id=created_by_project_id,
+                    invited_by='system',
+                    source='system',
+                    can_leave=(access_type != 'private'),  # Can't leave private channels
+                    can_send=True,
+                    can_invite=(access_type == 'members'),  # Can invite in members channels
+                    can_manage=True  # Creator can manage
+                )
+                
             return channel_id
         except sqlite3.IntegrityError:
             # Channel already exists
@@ -451,18 +439,17 @@ class DatabaseManager:
         row = await cursor.fetchone()
         return bool(row[0]) if row else False
     
-    @with_connection(writer=True)
-    async def add_channel_member(self, conn,
-                                channel_id: str,
-                                agent_name: str,
-                                agent_project_id: Optional[str] = None,
-                                invited_by: str = 'self',
-                                source: str = 'manual',
-                                can_leave: bool = True,
-                                can_send: bool = True,
-                                can_invite: bool = False,
-                                can_manage: bool = False,
-                                is_from_default: bool = False):
+    async def _add_channel_member_internal(self, conn,
+                                          channel_id: str,
+                                          agent_name: str,
+                                          agent_project_id: Optional[str] = None,
+                                          invited_by: str = 'self',
+                                          source: str = 'manual',
+                                          can_leave: bool = True,
+                                          can_send: bool = True,
+                                          can_invite: bool = False,
+                                          can_manage: bool = False,
+                                          is_from_default: bool = False):
         """
         Add a member to any channel (unified membership model).
         
@@ -485,6 +472,27 @@ class DatabaseManager:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (channel_id, agent_name, agent_project_id, invited_by, source,
               can_leave, can_send, can_invite, can_manage, is_from_default))
+    
+    @with_connection(writer=True)
+    async def add_channel_member(self, conn,
+                                channel_id: str,
+                                agent_name: str,
+                                agent_project_id: Optional[str] = None,
+                                invited_by: str = 'self',
+                                source: str = 'manual',
+                                can_leave: bool = True,
+                                can_send: bool = True,
+                                can_invite: bool = False,
+                                can_manage: bool = False,
+                                is_from_default: bool = False):
+        """
+        Public wrapper for add_channel_member that manages its own connection.
+        """
+        return await self._add_channel_member_internal(
+            conn, channel_id, agent_name, agent_project_id,
+            invited_by, source, can_leave, can_send, 
+            can_invite, can_manage, is_from_default
+        )
     
     @with_connection(writer=True)
     async def remove_channel_member(self, conn,
@@ -654,23 +662,6 @@ class DatabaseManager:
         
         message_id = cursor.lastrowid
         
-        # Also store in HybridStore for semantic search (async, non-blocking)
-        if self.hybrid_store:
-            try:
-                # Add to ChromaDB for semantic search (message already in SQLite)
-                await self.hybrid_store.add_to_chroma(
-                    message_id=message_id,
-                    channel_id=channel_id,
-                    sender_id=sender_id,
-                    sender_project_id=sender_project_id,
-                    content=content,
-                    metadata=metadata,
-                    confidence=confidence
-                )
-            except Exception as e:
-                # Log but don't fail the message send
-                self.logger.warning(f"Failed to add to ChromaDB: {e}")
-        
         self.logger.info(f"Message {message_id} sent to channel {channel_id} by {sender_id}")
         return message_id
     
@@ -713,6 +704,87 @@ class DatabaseManager:
             query += " AND m.timestamp > ?"
             params.append(since.isoformat())
         
+        query += " ORDER BY m.timestamp DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'channel_id': row[1],
+                'sender_id': row[2],
+                'sender_project_id': row[3],
+                'content': row[4],
+                'timestamp': row[5],
+                'thread_id': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {},
+                'channel_name': row[8],
+                'channel_type': row[9],
+                'scope': row[10]
+            }
+            for row in rows
+        ]
+    
+    @with_connection(writer=False)
+    async def get_messages_admin(self, conn,
+                                channel_ids: Optional[List[str]] = None,
+                                sender_ids: Optional[List[str]] = None,
+                                message_ids: Optional[List[int]] = None,
+                                limit: int = 100,
+                                since: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get messages without permission checks (administrative access).
+        
+        This method bypasses agent permissions for system operations.
+        
+        Args:
+            channel_ids: Optional list of channel IDs to filter
+            sender_ids: Optional list of sender IDs to filter
+            message_ids: Optional list of specific message IDs to retrieve
+            limit: Maximum number of messages
+            since: Only messages after this timestamp
+            
+        Returns:
+            List of message dictionaries (no permission filtering)
+        """
+        # Build query without agent_channels view (no permission check)
+        query = """
+            SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                   m.content, m.timestamp, m.thread_id, m.metadata,
+                   c.name as channel_name, c.channel_type, c.scope
+            FROM messages m
+            INNER JOIN channels c ON m.channel_id = c.id
+            WHERE 1=1
+        """
+        
+        params = []
+        
+        # Add message ID filter if specified (highest priority)
+        if message_ids:
+            placeholders = ','.join('?' * len(message_ids))
+            query += f" AND m.id IN ({placeholders})"
+            params.extend(message_ids)
+        
+        # Add channel filter if specified
+        if channel_ids:
+            placeholders = ','.join('?' * len(channel_ids))
+            query += f" AND m.channel_id IN ({placeholders})"
+            params.extend(channel_ids)
+        
+        # Add sender filter if specified
+        if sender_ids:
+            placeholders = ','.join('?' * len(sender_ids))
+            query += f" AND m.sender_id IN ({placeholders})"
+            params.extend(sender_ids)
+        
+        # Add time filter if specified
+        if since:
+            query += " AND m.timestamp > ?"
+            params.append(since.isoformat() if isinstance(since, datetime) else since)
+        
+        # Order by timestamp descending and limit
         query += " ORDER BY m.timestamp DESC LIMIT ?"
         params.append(limit)
         
@@ -907,6 +979,49 @@ class DatabaseManager:
                 query += " AND project_id = ?"
                 params.append(project_id)
         # scope == 'all' returns everything
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+    
+    @with_connection(writer=False)
+    async def get_channels_by_projects(self, conn, project_ids: List[str]) -> List[Dict]:
+        """
+        Get all channels for specified project IDs efficiently in a single query.
+        
+        Args:
+            project_ids: List of project IDs. Special value "global" maps to NULL.
+                        Empty list returns no results.
+                        
+        Returns:
+            List of channel dictionaries
+        """
+        if not project_ids:
+            return []
+        
+        conditions = []
+        params = []
+        
+        # Separate "global" from actual project IDs
+        include_global = "global" in project_ids
+        actual_project_ids = [pid for pid in project_ids if pid != "global"]
+        
+        # Build conditions
+        if include_global:
+            conditions.append("project_id IS NULL")
+        
+        if actual_project_ids:
+            placeholders = ",".join("?" * len(actual_project_ids))
+            conditions.append(f"project_id IN ({placeholders})")
+            params.extend(actual_project_ids)
+        
+        # Build and execute query
+        query = f"""
+            SELECT * FROM channels 
+            WHERE is_archived = 0 
+            AND ({' OR '.join(conditions)})
+        """
         
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
@@ -1448,126 +1563,149 @@ class DatabaseManager:
                             agent_project_id: Optional[str],
                             query: str,
                             limit: int = 50,
-                            # v4 semantic search parameters
-                            semantic_search: bool = True,
-                            ranking_profile: str = "balanced",
                             channel_ids: Optional[List[str]] = None,
                             message_type: Optional[str] = None,
                             min_confidence: Optional[float] = None,
                             since: Optional[datetime] = None) -> List[Dict]:
         """
-        Search messages in accessible channels.
-        
-        Uses semantic search with HybridStore when available (v4),
-        falls back to SQLite FTS otherwise.
+        Search messages in accessible channels using SQLite FTS.
         
         Args:
             agent_name: Agent performing the search
             agent_project_id: Agent's project ID
             query: Search query
             limit: Maximum results
-            semantic_search: Use semantic search if available (v4)
-            ranking_profile: One of 'recent', 'quality', 'balanced', 'similarity'
             channel_ids: Filter to specific channels
             message_type: Filter by message type from metadata
             min_confidence: Minimum confidence threshold
             since: Only messages after this time
         
         Returns:
-            List of matching messages with scores (if semantic)
+            List of matching messages
         """
+        # Use FTS search
+        cursor = await conn.execute("""
+            SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
+                   ac.channel_name, ac.channel_type, m.confidence, m.metadata
+            FROM messages m
+            INNER JOIN messages_fts fts ON m.id = fts.rowid
+            INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+            WHERE fts.content MATCH ?
+              AND ac.agent_name = ? 
+              AND ac.agent_project_id IS NOT DISTINCT FROM ?
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+        """, (query, agent_name, agent_project_id, limit))
         
-        # If HybridStore is available and semantic search is enabled, use it
-        if self.hybrid_store and semantic_search:
-            # First get accessible channels for this agent if not specified
-            if not channel_ids:
-                cursor = await conn.execute("""
-                    SELECT channel_id FROM agent_channels
-                    WHERE agent_name = ? 
-                      AND agent_project_id IS NOT DISTINCT FROM ?
-                """, (agent_name, agent_project_id))
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            result = {
+                'id': row[0],
+                'channel_id': row[1],
+                'sender_id': row[2],
+                'content': row[3],
+                'timestamp': row[4],
+                'channel_name': row[5],
+                'channel_type': row[6],
+                'confidence': row[7]
+            }
+            
+            # Parse metadata if present
+            if row[8]:
+                result['metadata'] = json.loads(row[8])
                 
-                accessible_channels = [row[0] for row in await cursor.fetchall()]
-                channel_ids = accessible_channels
-            
-            # Use HybridStore for semantic search with ranking
-            results = await self.hybrid_store.search(
-                query=query,
-                channel_ids=channel_ids,
-                message_type=message_type,
-                min_confidence=min_confidence,
-                since=since,
-                limit=limit,
-                ranking_profile=ranking_profile
-            )
-            
-            # Add channel names for consistency with existing format
-            for result in results:
-                cursor = await conn.execute("""
-                    SELECT name, channel_type FROM channels
-                    WHERE id = ?
-                """, (result['channel_id'],))
-                row = await cursor.fetchone()
-                if row:
-                    result['channel_name'] = row[0]
-                    result['channel_type'] = row[1]
-            
-            return results
-        
-        # Fall back to FTS search (existing behavior)
-        else:
-            cursor = await conn.execute("""
-                SELECT m.id, m.channel_id, m.sender_id, m.content, m.timestamp,
-                       ac.channel_name, ac.channel_type, m.confidence, m.metadata
-                FROM messages m
-                INNER JOIN messages_fts fts ON m.id = fts.rowid
-                INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
-                WHERE fts.content MATCH ?
-                  AND ac.agent_name = ? 
-                  AND ac.agent_project_id IS NOT DISTINCT FROM ?
-                ORDER BY m.timestamp DESC
-                LIMIT ?
-            """, (query, agent_name, agent_project_id, limit))
-            
-            rows = await cursor.fetchall()
-            results = []
-            for row in rows:
-                result = {
-                    'id': row[0],
-                    'channel_id': row[1],
-                    'sender_id': row[2],
-                    'content': row[3],
-                    'timestamp': row[4],
-                    'channel_name': row[5],
-                    'channel_type': row[6],
-                    'confidence': row[7]
-                }
-                
-                # Parse metadata if present
-                if row[8]:
-                    result['metadata'] = json.loads(row[8])
-                    
-                    # Apply message_type filter if specified
-                    if message_type and result['metadata'].get('type') != message_type:
-                        continue
-                
-                # Apply confidence filter
-                if min_confidence and result.get('confidence', 0) < min_confidence:
+                # Apply message_type filter if specified
+                if message_type and result['metadata'].get('type') != message_type:
                     continue
-                    
-                # Apply time filter
-                if since:
-                    msg_time = datetime.fromisoformat(result['timestamp'])
-                    if msg_time < since:
-                        continue
-                
-                results.append(result)
             
-            return results[:limit]
+            # Apply confidence filter
+            if min_confidence and result.get('confidence', 0) < min_confidence:
+                continue
+                
+            # Apply time filter
+            if since:
+                msg_time = datetime.fromisoformat(result['timestamp'])
+                if msg_time < since:
+                    continue
+            
+            results.append(result)
+        
+        return results[:limit]
     
     # ============================================================================
     # Message CRUD Operations
     # ============================================================================
+    
+    @with_connection(writer=False)
+    async def get_messages_by_ids(self, conn,
+                                 message_ids: List[int],
+                                 agent_name: Optional[str] = None,
+                                 agent_project_id: Optional[str] = None) -> List[Dict]:
+        """
+        Get multiple messages by their IDs.
+        
+        Args:
+            message_ids: List of message IDs to retrieve
+            agent_name: Optional agent requesting (for permission check)
+            agent_project_id: Optional agent's project ID
+        
+        Returns:
+            List of message dictionaries
+        """
+        if not message_ids:
+            return []
+        
+        placeholders = ','.join('?' * len(message_ids))
+        
+        if agent_name:
+            # Check permissions using agent_channels view
+            query = f"""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.confidence, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id
+                WHERE m.id IN ({placeholders})
+                  AND ac.agent_name = ?
+                  AND ac.agent_project_id IS NOT DISTINCT FROM ?
+                ORDER BY m.timestamp DESC
+            """
+            params = list(message_ids) + [agent_name, agent_project_id]
+        else:
+            # No permission check - return any messages
+            query = f"""
+                SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
+                       m.content, m.timestamp, m.thread_id, m.metadata,
+                       m.confidence, c.name as channel_name
+                FROM messages m
+                INNER JOIN channels c ON m.channel_id = c.id
+                WHERE m.id IN ({placeholders})
+                ORDER BY m.timestamp DESC
+            """
+            params = message_ids
+        
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        
+        messages = []
+        for row in rows:
+            msg = {
+                'id': row[0],
+                'channel_id': row[1],
+                'sender_id': row[2],
+                'sender_project_id': row[3],
+                'content': row[4],
+                'timestamp': row[5],
+                'thread_id': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {},
+                'confidence': row[8],
+                'channel_name': row[9]
+            }
+            messages.append(msg)
+        
+        return messages
     
     @with_connection(writer=False)
     async def get_message(self, conn,

@@ -11,7 +11,8 @@
     "channels",
     "knowledge-management",
     "ai-memory",
-    "chromadb",
+    "qdrant",
+    "mongodb-operators",
     "mcp",
     "agent-communication",
     "reflections",
@@ -42,10 +43,16 @@
   ],
   "scripts": {
     "setup": "node bin/install.js",
+    "bundle-api": "node scripts/bundle-api.js",
+    "prebundle": "npm run clean",
+    "clean": "rm -rf template/global/mcp/claude-slack/api template/global/mcp/claude-slack/db.old",
+    "prepublishOnly": "npm run bundle-api",
     "test": "npm run test:installer && npm run test:integration && npm run test:v4",
     "test:installer": "node tests/test_installer.js",
     "test:integration": "bash tests/test_integration.sh",
-    "test:v4": "cd template/global/mcp/claude-slack && python -m pytest ../../../../../../tests/integration/test_hybrid_store.py -v"
+    "test:v4": "cd template/global/mcp/claude-slack && python -m pytest ../../../../../../tests/integration/test_hybrid_store.py -v",
+    "test:bundle": "npm run bundle-api && node tests/test_bundle.js",
+    "test:install": "npm run bundle-api && npm pack && cd /tmp && npm init -y && npm install $(npm pack ../claude-slack | tail -1)"
   },
   "dependencies": {
     "chalk": "^4.1.2",
