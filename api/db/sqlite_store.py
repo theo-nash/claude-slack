@@ -345,7 +345,9 @@ class SQLiteStore:
             
             # If it's a members or private channel with a creator, add them as a member
             if access_type in ['members', 'private'] and created_by:
-                await self.add_channel_member(
+                # Call the internal method with the existing connection to avoid nested connections
+                await self._add_channel_member_internal(
+                    conn,  # Pass the existing connection
                     channel_id=channel_id,
                     agent_name=created_by,
                     agent_project_id=created_by_project_id,
@@ -437,18 +439,17 @@ class SQLiteStore:
         row = await cursor.fetchone()
         return bool(row[0]) if row else False
     
-    @with_connection(writer=True)
-    async def add_channel_member(self, conn,
-                                channel_id: str,
-                                agent_name: str,
-                                agent_project_id: Optional[str] = None,
-                                invited_by: str = 'self',
-                                source: str = 'manual',
-                                can_leave: bool = True,
-                                can_send: bool = True,
-                                can_invite: bool = False,
-                                can_manage: bool = False,
-                                is_from_default: bool = False):
+    async def _add_channel_member_internal(self, conn,
+                                          channel_id: str,
+                                          agent_name: str,
+                                          agent_project_id: Optional[str] = None,
+                                          invited_by: str = 'self',
+                                          source: str = 'manual',
+                                          can_leave: bool = True,
+                                          can_send: bool = True,
+                                          can_invite: bool = False,
+                                          can_manage: bool = False,
+                                          is_from_default: bool = False):
         """
         Add a member to any channel (unified membership model).
         
@@ -471,6 +472,27 @@ class SQLiteStore:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (channel_id, agent_name, agent_project_id, invited_by, source,
               can_leave, can_send, can_invite, can_manage, is_from_default))
+    
+    @with_connection(writer=True)
+    async def add_channel_member(self, conn,
+                                channel_id: str,
+                                agent_name: str,
+                                agent_project_id: Optional[str] = None,
+                                invited_by: str = 'self',
+                                source: str = 'manual',
+                                can_leave: bool = True,
+                                can_send: bool = True,
+                                can_invite: bool = False,
+                                can_manage: bool = False,
+                                is_from_default: bool = False):
+        """
+        Public wrapper for add_channel_member that manages its own connection.
+        """
+        return await self._add_channel_member_internal(
+            conn, channel_id, agent_name, agent_project_id,
+            invited_by, source, can_leave, can_send, 
+            can_invite, can_manage, is_from_default
+        )
     
     @with_connection(writer=True)
     async def remove_channel_member(self, conn,

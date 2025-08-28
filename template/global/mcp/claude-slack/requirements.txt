@@ -10,10 +10,10 @@ aiosqlite>=0.19.0
 # YAML parsing for frontmatter
 pyyaml>=6.0
 
-# Vector search and embeddings (v4)
-# ChromaDB with its built-in embedding function
-# No need for sentence-transformers since we use ChromaDB's default embeddings
-chromadb>=0.4.22
+# Vector search and embeddings (v4.1)
+# Qdrant for native nested JSON support
+qdrant-client>=1.7.0
 
-# ChromaDB's minimal dependencies (that aren't automatically installed)
-numpy>=1.24.0  # Required for ChromaDB's vector operations
+# Embedding generation
+numpy>=1.24.0  # Required for vector operations
+sentence-transformers>=2.2.0  # For generating embeddings

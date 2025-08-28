@@ -12,6 +12,23 @@ import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+# Load environment variables for testing (without hardcoding paths)
+try:
+    from dotenv import load_dotenv
+    # Search for .env in common locations
+    for env_path in [
+        Path.cwd() / '.env',
+        Path.cwd().parent / '.env', 
+        Path.cwd().parent.parent / '.env',
+        Path.home() / '.env',
+    ]:
+        if env_path.exists():
+            load_dotenv(env_path)
+            break
+except ImportError:
+    # dotenv not installed, use system environment only
+    pass
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "template" / "global" / "mcp" / "claude-slack"))

@@ -594,7 +594,7 @@ class MessageStore:
         return await self.sqlite.get_channel(*args, **kwargs)
     
     async def get_channel_members(self, *args, **kwargs):
-        return await self.sqlite.get_channel_members(self, *args, **kwargs)    
+        return await self.sqlite.get_channel_members(*args, **kwargs)    
     
     async def add_channel_member(self, *args, **kwargs):
         return await self.sqlite.add_channel_member(*args, **kwargs)

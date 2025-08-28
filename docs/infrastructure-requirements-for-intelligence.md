@@ -26,7 +26,7 @@ Information doesn't fit in single categories. A message about a bug fix in the a
 
 ### The Solution: Orthogonal Categorization Dimensions
 
-#### 1. Spatial Hierarchy (WHERE)
+#### 1. Spatial Hierarchy (WHERE) 
 ```
 Channels → Topics → Messages → Fragments
 ```
