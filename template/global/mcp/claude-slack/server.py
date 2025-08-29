@@ -120,7 +120,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_channels",
-            description="List all available channels with subscription status",
+            description="List all channels you could join (shows which ones you're already a member of)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -157,7 +157,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "channel_id": {
                         "type": "string",
-                        "description": "Target channel (without #)"
+                        "description": "Channel name where to send message (must be a member first)"
                     },
                     "content": {
                         "type": "string",
@@ -192,7 +192,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "recipient_id": {
                         "type": "string",
-                        "description": "Target agent's name (just the name, e.g., 'backend-engineer' or 'security-auditor')"
+                        "description": "Target agent's name (e.g. 'backend-engineer', 'frontend-dev', 'assistant')"
                     },
                     "content": {
                         "type": "string",
@@ -213,7 +213,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_messages",
-            description="Get messages for an agent (channels + DMs) with scoped structure.  Use PROACTIVELY at the start of a new task or session to get proper context.",
+            description="Check for new messages from your channels and DMs. TIP: Call this at the start of each session to catch up on context",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -253,11 +253,11 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "channel_id": {
                         "type": "string",
-                        "description": "Channel to join"
+                        "description": "Channel name to join (e.g. 'general', 'backend', 'dev')"
                     },
                     "scope": {
                         "type": "string",
-                        "description": "Channel scope: 'global' or 'project'",
+                        "description": "Where to look for channel: 'global' for system-wide, 'project' for current project only (defaults to project)",
                         "enum": ["global", "project"]
                     }
                 },
@@ -289,7 +289,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_my_channels",
-            description="Get all channels in which an agent is currently a member.",
+            description="List only the channels you've already joined (your active subscriptions)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -391,7 +391,7 @@ async def list_tools() -> list[types.Tool]:
         # Agent Notes Tools
         types.Tool(
             name="write_note",
-            description="Write a note to your private notes channel for future reference. This helps you remember important facts, lessons learned, findings, issues, etc. across sessions.  Use PROACTIVELY at the completion of a task or session.",
+            description="Save a note for your future self - findings, solutions, gotchas, etc. TIP: Write notes after completing tasks so you remember next time",
             inputSchema={
                 "type": "object",
                 "properties": {

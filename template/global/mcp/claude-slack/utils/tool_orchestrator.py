@@ -201,8 +201,21 @@ class MCPToolOrchestrator:
         if success:
             return self._success_response(f"Joined channel '{channel_name}'")
         else:
+            # Provide specific guidance for channel not found
+            suggestions = [
+                "Check available channels with: list_channels()",
+                "Verify the channel name is spelled correctly"
+            ]
+            
+            # Add scope-specific suggestions
+            if scope != 'global':
+                suggestions.append(f"If it's a global channel, try: join_channel(channel_id='{channel_name}', scope='global')")
+            if scope != 'project':
+                suggestions.append(f"If it's a project channel, try: join_channel(channel_id='{channel_name}', scope='project')")
+            
             return self._error_response(
-                f"Failed to join '{channel_name}'. Channel may not exist or may require invitation."
+                f"Channel '{channel_name}' not found in {scope or 'project'} scope",
+                suggestions
             )
     
     async def handle_leave_channel(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
@@ -305,8 +318,11 @@ class MCPToolOrchestrator:
         )
         
         if not is_member:
+            # Determine scope for helpful suggestion
+            scope_hint = "scope='global'" if channel_id.startswith('global:') else "scope='project'"
             return self._error_response(
-                f"You must join '{channel_name}' before sending messages"
+                f"You must join '{channel_name}' before sending messages",
+                [f"Join with: join_channel(channel_id='{channel_name}', {scope_hint})"]
             )
         
         # Send message
@@ -760,9 +776,88 @@ class MCPToolOrchestrator:
             'content': content
         }
     
-    def _error_response(self, error: str) -> Dict[str, Any]:
-        """Create an error response"""
-        return {
+    def _error_response(self, error: str, suggestions: List[str] = None) -> Dict[str, Any]:
+        """
+        Create an error response with helpful suggestions.
+        
+        Args:
+            error: The error message
+            suggestions: Optional list of suggestions to help resolve the error
+        """
+        response = {
             'success': False,
             'error': error
         }
+        
+        # Add automatic suggestions based on common error patterns
+        if not suggestions:
+            suggestions = self._generate_error_suggestions(error)
+        
+        if suggestions:
+            response['suggestions'] = suggestions
+            response['error'] = f"{error}\n\nSuggestions:\n" + "\n".join(f"• {s}" for s in suggestions)
+        
+        return response
+    
+    def _generate_error_suggestions(self, error: str) -> List[str]:
+        """Generate helpful suggestions based on the error message"""
+        suggestions = []
+        
+        error_lower = error.lower()
+        
+        # Channel-related errors
+        if 'channel' in error_lower and ('not found' in error_lower or 'not exist' in error_lower):
+            suggestions.extend([
+                "Check if the channel exists with: list_channels()",
+                "For global channels, use: join_channel(channel_id='backend', scope='global')",
+                "For project channels, use: join_channel(channel_id='dev', scope='project')",
+                "Channel names must be lowercase with no spaces"
+            ])
+        elif 'must join' in error_lower:
+            suggestions.extend([
+                "Join the channel first: join_channel(channel_id='channel-name')",
+                "Check your subscribed channels: list_my_channels()",
+                "View all available channels: list_channels()"
+            ])
+        
+        # Agent-related errors
+        elif 'agent' in error_lower and 'not found' in error_lower:
+            suggestions.extend([
+                "View available agents: list_agents()",
+                "Agent names are case-sensitive",
+                "For agents in other projects, use: 'agent-name@project-id'"
+            ])
+        
+        # Permission/access errors
+        elif 'permission' in error_lower or 'invite' in error_lower or 'private' in error_lower:
+            suggestions.extend([
+                "This channel may be invite-only",
+                "Check channel access type in: list_channels()",
+                "Ask a channel member to invite you"
+            ])
+        
+        # Search-related errors
+        elif 'search' in error_lower or 'query' in error_lower:
+            suggestions.extend([
+                "Ensure your search query is not empty",
+                "Try broader search terms",
+                "Check if messages exist first: get_messages()"
+            ])
+        
+        # Note-related errors
+        elif 'note' in error_lower:
+            suggestions.extend([
+                "Check your existing notes: get_recent_notes()",
+                "Search with different keywords: search_my_notes(query='keyword')",
+                "Notes are private to each agent"
+            ])
+        
+        # Generic internal errors
+        elif 'internal error' in error_lower:
+            suggestions.extend([
+                "This may be a temporary issue - try again",
+                "Check the logs for more details",
+                "Ensure all required parameters are provided correctly"
+            ])
+        
+        return suggestions

@@ -7,6 +7,43 @@ Provides concise, token-efficient output formats for agent consumption
 from datetime import datetime
 from typing import Dict, List, Any
 
+def format_channel_name(channel_id: str) -> str:
+    """
+    Format channel ID for user-friendly display.
+    
+    Examples:
+        'global:general' -> '#general'
+        'proj_abc123:dev' -> '#dev (project)'
+        'dm:alice:bob:proj_xyz' -> 'DM with alice'
+        'notes:assistant:proj_abc' -> 'Notes'
+    """
+    if not channel_id:
+        return "unknown"
+    
+    if channel_id.startswith('global:'):
+        # Global channels get a special indicator
+        name = channel_id.split(':', 1)[1]
+        return f"#{name}!"  # ! indicates global
+    elif channel_id.startswith('proj_'):
+        # Project channels are the default
+        name = channel_id.split(':', 1)[1]
+        return f"#{name}"
+    elif channel_id.startswith('dm:'):
+        # Extract the other party's name
+        parts = channel_id.split(':')
+        # Find the name that's not 'assistant' 
+        other = [p for p in parts[1:3] if p != 'assistant']
+        if other:
+            return f"DM with {other[0]}"
+        return "DM"
+    elif channel_id.startswith('notes:'):
+        return "Personal Notes"
+    else:
+        # Unknown format, just return the name part if possible
+        if ':' in channel_id:
+            return f"#{channel_id.split(':', 1)[1]}"
+        return f"#{channel_id}"
+
 def format_time_ago(timestamp_str: str) -> str:
     """Convert timestamp to human-readable time ago format"""
     try:
@@ -179,12 +216,10 @@ def format_search_results_concise(results: List[Dict], query: str, agent_name: s
             else:
                 # Received by the agent
                 output.append(f'[DM] {sender} → You: "{content}" ({time_ago})')
-        elif channel.startswith('global:'):
-            channel_name = channel.split(':', 1)[1]
-            output.append(f'[global/{channel_name}] {sender}: "{content}" ({time_ago})')
-        elif channel.startswith('proj_'):
-            channel_name = channel.split(':', 1)[1]
-            output.append(f'[project/{channel_name}] {sender}: "{content}" ({time_ago})')
+        else:
+            # Use the new format_channel_name helper
+            channel_display = format_channel_name(channel)
+            output.append(f'[{channel_display}] {sender}: "{content}" ({time_ago})')
     
     return "\n".join(output)
 

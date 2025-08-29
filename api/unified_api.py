@@ -429,6 +429,11 @@ class ClaudeSlackAPI:
         channel = await self.db.get_channel(channel_id)
         self.logger.debug(f"get_channel returned: {channel}")
         
+        # Check if channel exists
+        if not channel:
+            self.logger.warning(f"Channel not found: {channel_id}")
+            return False
+        
         # Verify eligibility
         access = await self.channels.determine_channel_eligibility(
             agent_name=agent_name,
