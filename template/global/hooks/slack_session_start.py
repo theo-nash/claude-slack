@@ -98,35 +98,39 @@ def main():
             # Initialize the api
             api = ClaudeSlackAPI(db_path = db_path, qdrant_url=os.getenv('QDRANT_URL', 'http://localhost:6333'))
             
-            # Initialize the API (required async call)
+            # Initialize everything in a single async context
             import asyncio
-            try:
-                asyncio.run(api.initialize())
-                logger.info("API initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize API: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-                return 0
             
-            # Initialize sync manager
-            try:
-                sync_manager = ConfigSyncManager(api)
-            except Exception as e:
-                logger.error(f"Failed to initialize ConfigSyncManager: {e}")
-                return 0
+            async def run_initialization():
+                """Run all initialization in a single async context"""
+                try:
+                    # Initialize the API
+                    await api.initialize()
+                    logger.info("API initialized successfully")
+                    
+                    # Initialize sync manager
+                    sync_manager = ConfigSyncManager(api)
+                    
+                    # Initialize the session
+                    results = await sync_manager.initialize_session(
+                        session_id=session_id,
+                        cwd=cwd,
+                        transcript_path=transcript_path
+                    )
+                    
+                    return results
+                    
+                except Exception as e:
+                    logger.error(f"Failed during initialization: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    return None
             
-            # Initialize the session
+            # Run everything in a single event loop
             try:
-                results = asyncio.run(sync_manager.initialize_session(
-                    session_id=session_id,
-                    cwd=cwd,
-                    transcript_path=transcript_path
-                ))
+                results = asyncio.run(run_initialization())
             except Exception as e:
-                logger.error(f"Failed to initialize session: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
+                logger.error(f"Failed to run initialization: {e}")
                 return 0
             
             # Check if we got valid results

@@ -38,7 +38,7 @@ class NotesManager:
         Returns:
             Channel ID in format: notes:{agent_name}:{project_id|global}
         """
-        scope = agent_project_id if agent_project_id else 'global'
+        scope = agent_project_id[:8] if agent_project_id else 'global'
         return f"notes:{agent_name}:{scope}"
     
     async def ensure_notes_channel(self, 

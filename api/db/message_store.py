@@ -4,13 +4,26 @@ MessageStore: Unified storage abstraction that coordinates SQLite and Qdrant.
 This is the single entry point for all message storage and retrieval operations.
 """
 
+import os
+import sys
 import math
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 
+# Add parent directory to path to import log_manager
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from log_manager import get_logger
+except ImportError:
+    import logging
+    def get_logger(name, component=None):
+        return logging.getLogger(name)
+
 from .sqlite_store import SQLiteStore
 from .qdrant_store import QdrantStore
 from ..ranking import RankingProfiles, RankingProfile
+from ..channels.manager import ChannelManager
 
 
 class MessageStore:
@@ -40,27 +53,38 @@ class MessageStore:
                     'embedding_model': str  # Model name
                 }
         """
+        # Initialize logger
+        self.logger = get_logger('MessageStore', component='manager')
+        
         # Initialize SQLite store (always required)
         self.sqlite = SQLiteStore(db_path)
+        self.logger.info(f"Initialized SQLite store at {db_path}")
         
         # Initialize Qdrant store (optional)
         self.qdrant = None
         if qdrant_config:
             try:
                 self.qdrant = QdrantStore(**qdrant_config)
+                self.logger.info("Qdrant store initialized - semantic search enabled")
             except Exception as e:
-                print(f"Warning: Failed to initialize Qdrant: {e}")
+                self.logger.warning(f"Failed to initialize Qdrant: {e} - continuing with SQLite only")
                 # Continue without semantic search
+        else:
+            self.logger.debug("No Qdrant config provided - using SQLite only")
     
     async def initialize(self):
         """Initialize both stores"""
+        self.logger.info("Initializing MessageStore")
         await self.sqlite.initialize()
+        self.logger.info("MessageStore initialization complete")
     
     async def close(self):
         """Close all connections"""
+        self.logger.info("Closing MessageStore connections")
         await self.sqlite.close()
         if self.qdrant:
             self.qdrant.close()
+        self.logger.info("All connections closed")
     
     def has_semantic_search(self) -> bool:
         """Check if semantic search is available"""
@@ -99,6 +123,13 @@ class MessageStore:
         if metadata and isinstance(metadata, dict):
             confidence = metadata.get('confidence')
         
+        # Ensure the channel exists
+        self.logger.debug(f"Sending message to channel {channel_id} from {sender_id}")
+        channel = await self.sqlite.get_channel(channel_id)
+        if not channel:
+            self.logger.error(f"Channel '{channel_id}' does not exist")
+            raise ValueError(f"Channel '{channel_id}' does not exist")
+        
         # Store in SQLite (source of truth)
         message_id = await self.sqlite.send_message(
             channel_id=channel_id,
@@ -108,6 +139,7 @@ class MessageStore:
             metadata=metadata,
             thread_id=thread_id
         )
+        self.logger.debug(f"Message {message_id} stored in SQLite")
         
         # Index in Qdrant for semantic search (best-effort)
         if self.qdrant:
@@ -126,10 +158,12 @@ class MessageStore:
                     confidence=confidence,
                     sender_project_id=sender_project_id
                 )
+                self.logger.debug(f"Message {message_id} indexed in Qdrant")
             except Exception as e:
                 # Log but don't fail the message send
-                print(f"Warning: Failed to index in Qdrant: {e}")
+                self.logger.warning(f"Failed to index message {message_id} in Qdrant: {e}")
         
+        self.logger.info(f"Message {message_id} sent successfully to {channel_id}")
         return message_id
     
     # ============================================================================
@@ -151,6 +185,7 @@ class MessageStore:
         Returns:
             Message dict or None if not found/not accessible
         """
+        self.logger.debug(f"Retrieving message {message_id}")
         return await self.sqlite.get_message(message_id)
     
     async def get_agent_messages(self,
@@ -175,7 +210,17 @@ class MessageStore:
         Returns:
             List of message dictionaries visible to the agent
         """
+        
+        # Normalize channel ID
+        if channel_id:
+            self.logger.debug(f"Normalizing channel ID: {channel_id}")
+            channel_id = ChannelManager.normalize_channel_id(
+                channel_id,
+                project_id=agent_project_id
+            )
+      
         # Delegate to SQLite with agent context for permission enforcement
+        self.logger.debug(f"Getting messages for agent {agent_name} (project: {agent_project_id})")
         return await self.sqlite.get_messages(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
@@ -208,6 +253,7 @@ class MessageStore:
             List of message dictionaries (no permission filtering)
         """
         # Use the new admin method that bypasses permissions
+        self.logger.debug(f"Getting messages (admin mode) - channels: {channel_ids}, limit: {limit}")
         return await self.sqlite.get_messages_admin(
             channel_ids=channel_ids,
             sender_ids=sender_ids,
@@ -231,6 +277,7 @@ class MessageStore:
         Returns:
             List of message dictionaries
         """
+        self.logger.debug(f"Getting {len(message_ids)} messages by IDs")
         return await self.sqlite.get_messages_by_ids(
             message_ids=message_ids,
             agent_name=agent_name,
@@ -275,15 +322,19 @@ class MessageStore:
         if channel_ids is None and project_ids is not None:
             # If empty list, return no results
             if len(project_ids) == 0:
+                self.logger.debug("Empty project_ids list, returning no results")
                 return []
             
             # Get channels for specified projects
+            self.logger.debug(f"Getting channels for projects: {project_ids}")
             channel_ids = await self._get_channels_for_projects(project_ids)
             if not channel_ids:
+                self.logger.debug(f"No channels found for projects: {project_ids}")
                 return []  # No channels found for specified projects
         
         if query and self.qdrant:
             # Semantic search via Qdrant
+            self.logger.info(f"Performing semantic search: query='{query[:50]}...', limit={limit}")
             results = await self._semantic_search(
                 query=query,
                 channel_ids=channel_ids,
@@ -295,6 +346,7 @@ class MessageStore:
             )
         else:
             # Filter-based search via SQLite
+            self.logger.info(f"Performing filter-based search (no semantic): limit={limit}")
             results = await self._filter_search(
                 channel_ids=channel_ids,
                 sender_ids=sender_ids,
@@ -303,6 +355,7 @@ class MessageStore:
                 limit=limit
             )
         
+        self.logger.debug(f"Search returned {len(results)} results")
         return results
     
     async def search_agent_messages(self,
@@ -336,7 +389,19 @@ class MessageStore:
         Returns:
             List of messages with scores (if semantic) that agent has permission to see
         """
+        # Normalize channel IDs
+        _channel_ids = []
+        
+        if channel_ids:
+            for channel_id in channel_ids:
+                _channel_id = ChannelManager.normalize_channel_id(
+                    channel_id,
+                    project_id=agent_project_id
+                )
+                _channel_ids.append(_channel_id)
+        
         # Get channels accessible to the agent
+        self.logger.debug(f"Getting accessible channels for agent {agent_name}")
         accessible_channels = await self.sqlite.get_agent_channels(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
@@ -347,13 +412,15 @@ class MessageStore:
         
         # If no accessible channels, return empty
         if not accessible_channel_ids:
+            self.logger.debug(f"Agent {agent_name} has no accessible channels")
             return []
         
         # If channel_ids specified, intersect with accessible channels
-        if channel_ids:
+        if _channel_ids:
             # Only search in channels that are both specified AND accessible
-            search_channel_ids = list(set(channel_ids) & set(accessible_channel_ids))
+            search_channel_ids = list(set(_channel_ids) & set(accessible_channel_ids))
             if not search_channel_ids:
+                self.logger.debug("No overlap between requested and accessible channels")
                 return []  # No overlap between requested and accessible channels
         else:
             # Search all accessible channels
@@ -362,6 +429,7 @@ class MessageStore:
         # Now perform the search with the permission-filtered channel list
         if query and self.qdrant:
             # Semantic search via Qdrant
+            self.logger.info(f"Agent {agent_name} semantic search: query='{query[:50]}...', channels={len(search_channel_ids)}")
             results = await self._semantic_search(
                 query=query,
                 channel_ids=search_channel_ids,
@@ -373,6 +441,7 @@ class MessageStore:
             )
         else:
             # Filter-based search via SQLite
+            self.logger.info(f"Agent {agent_name} filter search: channels={len(search_channel_ids)}")
             results = await self._filter_search_agent(
                 agent_name=agent_name,
                 agent_project_id=agent_project_id,
@@ -383,6 +452,7 @@ class MessageStore:
                 limit=limit
             )
         
+        self.logger.debug(f"Agent search returned {len(results)} results for {agent_name}")
         return results
     
     async def _semantic_search(self,
@@ -411,6 +481,7 @@ class MessageStore:
             profile = ranking_profile
         
         # Search in Qdrant
+        self.logger.debug(f"Querying Qdrant with ranking profile: {ranking_profile}")
         qdrant_results = await self.qdrant.search(
             query=query,
             channel_ids=channel_ids,
@@ -421,6 +492,7 @@ class MessageStore:
         )
         
         if not qdrant_results:
+            self.logger.debug("No results from Qdrant")
             return []
         
         # Extract message IDs and scores
@@ -432,6 +504,7 @@ class MessageStore:
         
         # Retrieve full messages from SQLite
         message_ids = list(message_scores.keys())
+        self.logger.debug(f"Retrieving {len(message_ids)} messages from SQLite")
         messages = await self.sqlite.get_messages_by_ids(message_ids)
         
         # Create ID to message mapping
@@ -488,7 +561,9 @@ class MessageStore:
         
         # Sort by final score and limit
         scored_results.sort(key=lambda x: x[0], reverse=True)
-        return [msg for _, msg in scored_results[:limit]]
+        final_results = [msg for _, msg in scored_results[:limit]]
+        self.logger.debug(f"Semantic search returning {len(final_results)} results after ranking")
+        return final_results
     
     async def _get_channels_for_projects(self, project_ids: List[str]) -> List[str]:
         """
@@ -501,7 +576,9 @@ class MessageStore:
             List of channel IDs belonging to those projects
         """
         # Use the new efficient method
+        self.logger.debug(f"Getting channels for {len(project_ids)} projects")
         channels = await self.sqlite.get_channels_by_projects(project_ids)
+        self.logger.debug(f"Found {len(channels)} channels for specified projects")
         return [ch['id'] for ch in channels]
     
     async def _filter_search(self,
@@ -521,6 +598,7 @@ class MessageStore:
         
         # This would need to be implemented based on your specific needs
         # For now, return empty list
+        self.logger.debug("Filter search called but not fully implemented yet")
         return []
     
     async def _filter_search_agent(self,
@@ -539,6 +617,7 @@ class MessageStore:
         """
         # Use the existing get_agent_messages which already handles permissions
         # We just need to apply additional filters
+        self.logger.debug(f"Performing filter search for agent {agent_name}")
         messages = await self.sqlite.get_messages(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
@@ -570,7 +649,9 @@ class MessageStore:
             pass
         
         # Limit results
-        return filtered[:limit]
+        results = filtered[:limit]
+        self.logger.debug(f"Filter search returning {len(results)} results for agent {agent_name}")
+        return results
     
     def _calculate_decay(self, age_hours: float, half_life_hours: float) -> float:
         """Calculate exponential decay score based on age"""

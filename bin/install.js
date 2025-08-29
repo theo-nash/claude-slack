@@ -175,7 +175,7 @@ class ClaudeSlackInstaller {
         console.log(`  • ${chalk.bold('Installation Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR)}`);
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
         console.log(`  • ${chalk.bold('SQLite Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('ChromaDB Vectors')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
+        console.log(`  • ${chalk.bold('Qdrant Vectors')}: In-memory or Qdrant Cloud`);
         console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
 
         if (this.hasProject) {
@@ -184,7 +184,7 @@ class ClaudeSlackInstaller {
         }
 
         console.log(chalk.cyan('\n🎯 Claude-Slack v4 Features:'));
-        console.log('  • 🔍 Semantic search with vector embeddings (ChromaDB)');
+        console.log('  • 🔍 Semantic search with vector embeddings (Qdrant)');
         console.log('  • 📊 Intelligent ranking (similarity + confidence + time decay)');
         console.log('  • 💡 Agent reflections with breadcrumbs');
         console.log('  • ⚙️ Auto-configuration from YAML config');
@@ -193,7 +193,7 @@ class ClaudeSlackInstaller {
         console.log('  • ✨ Automatic reconciliation on session start');
         
         console.log(chalk.green('\n💡 Semantic Search Info:'));
-        console.log('  • ChromaDB will be installed automatically');
+        console.log('  • Qdrant client will be installed automatically');
         console.log('  • Embedding model will be pre-downloaded (~80MB)');
         console.log('  • No first-run delays - ready immediately');
         console.log('  • Falls back to keyword search if unavailable');
@@ -268,7 +268,7 @@ class ClaudeSlackInstaller {
         const dataDir = path.join(claudeSlackDir, 'data');
         await fs.ensureDir(dataDir);
         await fs.ensureDir(path.join(dataDir, 'backups'));
-        await fs.ensureDir(path.join(dataDir, 'chroma'));  // v4: ChromaDB vector storage
+        // Qdrant uses in-memory storage by default, no directory needed
         
         // Ensure log directories exist in claude-slack/logs
         const logDir = path.join(claudeSlackDir, 'logs');
@@ -284,21 +284,27 @@ class ClaudeSlackInstaller {
         this.spinner = ora('Setting up Python environment with v4 dependencies...').start();
 
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
+        const mcpDir = path.join(claudeSlackDir, 'mcp');
 
-        // First, create requirements.txt if it doesn't exist at the claude-slack level
+        // Use the requirements.txt from the MCP directory (which has v4.1 dependencies)
+        const mcpRequirementsPath = path.join(mcpDir, 'requirements.txt');
         const requirementsPath = path.join(claudeSlackDir, 'requirements.txt');
-        if (!fs.existsSync(requirementsPath)) {
-            const requirements = `# Claude-Slack v4 MCP Server Requirements
-# Core dependencies
-mcp>=0.1.0
+        
+        // Copy the MCP requirements to the claude-slack level for pip install
+        if (fs.existsSync(mcpRequirementsPath)) {
+            fs.copyFileSync(mcpRequirementsPath, requirementsPath);
+        } else {
+            // Fallback if MCP requirements doesn't exist
+            const requirements = `# Claude-Slack v4.1 MCP Server Requirements
+# Core API dependencies
 aiosqlite>=0.19.0
-pyyaml>=6.0
-python-dateutil>=2.8.0
-
-# v4 Semantic Search (highly recommended)
-# Enables AI-powered knowledge discovery
-chromadb>=0.4.22
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.0
 numpy>=1.24.0
+
+# MCP Server dependencies  
+mcp>=0.1.0
+python-dotenv>=1.0.0
 `;
             await fs.writeFile(requirementsPath, requirements);
         }
@@ -328,7 +334,7 @@ numpy>=1.24.0
 
             this.spinner.succeed('Python environment configured with semantic search capabilities');
             
-            // Check if ChromaDB was successfully installed
+            // Check if Qdrant was successfully installed
             await this.checkSemanticSearchDependencies();
             
         } catch (error) {
@@ -345,27 +351,31 @@ numpy>=1.24.0
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
 
-        // Check for ChromaDB installation
+        // Check for Qdrant and dependencies installation
         const checkScript = `
 import sys
 import json
-results = {"chromadb": False, "numpy": False, "chromadb_version": None, "embedding_model": None}
+results = {"qdrant": False, "numpy": False, "transformers": False, "qdrant_version": None, "embedding_model": None}
 try:
-    import chromadb
-    results["chromadb"] = True
-    results["chromadb_version"] = chromadb.__version__
-    # Check if default embedding model will download
+    import qdrant_client
+    results["qdrant"] = True
+    # Get version using importlib.metadata
     try:
-        from chromadb.utils import embedding_functions
-        ef = embedding_functions.DefaultEmbeddingFunction()
-        results["embedding_model"] = "all-MiniLM-L6-v2 (ready)"
+        import importlib.metadata
+        results["qdrant_version"] = importlib.metadata.version('qdrant-client')
     except:
-        results["embedding_model"] = "Will download on first use (~80MB)"
+        results["qdrant_version"] = "unknown"
 except ImportError:
     pass
 try:
     import numpy
     results["numpy"] = True
+except ImportError:
+    pass
+try:
+    from sentence_transformers import SentenceTransformer
+    results["transformers"] = True
+    results["embedding_model"] = "all-MiniLM-L6-v2 (will download on first use ~80MB)"
 except ImportError:
     pass
 print(json.dumps(results))
@@ -380,24 +390,27 @@ print(json.dumps(results))
             
             const results = JSON.parse(output.trim());
             
-            if (results.chromadb && results.numpy) {
-                this.spinner.succeed(`✅ v4 Semantic Search: ENABLED (ChromaDB ${results.chromadb_version})`);
+            if (results.qdrant && results.numpy && results.transformers) {
+                this.spinner.succeed(`✅ v4.1 Semantic Search: ENABLED (Qdrant ${results.qdrant_version})`);
                 console.log(chalk.green(`  • Vector embeddings: Automatic for all messages`));
                 console.log(chalk.green(`  • Embedding model: ${results.embedding_model}`));
                 console.log(chalk.green(`  • Search profiles: recent, quality, balanced, similarity`));
                 
                 // Pre-download embedding model if needed
-                if (results.embedding_model.includes('Will download')) {
+                if (results.embedding_model.includes('will download')) {
                     await this.predownloadEmbeddingModel();
                 }
                 
-            } else if (results.chromadb && !results.numpy) {
-                this.spinner.warn('⚠️ ChromaDB installed but NumPy missing - semantic search may be limited');
+            } else if (results.qdrant && !results.numpy) {
+                this.spinner.warn('⚠️ Qdrant installed but NumPy missing - semantic search may be limited');
                 console.log(chalk.yellow('  Run: pip install numpy>=1.24.0'));
+            } else if (results.qdrant && !results.transformers) {
+                this.spinner.warn('⚠️ Qdrant installed but sentence-transformers missing');
+                console.log(chalk.yellow('  Run: pip install sentence-transformers>=2.2.0'));
             } else {
-                this.spinner.warn('⚠️ v4 Semantic Search: DISABLED (ChromaDB not installed)');
+                this.spinner.warn('⚠️ v4.1 Semantic Search: DISABLED (Qdrant not installed)');
                 console.log(chalk.yellow('  • System will fall back to keyword search (FTS)'));
-                console.log(chalk.yellow('  • To enable: pip install chromadb>=0.4.22 numpy>=1.24.0'));
+                console.log(chalk.yellow('  • To enable: pip install qdrant-client>=1.7.0 sentence-transformers>=2.2.0'));
                 console.log(chalk.yellow('  • This is optional - system works without it'));
             }
         } catch (error) {
@@ -419,19 +432,19 @@ print(json.dumps(results))
 import sys
 import os
 # Suppress sentence-transformers logging during download
-os.environ['SENTENCE_TRANSFORMERS_HOME'] = os.path.expanduser('~/.cache/chroma')
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = os.path.expanduser('~/.cache/sentence-transformers')
 import logging
 logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
 
 try:
-    from chromadb.utils import embedding_functions
+    from sentence_transformers import SentenceTransformer
     print("Downloading embedding model...", file=sys.stderr)
     
-    # Initialize the embedding function - this triggers the download
-    ef = embedding_functions.DefaultEmbeddingFunction()
+    # Initialize the model - this triggers the download
+    model = SentenceTransformer('all-MiniLM-L6-v2')
     
     # Test it with a sample text to ensure it's fully initialized
-    test_embedding = ef(["test initialization"])
+    test_embedding = model.encode(["test initialization"])
     
     print("SUCCESS")
 except Exception as e:
@@ -450,7 +463,7 @@ except Exception as e:
             if (result.includes('SUCCESS')) {
                 this.spinner.succeed('✅ Embedding model downloaded and ready (all-MiniLM-L6-v2)');
                 console.log(chalk.green('  • First-run delay eliminated'));
-                console.log(chalk.green('  • Model cached in ~/.cache/chroma'));
+                console.log(chalk.green('  • Model cached in ~/.cache/sentence-transformers'));
             } else {
                 this.spinner.warn('⚠️ Could not pre-download embedding model');
                 console.log(chalk.yellow('  • Model will download on first use'));
@@ -487,7 +500,7 @@ except Exception as e:
         const pythonPath = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
-        const schemaPath = path.join(mcpDir, 'db', 'schema.sql');
+        const schemaPath = path.join(mcpDir, 'api', 'schema.sql');
 
         const initScript = `
 import sqlite3
@@ -718,7 +731,7 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
     }
 
     displaySemanticSearchStatus() {
-        // Quick check for ChromaDB status
+        // Quick check for Qdrant status
         const claudeSlackDir = path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR);
         const pythonPath = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
@@ -729,10 +742,16 @@ exec "$VENV_PYTHON" "$SCRIPT_DIR/manage_project_links.py" "$@"
 import json
 result = {"enabled": False}
 try:
-    import chromadb
+    import qdrant_client
     import numpy
+    from sentence_transformers import SentenceTransformer
     result["enabled"] = True
-    result["version"] = chromadb.__version__
+    # Get version using importlib.metadata
+    try:
+        import importlib.metadata
+        result["version"] = importlib.metadata.version('qdrant-client')
+    except:
+        result["version"] = "unknown"
 except:
     pass
 print(json.dumps(result))
@@ -747,7 +766,7 @@ print(json.dumps(result))
             
             if (result.enabled) {
                 console.log(chalk.green('\n🔍 Semantic Search Status: ENABLED ✓'));
-                console.log(chalk.green(`  • ChromaDB ${result.version} installed`));
+                console.log(chalk.green(`  • Qdrant ${result.version} installed`));
                 console.log(chalk.green('  • AI-powered search ready'));
                 console.log(chalk.green('  • Ranking profiles available'));
             } else {
@@ -859,7 +878,7 @@ print(json.dumps(result))
         console.log(chalk.cyan('📚 Installation Summary:'));
         console.log(`  • ${chalk.bold('MCP Server')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'mcp')}`);
         console.log(`  • ${chalk.bold('SQLite Database')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', DB_NAME)}`);
-        console.log(`  • ${chalk.bold('ChromaDB Vectors')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
+        console.log(`  • ${chalk.bold('Qdrant Vectors')}: In-memory or Qdrant Cloud`);
         console.log(`  • ${chalk.bold('Configuration')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'config', 'claude-slack.config.yaml')}`);
         console.log(`  • ${chalk.bold('Hooks Directory')}: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'hooks')} (SessionStart + PreToolUse)`);
         
@@ -870,7 +889,7 @@ print(json.dumps(result))
         console.log('  • Enable debug logs: export CLAUDE_SLACK_DEBUG=1');
         console.log(`  • Log files: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'logs')}/*.log`);
         console.log('  • Logs show hook execution, database operations, and errors');
-        console.log(`  • ChromaDB data: ${path.join(this.globalClaudeDir, CLAUDE_SLACK_DIR, 'data', 'chroma')}`);
+        console.log(`  • Qdrant data: In-memory or Qdrant Cloud`);
 
         console.log(chalk.cyan('\n🎯 Auto-Configuration:'));
         console.log('  • Channels created automatically from config YAML');
@@ -885,7 +904,7 @@ print(json.dumps(result))
         console.log('  3. Use /slack-status to verify');
         console.log('');
         console.log(chalk.cyan('🏗️  V4 Architecture:'));
-        console.log('  • Hybrid storage: SQLite + ChromaDB');
+        console.log('  • Hybrid storage: SQLite + Qdrant');
         console.log('  • Semantic search with vector embeddings');
         console.log('  • Intelligent ranking with time decay');
         console.log('  • Reflection-based knowledge capture');

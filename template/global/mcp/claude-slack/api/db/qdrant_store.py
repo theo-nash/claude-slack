@@ -5,8 +5,19 @@ Handles ONLY vector indexing and semantic search, no SQLite knowledge.
 """
 
 import os
+import sys
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
+
+# Add parent directory to path to import log_manager
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from log_manager import get_logger
+except ImportError:
+    import logging
+    def get_logger(name, component=None):
+        return logging.getLogger(name)
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -42,22 +53,45 @@ class QdrantStore:
             embedding_model: Embedding model name (defaults to all-MiniLM-L6-v2)
             collection_name: Name of the Qdrant collection
         """
+        # Initialize logger
+        self.logger = get_logger('QdrantStore', component='manager')
+        
         # Initialize Qdrant client
         if qdrant_url:
             # Remote Qdrant (Docker or cloud)
             if qdrant_api_key:
                 self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+                self.logger.info(f"Connected to Qdrant cloud at {qdrant_url}")
             else:
                 self.client = QdrantClient(url=qdrant_url)
+                self.logger.info(f"Connected to Qdrant server at {qdrant_url}")
         elif qdrant_path:
             # Local Qdrant with explicit path
             self.client = QdrantClient(path=qdrant_path)
+            self.logger.info(f"Initialized local Qdrant at {qdrant_path}")
         else:
             raise ValueError("Must provide either qdrant_path or qdrant_url")
         
         # Set up embedding model
         model_name = embedding_model or "all-MiniLM-L6-v2"
-        self.embedder = SentenceTransformer(model_name)
+        
+        # Detect best available device (CUDA if available and working, else CPU)
+        import torch
+        device = 'cpu'
+        if torch.cuda.is_available():
+            try:
+                # Test if CUDA actually works with a small tensor
+                test_tensor = torch.tensor([1.0]).cuda()
+                _ = test_tensor * 2
+                device = 'cuda'
+                self.logger.info(f"Using CUDA for embeddings")
+            except Exception as e:
+                self.logger.warning(f"CUDA available but not working: {e}. Falling back to CPU")
+                device = 'cpu'
+        else:
+            self.logger.info(f"CUDA not available, using CPU for embeddings")
+        
+        self.embedder = SentenceTransformer(model_name, device=device)
         self.embedding_dim = self.embedder.get_sentence_embedding_dimension()
         
         # Collection name
@@ -79,6 +113,9 @@ class QdrantStore:
                     distance=Distance.COSINE
                 )
             )
+            self.logger.info(f"Created Qdrant collection '{self.collection_name}' with dimension {self.embedding_dim}")
+        else:
+            self.logger.debug(f"Using existing Qdrant collection '{self.collection_name}'")
             
         # Always ensure indexes exist (for new or existing collections)
         self._create_indexes()
@@ -111,6 +148,7 @@ class QdrantStore:
         # Generate embedding if not provided
         if embedding is None:
             embedding = self.embedder.encode(content).tolist()
+            self.logger.debug(f"Generated embedding for message {message_id}")
         
         # Build payload with metadata and array lengths
         payload = {
@@ -139,6 +177,7 @@ class QdrantStore:
                 )
             ]
         )
+        self.logger.debug(f"Indexed message {message_id} in channel {channel_id}")
     
     def _extract_array_lengths(self, obj: Any, prefix: str = "metadata") -> Dict[str, int]:
         """
@@ -462,6 +501,7 @@ class QdrantStore:
         """
         # Generate query embedding
         query_embedding = self.embedder.encode(query).tolist()
+        self.logger.debug(f"Searching for: '{query[:50]}...' with limit={limit}")
         
         # Build filter
         qdrant_filter = self._build_filter(
@@ -486,6 +526,7 @@ class QdrantStore:
                 point.payload  # full payload including metadata
             ))
         
+        self.logger.info(f"Search found {len(results)} results for query: '{query[:30]}...'")
         return results
     
     async def get_by_ids(self, message_ids: List[int]) -> Dict[int, Dict]:
@@ -515,10 +556,14 @@ class QdrantStore:
         Args:
             message_ids: List of message IDs to delete
         """
+        if not message_ids:
+            return
+            
         self.client.delete(
             collection_name=self.collection_name,
             points_selector=message_ids
         )
+        self.logger.info(f"Deleted {len(message_ids)} messages from Qdrant index")
     
     async def update_metadata(self, 
                              message_id: int, 
@@ -562,6 +607,7 @@ class QdrantStore:
                 field_name="channel_id",
                 field_schema=PayloadSchemaType.KEYWORD
             )
+            self.logger.debug("Created index for channel_id field")
         except Exception:
             pass  # Index might already exist
         

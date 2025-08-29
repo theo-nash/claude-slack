@@ -102,7 +102,7 @@ async def record_tool_call(session_id: str, tool_name: str, tool_inputs: dict) -
             db_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Create api instance
-            api = ClaudeSlackAPI(db_path=db_path, enable_sematic_search=False)
+            api = ClaudeSlackAPI(db_path=db_path, enable_semantic_search=False)
             await api.initialize()
             
             # Use api's record_tool_call method

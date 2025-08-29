@@ -126,6 +126,12 @@ class ClaudeSlackAPI:
         Returns:
             Message ID
         """
+        # Normalize channel ID
+        channel_id = self.channels.normalize_channel_id(
+            channel_id,
+            project_id=sender_project_id
+        )
+        
         # Prepare the message
         prepared = await self.channels.prepare_message(
             channel_id=channel_id,
@@ -408,8 +414,20 @@ class ClaudeSlackAPI:
         Returns:
             True if successfully joined
         """
+        # Debug logging
+        self.logger.debug(f"join_channel called with channel_id='{channel_id}', agent_project_id='{agent_project_id}'")
+        
+        # Normalize channel ID (use agent's project as context)
+        normalized_id = self.channels.normalize_channel_id(
+            channel_id,
+            project_id=agent_project_id
+        )
+        self.logger.debug(f"After normalization: '{normalized_id}'")
+        channel_id = normalized_id
+          
         # Get channel info
         channel = await self.db.get_channel(channel_id)
+        self.logger.debug(f"get_channel returned: {channel}")
         
         # Verify eligibility
         access = await self.channels.determine_channel_eligibility(
@@ -450,6 +468,13 @@ class ClaudeSlackAPI:
         Returns:
             True if successfully left
         """
+        
+        # Normalize channel ID
+        channel_id = self.channels.normalize_channel_id(
+            channel_id,
+            project_id=agent_project_id
+        )
+            
         # Get channel info
         channel = await self.db.get_channel(channel_id)
         
@@ -498,6 +523,13 @@ class ClaudeSlackAPI:
         Raises:
             ValueError: If invitation is invalid
         """
+        
+        # Normalize channel ID
+        channel_id = self.channels.normalize_channel_id(
+            channel_id,
+            project_id=inviter_project_id
+        )
+            
         # Validate the invitation
         is_valid, error = await self.channels.validate_invitation(
             channel_id=channel_id,
@@ -573,6 +605,13 @@ class ClaudeSlackAPI:
             Channel dictionary with all metadata, or None if not found.
             If agent_name provided, includes access information.
         """
+        
+        # Normalize channel ID
+        channel_id = self.channels.normalize_channel_id(
+            channel_id,
+            project_id=agent_project_id
+        )
+        
         channel = await self.db.get_channel(channel_id)
         
         if not channel:
@@ -686,12 +725,6 @@ class ClaudeSlackAPI:
             return await self.apply_default_channels(name, project_id)
         
         return 0
-    
-    async def get_agent(self,
-                       name: str,
-                       project_id: Optional[str] = None) -> Optional[Dict]:
-        """Get agent information."""
-        return await self.db.get_agent(name, project_id)
     
     async def get_messagable_agents(self,
                                     agent_name: str,

@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 from .db_helpers import with_connection, aconnect
 
-# Add parent directory to path to import config_manager
+# Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
@@ -288,8 +288,8 @@ class SQLiteStore:
                          agent2_name: str, agent2_project_id: Optional[str]) -> str:
         """Generate consistent DM channel ID"""
         # Sort agents to ensure consistent channel ID regardless of order
-        agent1_key = f"{agent1_name}:{agent1_project_id or ''}"
-        agent2_key = f"{agent2_name}:{agent2_project_id or ''}"
+        agent1_key = f"{agent1_name}:{agent1_project_id[:8] or ''}"
+        agent2_key = f"{agent2_name}:{agent2_project_id[:8] or ''}"
         
         if agent1_key < agent2_key:
             return f"dm:{agent1_key}:{agent2_key}"
@@ -1295,6 +1295,8 @@ class SQLiteStore:
         """
         metadata_str = json.dumps(metadata) if metadata else None
         
+        self.logger.debug(f"Registering session {session_id} with project_id={project_id}, scope={scope}")
+        
         await conn.execute("""
             INSERT OR REPLACE INTO sessions 
             (id, project_id, project_path, project_name, transcript_path, 
@@ -1303,7 +1305,7 @@ class SQLiteStore:
         """, (session_id, project_id, project_path, project_name, 
               transcript_path, scope, metadata_str))
         
-        self.logger.info(f"Registered session: {session_id} (scope={scope})")
+        self.logger.info(f"Registered session: {session_id} (scope={scope}, project_id={project_id})")
         return session_id
     
     @with_connection(writer=True)

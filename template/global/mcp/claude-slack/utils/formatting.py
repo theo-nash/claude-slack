@@ -128,11 +128,11 @@ def format_agents_concise(agents: List[Dict]) -> str:
     output = [f"=== Available Agents ({len(agents)} total) ==="]
     
     # Group by scope
-    global_agents = [a for a in agents if a["scope"] == "global"]
+    global_agents = [a for a in agents if a.get("project_id") is None]
     project_groups = {}
     for agent in agents:
-        if agent["scope"] == "project":
-            project = agent.get("project", "Unknown")
+        if agent.get("project_id") is not None:
+            project = agent.get("project_id", "Unknown")[:8]
             if project not in project_groups:
                 project_groups[project] = []
             project_groups[project].append(agent)
@@ -229,6 +229,85 @@ def format_peek_notes(notes: List[Dict], agent_name: str, query: str = None) -> 
     
     title = f"Peeking at {agent_name}'s notes ({len(notes)} found)"
     return format_notes_concise(notes, title)
+
+def format_flat_messages(messages: List[Dict], agent_name: str, project_name: str = None) -> str:
+    """
+    Format a flat list of messages from get_agent_messages.
+    Handles the transformation and formatting in one place.
+    
+    Args:
+        messages: Flat list of message dictionaries
+        agent_name: Name of the agent viewing messages
+        project_name: Optional project name for context
+        
+    Returns:
+        Formatted message string
+    """
+    if not messages:
+        return "=== No recent messages ==="
+    
+    # Transform flat list into structured format
+    messages_data = {
+        "global_messages": {
+            "channel_messages": {},
+            "direct_messages": [],
+            "notes": []
+        },
+        "project_messages": {
+            "channel_messages": {},
+            "direct_messages": [],
+            "notes": [],
+            "project_name": project_name or "unknown"
+        }
+    }
+    
+    # Group messages by type and scope
+    for msg in messages:
+        channel_id = msg.get('channel_id', '')
+        
+        # Check if it's a direct message
+        if channel_id.startswith('dm:'):
+            # Determine if sent or received
+            is_sent = msg['sender_id'] == agent_name
+            if is_sent:
+                msg['is_sent'] = True
+                msg['recipient_id'] = msg.get('recipient_id', 'unknown')
+            else:
+                msg['is_sent'] = False
+            
+            # Add to appropriate scope
+            if 'proj_' in channel_id:
+                messages_data['project_messages']['direct_messages'].append(msg)
+            else:
+                messages_data['global_messages']['direct_messages'].append(msg)
+                
+        # Check if it's a notes message
+        elif channel_id.startswith('notes:'):
+            # Determine scope from channel_id pattern
+            if 'proj_' in channel_id or ':proj_' in channel_id:
+                messages_data['project_messages']['notes'].append(msg)
+            else:
+                messages_data['global_messages']['notes'].append(msg)
+                
+        # Regular channel message
+        else:
+            # Extract channel name from ID
+            if channel_id.startswith('global:'):
+                channel_name = channel_id.split(':', 1)[1]
+                if channel_name not in messages_data['global_messages']['channel_messages']:
+                    messages_data['global_messages']['channel_messages'][channel_name] = []
+                messages_data['global_messages']['channel_messages'][channel_name].append(msg)
+                
+            elif channel_id.startswith('proj_'):
+                # Project channel
+                parts = channel_id.split(':', 1)
+                channel_name = parts[1] if len(parts) > 1 else channel_id
+                if channel_name not in messages_data['project_messages']['channel_messages']:
+                    messages_data['project_messages']['channel_messages'][channel_name] = []
+                messages_data['project_messages']['channel_messages'][channel_name].append(msg)
+    
+    # Now use the existing format_messages_concise
+    return format_messages_concise(messages_data, agent_name)
 
 def format_channel_list(channels: List[Dict], agent_name: str = None) -> str:
     """

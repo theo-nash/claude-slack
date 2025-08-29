@@ -1,6 +1,6 @@
 {
   "name": "claude-slack",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Semantic knowledge infrastructure for Claude Code agents - AI-powered messaging with vector search and intelligent ranking",
   "keywords": [
     "claude",

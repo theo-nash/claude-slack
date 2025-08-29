@@ -18,7 +18,12 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from utils.formatting import format_messages_concise, format_channel_list
+from utils.formatting import (
+    format_flat_messages,
+    format_channel_list, 
+    format_agents_concise,
+    format_search_results_concise
+)
 from log_manager import get_logger
 
 
@@ -87,8 +92,13 @@ class MCPToolOrchestrator:
                 
                 agent = await self._validate_and_get_agent(agent_id, context)
                 if not agent:
+                    project_id = context.project_id if context else None
+                    available_agents = await self.api.list_agents(project_id=project_id)
+                    
+                    # Use the formatting utility for consistent output
+                    formatted_agents = format_agents_concise(available_agents)
                     return self._error_response(
-                        f"Agent '{agent_id}' not found. Please check your agent_id in frontmatter."
+                        f"Agent '{agent_id}' not found.\n\n{formatted_agents}\n\nYou are one of the project agents."
                     )
             
             # Find and execute handler
@@ -156,6 +166,7 @@ class MCPToolOrchestrator:
     async def handle_list_channels(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """List available channels (discoverable, including joinable ones)"""
         scope_filter = args.get("scope", "all")
+        include_archived = args.get("include_archived", False)
         
         channels = await self.api.list_channels(
             agent_name=agent['name'], 
@@ -252,7 +263,7 @@ class MCPToolOrchestrator:
         """List agent's channels (replaces get_my_subscriptions)"""        
         channels = await self.api.get_agent_channels(
             agent_name=agent['name'], 
-            project_id=agent['project_id']
+            agent_project_id=agent['project_id']
         )
         
         # Filter for only m
@@ -360,42 +371,13 @@ class MCPToolOrchestrator:
         if not messages:
             return self._success_response("No recent messages")
         
-        # Group messages by channel type and scope
-        channel_messages = {}
-        dm_messages = []
-        
-        for msg in messages:
-            if msg.get('channel_type') == 'dm':
-                dm_messages.append(msg)
-            else:
-                channel_name = msg.get('channel_name', msg['channel_id'])
-                if channel_name not in channel_messages:
-                    channel_messages[channel_name] = []
-                channel_messages[channel_name].append(msg)
-        
-        # Format response
-        formatted = []
-        
-        if dm_messages:
-            formatted.append(f"=== Direct Messages ({len(dm_messages)}) ===")
-            for msg in dm_messages[:10]:  # Limit to 10 most recent
-                formatted.append(
-                    f"[{msg['timestamp'][:16]}] {msg['sender_id']}: {msg['content'][:100]}"
-                )
-        
-        if channel_messages:
-            formatted.append(f"\n=== Channel Messages ===")
-            for channel_name, msgs in list(channel_messages.items())[:5]:  # Top 5 channels
-                formatted.append(f"\n#{channel_name} ({len(msgs)} messages):")
-                for msg in msgs[:5]:  # Top 5 messages per channel
-                    formatted.append(
-                        f"  [{msg['timestamp'][:16]}] {msg['sender_id']}: {msg['content'][:80]}"
-                    )
-        
-        if not formatted:
-            return self._success_response("No recent messages")
-            
-        return self._success_response('\n'.join(formatted))
+        # Use the formatting utility that handles flat message lists
+        formatted = format_flat_messages(
+            messages, 
+            agent['name'],
+            context.project_name if context else None
+        )
+        return self._success_response(formatted)
     
     async def handle_search_messages(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Search messages across channels and DMs with semantic search (v4)"""
@@ -426,26 +408,9 @@ class MCPToolOrchestrator:
         if not results:
             return self._success_response("No messages found")
         
-        # Format results (enhanced for v4 with search scores)
-        formatted = [f"Found {len(results)} messages matching '{query}':\n"]
-        for msg in results:
-            channel_name = msg.get('channel_name', msg['channel_id'])
-            
-            # Include search scores if present (v4 semantic search)
-            score_info = ""
-            if 'search_scores' in msg:
-                scores = msg['search_scores']
-                if 'final_score' in scores:
-                    score_info = f" [Score: {scores['final_score']:.2f}]"
-                elif 'similarity' in scores:
-                    score_info = f" [Similarity: {scores['similarity']:.2f}]"
-            
-            formatted.append(
-                f"[{msg['timestamp'][:16]}]{score_info} {msg['sender_id']} in #{channel_name}: "
-                f"{msg['content'][:100]}{'...' if len(msg['content']) > 100 else ''}"
-            )
-        
-        return self._success_response('\n'.join(formatted))
+        # Use the formatting utility for consistent output
+        formatted = format_search_results_concise(results, query, agent['name'])
+        return self._success_response(formatted)
     
     # ============================================================================
     # Project and Discovery Operations
@@ -497,9 +462,9 @@ class MCPToolOrchestrator:
         # Format response
         formatted = []
         for a in agents:
-            name = a.get('discoverable_agent', a.get('name', 'unknown'))
-            desc = a.get('discoverable_description', a.get('description', ''))
-            status = a.get('discoverable_status', '')
+            name = a.get('name', 'unknown')
+            desc = a.get('description', '')
+            status = a.get('status', '')
             dm_policy = a.get('dm_policy', '')
             
             # Build agent info
@@ -625,8 +590,8 @@ class MCPToolOrchestrator:
         # Get notes (read-only peek)
         notes = await self.api.peek_agent_notes(
             target_agent_name=target['name'],
-            target_project_id=target['project_id'],
-            requester_name=agent['name'],
+            target_agent_project_id=target['project_id'],
+            requester_agent_name=agent['name'],
             requester_project_id=agent['project_id'],
             query=query,
             limit=limit
@@ -761,24 +726,23 @@ class MCPToolOrchestrator:
             
         Returns:
             Full channel ID (e.g., "global:general" or "proj_abc123:dev")
-        """
-        # Check for explicit scope prefix
-        if ':' in channel_name:
-            return channel_name  # Already has scope prefix
-        
-        # Determine scope
-        final_scope = self._resolve_scope(scope, context)
-        
-        if final_scope == 'global':
-            return f"global:{channel_name}"
-        else:
-            # Project scope
-            if context and context.project_id:
-                project_id_short = context.project_id[:8]
-                return f"proj_{project_id_short}:{channel_name}"
-            else:
-                # Fallback to global if no project context
-                return f"global:{channel_name}"
+        """        
+        # Determine project_id from context
+        project_id = context.project_id if context else None
+
+        # Use the centralized normalize method
+        default_scope = scope or ('project' if project_id else 'global')
+
+        # Don't pass project_id when explicitly requesting global scope
+        # since normalize_channel_id always uses project scope when project_id is provided
+        if scope == 'global':
+            project_id = None
+
+        return self.api.channels.normalize_channel_id(
+            channel_name,
+            project_id=project_id,
+            default_scope=default_scope
+        )
     
     def _is_valid_channel_name(self, name: str) -> bool:
         """

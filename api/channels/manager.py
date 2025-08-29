@@ -55,10 +55,130 @@ class ChannelManager:
         if scope == 'global':
             return f"global:{name}"
         elif scope == 'project' and project_id:
-            return f"{project_id}:{name}"
+            project_id_short = project_id[:8] if len(project_id) > 8 else project_id
+            return f"proj_{project_id_short}:{name}"
         else:
-            return f"global:{name}"
+            raise ValueError(f"Invalid scope '{scope}' or missing project_id")
     
+    @staticmethod
+    def parse_channel_id(channel_id: str) -> Dict[str, str]:
+        """
+        Parse a channel ID into its components.
+
+        Args:
+            channel_id: Full channel ID (e.g., "global:general" or "proj_b3279ea0:dev")
+
+        Returns:
+            Dict with 'scope', 'name', and optionally 'project_id_short'
+        """
+        if ':' not in channel_id:
+            raise ValueError(f"Invalid channel ID format: {channel_id}")
+
+        prefix, rest = channel_id.split(':', 1)
+
+        # Special handling for DM channels
+        if prefix == 'dm':
+            # DM format: dm:agent1:project1:agent2:project2
+            parts = rest.split(':')
+            if len(parts) >= 4:
+                return {
+                    'scope': 'dm',
+                    'type': 'direct',
+                    'agent1': parts[0],
+                    'project1': parts[1],
+                    'agent2': parts[2],
+                    'project2': parts[3]
+                }
+            else:
+                raise ValueError(f"Invalid DM channel format: {channel_id}")
+        # Special handling for notes channels
+        elif prefix == 'notes':
+            # Notes format: notes:agent:project_id_short
+            parts = rest.split(':')
+            if len(parts) >= 2:
+                return {
+                    'scope': 'notes',
+                    'type': 'private',
+                    'agent': parts[0],
+                    'project_id_short': parts[1]
+                }
+            else:
+                raise ValueError(f"Invalid notes channel format: {channel_id}")
+        elif prefix == 'global':
+            return {'scope': 'global', 'name': rest}
+        elif prefix.startswith('proj_'):
+            return {
+                'scope': 'project',
+                'name': rest,
+                'project_id_short': prefix[5:]  # Remove 'proj_' prefix
+            }
+        else:
+            # Legacy full project ID format - convert to short
+            return {
+                'scope': 'project',
+                'name': rest,
+                'project_id_short': prefix[:8]
+            }
+    
+    @staticmethod
+    def normalize_channel_id(channel_ref: str,
+                            project_id: Optional[str] = None,
+                            default_scope: str = 'global') -> str:
+        """
+        Normalize various channel reference formats to a proper channel ID.
+
+        Args:
+            channel_ref: Channel reference - can be:
+                - Full channel ID: "global:general" or "proj_abc12345:dev"
+                - Channel name only: "general", "dev"
+                - Legacy full project format: "b3279ea098ee529db9cca7d039391e1f:general"
+            project_id: Optional project ID to use for scoping
+            default_scope: Default scope if no project_id ('global' or 'project')
+
+        Returns:
+            Normalized channel ID in format:
+            - "global:channel-name" for global channels
+            - "proj_XXXXXXXX:channel-name" for project channels
+
+        Examples:
+            normalize_channel_id("general") → "global:general"
+            normalize_channel_id("general", project_id="abc...") → "proj_abcdefgh:general"
+            normalize_channel_id("global:general") → "global:general"
+            normalize_channel_id("proj_abc12345:dev") → "proj_abc12345:dev"
+        """
+        # If already has a scope prefix, validate and potentially fix format
+        if ':' in channel_ref:
+            prefix, rest = channel_ref.split(':', 1)
+
+            # Special handling for DM channels - pass through unchanged
+            if prefix == 'dm':
+                return channel_ref
+            # Special handling for notes channels - pass through unchanged
+            elif prefix == 'notes':
+                return channel_ref
+            elif prefix == 'global':
+                return f"global:{rest}"
+            elif prefix.startswith('proj_'):
+                # Already in correct format
+                return channel_ref
+            else:
+                # Legacy full project ID format - convert to shortened
+                project_id_short = prefix[:8] if len(prefix) > 8 else prefix
+                return f"proj_{project_id_short}:{rest}"
+
+        # No prefix - need to determine scope
+        channel_name = channel_ref
+
+        # If project_id provided, use project scope
+        if project_id:
+            return ChannelManager.get_scoped_channel_id(channel_name, 'project', project_id)
+
+        # Use default scope (usually global)
+        if default_scope == 'project' and not project_id:
+            raise ValueError(f"Project ID required for project-scoped channel '{channel_name}'")
+
+        return ChannelManager.get_scoped_channel_id(channel_name, default_scope, project_id)
+  
     @staticmethod
     def validate_channel_name(name: str) -> tuple[bool, Optional[str]]:
         """

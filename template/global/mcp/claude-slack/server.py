@@ -358,6 +358,10 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
                     "scope": {
                         "type": "string",
                         "description": "Filter agents by scope: 'all', 'global', 'project' (linked projects only), or 'current' (current project only)",
@@ -370,7 +374,7 @@ async def list_tools() -> list[types.Tool]:
                         "default": True
                     }
                 },
-                "required": []
+                "required": ["agent_id"]
             }
         ),
         
