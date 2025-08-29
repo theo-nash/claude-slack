@@ -587,73 +587,29 @@ class MessageStore:
         return math.exp(-math.log(2) * ratio)
     
     # ============================================================================
-    # Delegated Operations (pass through to SQLite)
+    # Magic Method: Pass-through to SQLite Store
     # ============================================================================
     
-    # Project management
-    async def register_project(self, *args, **kwargs):
-        return await self.sqlite.register_project(*args, **kwargs)
-    
-    async def get_project(self, *args, **kwargs):
-        return await self.sqlite.get_project(*args, **kwargs)
-    
-    async def list_projects(self, *args, **kwargs):
-        return await self.sqlite.list_projects(*args, **kwargs)
-    
-    # Agent management
-    async def register_agent(self, *args, **kwargs):
-        return await self.sqlite.register_agent(*args, **kwargs)
-    
-    async def get_agent(self, *args, **kwargs):
-        return await self.sqlite.get_agent(*args, **kwargs)
-    
-    async def get_discoverable_agents(self, *args, **kwargs):
-        return await self.sqlite.get_discoverable_agents(*args, **kwargs)
-    
-    async def get_agents_by_scope(self, *args, **kwargs):
-        return await self.sqlite.get_agents_by_scope(*args, **kwargs)
-    
-    # Channel management
-    async def create_channel(self, *args, **kwargs):
-        return await self.sqlite.create_channel(*args, **kwargs)
-    
-    async def get_channel(self, *args, **kwargs):
-        return await self.sqlite.get_channel(*args, **kwargs)
-    
-    async def get_channels_by_scope(self, *args, **kwargs):
-        return await self.sqlite.get_channels_by_scope(*args, **kwargs)
-    
-    async def get_channel_members(self, *args, **kwargs):
-        return await self.sqlite.get_channel_members(*args, **kwargs)    
-    
-    async def add_channel_member(self, *args, **kwargs):
-        return await self.sqlite.add_channel_member(*args, **kwargs)
-    
-    async def remove_channel_member(self, *args, **kwargs):
-        return await self.sqlite.remove_channel_member(*args, **kwargs)
-    
-    async def get_agent_channels(self, *args, **kwargs):
-        return await self.sqlite.get_agent_channels(*args, **kwargs)
-    
-    async def create_or_get_dm_channel(self, *args, **kwargs):
-        return await self.sqlite.create_or_get_dm_channel(*args, **kwargs)
-    
-    async def get_channels_by_scope(self, *args, **kwargs):
-        return await self.sqlite.get_channels_by_scope(*args, **kwargs)
-    
-    async def get_channels_by_projects(self, *args, **kwargs):
-        return await self.sqlite.get_channels_by_projects(*args, **kwargs)
-    
-    # Session management
-    async def register_session(self, *args, **kwargs):
-        return await self.sqlite.register_session(*args, **kwargs)
-    
-    async def get_session(self, *args, **kwargs):
-        return await self.sqlite.get_session(*args, **kwargs)
-    
-    # Tool call deduplication
-    async def record_tool_call(self, *args, **kwargs):
-        return await self.sqlite.record_tool_call(*args, **kwargs)
-    
-    async def get_recent_tool_calls(self, *args, **kwargs):
-        return await self.sqlite.get_recent_tool_calls(*args, **kwargs)
+    def __getattr__(self, name):
+        """
+        Proxy missing methods to the SQLite store.
+        
+        This eliminates the need for dozens of boilerplate delegation methods.
+        Any method not explicitly defined in MessageStore will be forwarded to SQLiteStore.
+        
+        Methods that MessageStore overrides (like send_message, search_messages) 
+        are handled directly and won't trigger this proxy.
+        
+        Examples of proxied methods:
+            - Project management: register_project, get_project, list_projects
+            - Agent management: register_agent, get_agent, get_discoverable_agents
+            - Channel management: create_channel, get_channel, add_channel_member
+            - Session management: register_session, get_session
+            - Tool deduplication: record_tool_call, get_recent_tool_calls
+        """
+        # Check if SQLiteStore has the requested method
+        if hasattr(self.sqlite, name):
+            return getattr(self.sqlite, name)
+        
+        # If not found, raise AttributeError
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")

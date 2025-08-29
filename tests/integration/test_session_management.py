@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test session management functionality in DatabaseManagerV3 and SessionManager
+Test session management functionality in ClaudeSlackAPI and SessionManager
 """
 
 import pytest
@@ -18,20 +18,24 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, 'template/global/mcp/claude-slack')
 
-from db.manager import DatabaseManager
+from api.unified_api import ClaudeSlackAPI
 from sessions.manager import SessionManager
 
 
 @pytest_asyncio.fixture
-async def db_manager():
-    """Create a temporary database with DatabaseManager"""
+async def api():
+    """Create a temporary API instance"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
-        manager = DatabaseManager(db_path)
-        await manager.initialize()
+        api_instance = ClaudeSlackAPI(
+            db_path=db_path,
+            enable_semantic_search=False
+        )
+        await api_instance.initialize()
         
-        yield manager
+        yield api_instance
+        await api_instance.close()
 
 
 @pytest_asyncio.fixture
@@ -40,24 +44,28 @@ async def session_manager():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, 'test.db')
         
-        # Initialize database
-        db_manager = DatabaseManager(db_path)
-        await db_manager.initialize()
+        # Initialize API/database
+        api = ClaudeSlackAPI(
+            db_path=db_path,
+            enable_semantic_search=False
+        )
+        await api.initialize()
         
-        # Create SessionManager
-        manager = SessionManager(db_path)
+        # Create SessionManager with API instance
+        manager = SessionManager(api)
         
         yield manager
+        await api.close()
 
 
 class TestDatabaseManagerSessions:
     """Test session management methods in DatabaseManager"""
     
     @pytest.mark.asyncio
-    async def test_register_session(self, db_manager):
+    async def test_register_session(self, api):
         """Test registering a new session"""
         # Register a global session
-        session_id = await db_manager.register_session(
+        session_id = await api.register_session(
             session_id='test-session-1',
             scope='global',
             metadata={'test': 'data'}
@@ -66,9 +74,9 @@ class TestDatabaseManagerSessions:
         assert session_id == 'test-session-1'
         
         # Register a project session
-        await db_manager.register_project('proj1', '/test/proj1', 'Project 1')
+        await api.register_project('proj1', '/test/proj1', 'Project 1')
         
-        session_id = await db_manager.register_session(
+        session_id = await api.register_session(
             session_id='test-session-2',
             project_id='proj1',
             project_path='/test/proj1',
@@ -81,10 +89,10 @@ class TestDatabaseManagerSessions:
         assert session_id == 'test-session-2'
     
     @pytest.mark.asyncio
-    async def test_get_session(self, db_manager):
+    async def test_get_session(self, api):
         """Test retrieving session information"""
         # Register a session
-        await db_manager.register_session(
+        await api.register_session(
             session_id='test-session',
             project_path='/test/path',
             project_name='Test Project',
@@ -94,7 +102,7 @@ class TestDatabaseManagerSessions:
         )
         
         # Retrieve the session
-        session = await db_manager.get_session('test-session')
+        session = await api.get_session('test-session')
         
         assert session is not None
         assert session['id'] == 'test-session'
@@ -105,20 +113,20 @@ class TestDatabaseManagerSessions:
         assert session['metadata']['key'] == 'value'
         
         # Test non-existent session
-        session = await db_manager.get_session('non-existent')
+        session = await api.get_session('non-existent')
         assert session is None
     
     @pytest.mark.asyncio
-    async def test_update_session(self, db_manager):
+    async def test_update_session(self, api):
         """Test updating session fields"""
         # Register a session
-        await db_manager.register_session(
+        await api.register_session(
             session_id='test-session',
             scope='global'
         )
         
         # Update session
-        updated = await db_manager.update_session(
+        updated = await api.update_session(
             session_id='test-session',
             project_path='/new/path',
             metadata={'updated': True}
@@ -127,54 +135,54 @@ class TestDatabaseManagerSessions:
         assert updated is True
         
         # Verify update
-        session = await db_manager.get_session('test-session')
+        session = await api.get_session('test-session')
         assert session['project_path'] == '/new/path'
         assert session['metadata']['updated'] is True
         
         # Test updating non-existent session
-        updated = await db_manager.update_session(
+        updated = await api.update_session(
             session_id='non-existent',
             scope='project'
         )
         assert updated is False
     
     @pytest.mark.asyncio
-    async def test_get_active_sessions(self, db_manager):
+    async def test_get_active_sessions(self, api):
         """Test retrieving active sessions"""
         # Register multiple sessions
-        await db_manager.register_project('proj1', '/test/proj1', 'Project 1')
+        await api.register_project('proj1', '/test/proj1', 'Project 1')
         
-        await db_manager.register_session('session1', scope='global')
-        await db_manager.register_session('session2', project_id='proj1', scope='project')
-        await db_manager.register_session('session3', scope='global')
+        await api.register_session('session1', scope='global')
+        await api.register_session('session2', project_id='proj1', scope='project')
+        await api.register_session('session3', scope='global')
         
         # Get all active sessions
-        sessions = await db_manager.get_active_sessions()
+        sessions = await api.get_active_sessions()
         assert len(sessions) == 3
         
         # Get project-specific sessions
-        sessions = await db_manager.get_active_sessions(project_id='proj1')
+        sessions = await api.get_active_sessions(project_id='proj1')
         assert len(sessions) == 1
         assert sessions[0]['id'] == 'session2'
         
         # Test with custom time window
-        sessions = await db_manager.get_active_sessions(hours=0.001)  # Very short window
+        sessions = await api.get_active_sessions(hours=0.001)  # Very short window
         # Might be 0 or 3 depending on timing
         assert len(sessions) >= 0
     
     @pytest.mark.asyncio
-    async def test_cleanup_old_sessions(self, db_manager):
+    async def test_cleanup_old_sessions(self, api):
         """Test cleaning up old sessions"""
         # Register sessions
-        await db_manager.register_session('session1', scope='global')
-        await db_manager.register_session('session2', scope='global')
+        await api.register_session('session1', scope='global')
+        await api.register_session('session2', scope='global')
         
         # Cleanup with very long window (should delete nothing)
-        deleted = await db_manager.cleanup_old_sessions(hours=24)
+        deleted = await api.cleanup_old_sessions(hours=24)
         assert deleted == 0
         
         # Verify sessions still exist
-        sessions = await db_manager.get_active_sessions()
+        sessions = await api.get_active_sessions()
         assert len(sessions) == 2
         
         # Note: Testing actual deletion would require manipulating timestamps
@@ -185,12 +193,12 @@ class TestToolCallDeduplication:
     """Test tool call deduplication functionality"""
     
     @pytest.mark.asyncio
-    async def test_record_tool_call(self, db_manager):
+    async def test_record_tool_call(self, api):
         """Test recording tool calls with deduplication"""
-        await db_manager.register_session('test-session', scope='global')
+        await api.register_session('test-session', scope='global')
         
         # Record first tool call
-        is_new = await db_manager.record_tool_call(
+        is_new = await api.record_tool_call(
             session_id='test-session',
             tool_name='test_tool',
             tool_inputs={'param': 'value'},
@@ -199,7 +207,7 @@ class TestToolCallDeduplication:
         assert is_new is True
         
         # Try to record duplicate (should be rejected)
-        is_new = await db_manager.record_tool_call(
+        is_new = await api.record_tool_call(
             session_id='test-session',
             tool_name='test_tool',
             tool_inputs={'param': 'value'},
@@ -208,7 +216,7 @@ class TestToolCallDeduplication:
         assert is_new is False
         
         # Record with different inputs (should succeed)
-        is_new = await db_manager.record_tool_call(
+        is_new = await api.record_tool_call(
             session_id='test-session',
             tool_name='test_tool',
             tool_inputs={'param': 'different'},
@@ -217,7 +225,7 @@ class TestToolCallDeduplication:
         assert is_new is True
         
         # Record different tool (should succeed)
-        is_new = await db_manager.record_tool_call(
+        is_new = await api.record_tool_call(
             session_id='test-session',
             tool_name='other_tool',
             tool_inputs={'param': 'value'},
@@ -226,12 +234,12 @@ class TestToolCallDeduplication:
         assert is_new is True
     
     @pytest.mark.asyncio
-    async def test_get_recent_tool_calls(self, db_manager):
+    async def test_get_recent_tool_calls(self, api):
         """Test retrieving recent tool calls"""
-        await db_manager.register_session('test-session', scope='global')
+        await api.register_session('test-session', scope='global')
         
         # Record multiple tool calls with small delay to ensure ordering
-        await db_manager.record_tool_call(
+        await api.record_tool_call(
             session_id='test-session',
             tool_name='tool1',
             tool_inputs={'a': 1}
@@ -240,14 +248,14 @@ class TestToolCallDeduplication:
         # Small delay to ensure different timestamps
         await asyncio.sleep(0.01)
         
-        await db_manager.record_tool_call(
+        await api.record_tool_call(
             session_id='test-session',
             tool_name='tool2',
             tool_inputs={'b': 2}
         )
         
         # Get recent tool calls
-        calls = await db_manager.get_recent_tool_calls(
+        calls = await api.get_recent_tool_calls(
             session_id='test-session',
             minutes=10
         )
@@ -266,35 +274,35 @@ class TestToolCallDeduplication:
                 assert call['tool_inputs']['b'] == 2
         
         # Test with different session
-        calls = await db_manager.get_recent_tool_calls(
+        calls = await api.get_recent_tool_calls(
             session_id='other-session',
             minutes=10
         )
         assert len(calls) == 0
     
     @pytest.mark.asyncio
-    async def test_cleanup_old_tool_calls(self, db_manager):
+    async def test_cleanup_old_tool_calls(self, api):
         """Test cleaning up old tool calls"""
-        await db_manager.register_session('test-session', scope='global')
+        await api.register_session('test-session', scope='global')
         
         # Record tool calls
-        await db_manager.record_tool_call(
+        await api.record_tool_call(
             session_id='test-session',
             tool_name='tool1',
             tool_inputs={'test': 1}
         )
-        await db_manager.record_tool_call(
+        await api.record_tool_call(
             session_id='test-session',
             tool_name='tool2',
             tool_inputs={'test': 2}
         )
         
         # Cleanup with very long window (should delete nothing)
-        deleted = await db_manager.cleanup_old_tool_calls(minutes=60)
+        deleted = await api.cleanup_old_tool_calls(minutes=60)
         assert deleted == 0
         
         # Verify tool calls still exist
-        calls = await db_manager.get_recent_tool_calls('test-session', minutes=60)
+        calls = await api.get_recent_tool_calls('test-session', minutes=60)
         assert len(calls) == 2
 
 

@@ -158,7 +158,7 @@ class SessionManager:
             self.logger.info(f"Registering session {session_id} (scope: {scope})")
             
             # Use ClaudeSlackAPI to register session
-            await self.api.db.register_session(
+            await self.api.register_session(
                 session_id=session_id,
                 project_id=project_id,
                 project_path=project_path,
@@ -203,7 +203,7 @@ class SessionManager:
             self.logger.debug(f"Looking up session {session_id} in database")
             
             # Use ClaudeSlackAPI to get session
-            session_data = await self.api.db.get_session(session_id)
+            session_data = await self.api.get_session(session_id)
             
             if session_data:
                 context = SessionContext(
@@ -260,7 +260,7 @@ class SessionManager:
         """        
         try:
             # Get active sessions from the last 5 minutes (0.083 hours)
-            active_sessions = await self.api.db.sqlite.get_active_sessions(hours=0.083)
+            active_sessions = await self.api.get_active_sessions(hours=0.083)
             
             if active_sessions:
                 session_id = active_sessions[0]['id']
@@ -284,7 +284,7 @@ class SessionManager:
         """        
         try:
             # Use ClaudeSlackAPI to get project
-            project_data = await self.api.db.get_project(project_id)
+            project_data = await self.api.get_project(project_id)
             
             if project_data:
                 return ProjectContext(
@@ -316,7 +316,7 @@ class SessionManager:
                 
         try:
             # Use ClaudeSlackAPI to register project
-            await self.api.db.register_project(
+            await self.api.register_project(
                 project_id=project_id,
                 project_path=project_path,
                 project_name=project_name
@@ -346,11 +346,11 @@ class SessionManager:
         try:
             # For matching, we need to iterate through recent sessions
             # and check their tool calls
-            active_sessions = await self.api.db.sqlite.get_active_sessions(hours=1)
+            active_sessions = await self.api.get_active_sessions(hours=1)
             
             for session in active_sessions:
                 session_id = session['id']
-                recent_calls = await self.api.db.get_recent_tool_calls(
+                recent_calls = await self.api.get_recent_tool_calls(
                     session_id=session_id,
                     minutes=10
                 )
@@ -382,7 +382,7 @@ class SessionManager:
         
         try:
             # Use ClaudeSlackAPI to record tool call with deduplication
-            is_new = await self.api.db.record_tool_call(
+            is_new = await self.api.record_tool_call(
                 session_id=session_id,
                 tool_name=tool_name,
                 tool_inputs=tool_inputs,
@@ -413,10 +413,10 @@ class SessionManager:
         
         try:
             # Use ClaudeSlackAPI to cleanup old sessions
-            count = await self.api.db.sqlite.cleanup_old_sessions(hours=max_age_hours)
+            count = await self.api.cleanup_old_sessions(hours=max_age_hours)
             
             # Also cleanup old tool calls
-            await self.api.db.sqlite.cleanup_old_tool_calls(minutes=10)
+            await self.api.cleanup_old_tool_calls(minutes=10)
             
             if count > 0:
                 self.logger.info(f"Cleaned up {count} old sessions")

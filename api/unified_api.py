@@ -644,7 +644,8 @@ class ClaudeSlackAPI:
                             dm_policy: str = 'open',
                             discoverable: str = 'public',
                             status: str = 'online',
-                            metadata: Optional[Dict] = None) -> None:
+                            metadata: Optional[Dict] = None,
+                            auto_join_defaults: bool = True) -> int:
         """
         Register an agent.
         
@@ -654,6 +655,12 @@ class ClaudeSlackAPI:
             description: Agent description
             dm_policy: DM policy ('open', 'restricted', 'closed')
             discoverable: Discoverability ('public', 'project', 'private')
+            status: Agent status
+            metadata: Optional metadata
+            auto_join_defaults: Auto-join default channels after registration
+            
+        Returns:
+            Number of default channels joined (0 if auto_join_defaults is False)
         """
         # Validate DM policy
         if dm_policy not in [p.value for p in DMPolicy]:
@@ -673,6 +680,12 @@ class ClaudeSlackAPI:
             status=status,
             metadata=metadata
         )
+        
+        # Auto-join default channels if requested
+        if auto_join_defaults:
+            return await self.apply_default_channels(name, project_id)
+        
+        return 0
     
     async def get_agent(self,
                        name: str,
@@ -1000,3 +1013,73 @@ class ClaudeSlackAPI:
             content=content,
             metadata=metadata
         )
+    
+    # ============================================================================
+    # Default Channels & Auto-join
+    # ============================================================================
+    
+    async def apply_default_channels(self, 
+                                    agent_name: str,
+                                    agent_project_id: Optional[str] = None) -> int:
+        """
+        Auto-join agent to all default channels they can access.
+        
+        Args:
+            agent_name: Agent to join to default channels
+            agent_project_id: Agent's project ID
+            
+        Returns:
+            Number of channels joined
+        """
+        # Get all default channels
+        channels = await self.list_channels(
+            agent_name=agent_name,
+            project_id=agent_project_id,
+            is_default=True
+        )
+        
+        joined = 0
+        for channel in channels:
+            # Check if agent can join and is not already a member
+            if channel.get('can_join', False) and not channel.get('is_member', False):
+                try:
+                    success = await self.join_channel(
+                        agent_name=agent_name,
+                        agent_project_id=agent_project_id,
+                        channel_id=channel['id']
+                    )
+                    if success:
+                        joined += 1
+                except Exception as e:
+                    # Log but don't fail if one channel fails
+                    print(f"Failed to join {channel['id']}: {e}")
+        
+        return joined
+    
+    # ============================================================================
+    # Magic Method: Pass-through to MessageStore
+    # ============================================================================
+    
+    def __getattr__(self, name):
+        """
+        Proxy missing methods to the MessageStore.
+        
+        This creates a clean delegation chain:
+        ClaudeSlackAPI -> MessageStore -> SQLiteStore
+        
+        The MessageStore has its own __getattr__ that forwards to SQLiteStore,
+        so we only need to check self.db here.
+        
+        Examples of proxied methods:
+            api.add_channel_member(...)      # API -> MessageStore -> SQLiteStore
+            api.is_channel_member(...)       # API -> MessageStore -> SQLiteStore
+            api.create_or_get_dm_channel(...) # API -> MessageStore -> SQLiteStore
+            api.register_project(...)        # API -> MessageStore -> SQLiteStore
+            api.record_tool_call(...)        # API -> MessageStore -> SQLiteStore
+        """
+        # Check if MessageStore has the requested method (or can proxy it)
+        if hasattr(self.db, name):
+            return getattr(self.db, name)
+        
+        # If not found, raise AttributeError
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")

@@ -62,11 +62,9 @@ class TestProjectLifecycle:
         
         # Add project channel
         await test_db.create_channel(
-            channel_id="del_proj:team",
-            channel_type="channel",
+            name="team",
             access_type="open",
             scope="project",
-            name="team",
             project_id="del_proj"
         )
         
@@ -196,7 +194,7 @@ class TestCrossProjectOperations:
     """Test operations across project boundaries."""
     
     @pytest.mark.asyncio
-    async def test_cross_project_channel_access(self, test_db, channel_manager):
+    async def test_cross_project_channel_access(self, test_db):
         """Test channel access across linked projects."""
         # Create and link projects
         await test_db.register_project("access_proj_a", "/a", "A")
@@ -208,7 +206,7 @@ class TestCrossProjectOperations:
         await test_db.register_agent("agent_b", "access_proj_b", "Agent B")
         
         # Create open channel in project A
-        channel_id = await channel_manager.create_channel(
+        channel_id = await test_db.create_channel(
             name="shared",
             scope="project",
             project_id="access_proj_a",
@@ -216,10 +214,10 @@ class TestCrossProjectOperations:
         )
         
         # Agent from linked project B can join
-        success = await channel_manager.join_channel(
-            channel_id=channel_id,
+        success = await test_db.join_channel(
             agent_name="agent_b",
-            agent_project_id="access_proj_b"
+            agent_project_id="access_proj_b",
+            channel_id=channel_id
         )
         assert success     
     @pytest.mark.asyncio
@@ -254,7 +252,7 @@ class TestCrossProjectOperations:
         assert "discoverable_y" in names  # Linked project
     
     @pytest.mark.asyncio
-    async def test_cross_project_dm(self, test_db, channel_manager):
+    async def test_cross_project_dm(self, test_db):
         """Test direct messages across projects."""
         # Create projects (not necessarily linked for DMs)
         await test_db.register_project("dm_proj_1", "/1", "DM 1")
@@ -271,7 +269,7 @@ class TestCrossProjectOperations:
         )
         
         # They can DM each other (DM policy allows it)
-        msg_id = await channel_manager.send_direct_message(
+        msg_id = await test_db.send_direct_message(
             sender_name="dm_agent_1",
             sender_project_id="dm_proj_1",
             recipient_name="dm_agent_2",
@@ -281,7 +279,7 @@ class TestCrossProjectOperations:
         assert msg_id is not None
     
     @pytest.mark.asyncio
-    async def test_isolated_project_restrictions(self, test_db, channel_manager):
+    async def test_isolated_project_restrictions(self, test_db):
         """Test that unlinked projects are properly isolated."""
         # Create isolated projects
         await test_db.register_project("iso_proj_1", "/1", "Isolated 1")
@@ -293,7 +291,7 @@ class TestCrossProjectOperations:
         await test_db.register_agent("iso_agent_2", "iso_proj_2", "Agent 2")
         
         # Create channel in project 1
-        channel_id = await channel_manager.create_channel(
+        channel_id = await test_db.create_channel(
             name="private",
             scope="project",
             project_id="iso_proj_1",
@@ -301,7 +299,7 @@ class TestCrossProjectOperations:
         )
         
         # Agent from unlinked project 2 cannot join
-        success = await channel_manager.join_channel(
+        success = await test_db.join_channel(
             channel_id=channel_id,
             agent_name="iso_agent_2",
             agent_project_id="iso_proj_2"
@@ -312,13 +310,13 @@ class TestProjectChannels:
     """Test project-specific channel operations."""
     
     @pytest.mark.asyncio
-    async def test_project_default_channels(self, test_db, channel_manager):
+    async def test_project_default_channels(self, test_db):
         """Test default channels for projects."""
         # Create project
         await test_db.register_project("def_chan_proj", "/def", "Default Channel Project")
         
         # Create default channels
-        await channel_manager.create_channel(
+        await test_db.create_channel(
             name="announcements",
             scope="project",
             project_id="def_chan_proj",
@@ -326,7 +324,7 @@ class TestProjectChannels:
             is_default=True
         )
         
-        await channel_manager.create_channel(
+        await test_db.create_channel(
             name="random",
             scope="project",
             project_id="def_chan_proj",
@@ -345,20 +343,20 @@ class TestProjectChannels:
         assert "random" not in default_names
     
     @pytest.mark.asyncio
-    async def test_project_channel_isolation(self, test_db, channel_manager):
+    async def test_project_channel_isolation(self, test_db):
         """Test that project channels are isolated."""
         # Create two projects with same channel name
         await test_db.register_project("chan_proj_a", "/a", "A")
         await test_db.register_project("chan_proj_b", "/b", "B")
         
         # Both create a "dev" channel
-        chan_a = await channel_manager.create_channel(
+        chan_a = await test_db.create_channel(
             name="dev",
             scope="project",
             project_id="chan_proj_a"
         )
         
-        chan_b = await channel_manager.create_channel(
+        chan_b = await test_db.create_channel(
             name="dev",
             scope="project", 
             project_id="chan_proj_b"
@@ -377,7 +375,7 @@ class TestProjectChannels:
         assert channel_b['project_id'] == "chan_proj_b"
     
     @pytest.mark.asyncio
-    async def test_project_channel_membership_rules(self, test_db, channel_manager):
+    async def test_project_channel_membership_rules(self, test_db):
         """Test project channel membership rules."""
         # Create projects and agents
         await test_db.register_project("mem_proj", "/mem", "Membership Test")
@@ -388,7 +386,7 @@ class TestProjectChannels:
         await test_db.register_agent("other_member", "other_proj", "Other Project")
         
         # Create members-only project channel
-        channel_id = await channel_manager.create_channel(
+        channel_id = await test_db.create_channel(
             name="members-only",
             scope="project",
             project_id="mem_proj",
@@ -438,14 +436,14 @@ class TestProjectStatistics:
         assert len(agents) == 5
     
     @pytest.mark.asyncio
-    async def test_project_channel_count(self, test_db, channel_manager):
+    async def test_project_channel_count(self, test_db):
         """Test counting channels in projects."""
         # Create project with channels
         await test_db.register_project("chan_count_proj", "/count", "Channel Count")
         
         channel_names = ["general", "dev", "testing", "random"]
         for name in channel_names:
-            await channel_manager.create_channel(
+            await test_db.create_channel(
                 name=name,
                 scope="project",
                 project_id="chan_count_proj"

@@ -339,21 +339,17 @@ class TestAgentChannelMembership:
         """Test agents are added to default channels on registration."""
         # Create default channels
         await test_db.create_channel(
-            channel_id="global:welcome",
-            channel_type="channel",
+            name="welcome",
             access_type="open",
             scope="global",
-            name="welcome",
             is_default=True
         )
         
         await test_db.register_project("def_proj", "/def", "Default Test")
         await test_db.create_channel(
-            channel_id="def_proj:team",
-            channel_type="channel",
+            name="team",
             access_type="open",
             scope="project",
-            name="team",
             project_id="def_proj",
             is_default=True
         )
@@ -503,21 +499,19 @@ class TestAgentProjectScope:
         await test_db.register_agent("agent_y", "proj_y", "Agent Y")
         
         # Create open channel in proj_x
-        await test_db.create_channel(
-            channel_id="proj_x:shared",
-            channel_type="channel",
+        channel_id = await test_db.create_channel(
+            name="shared",
             access_type="open",
             scope="project",
-            name="shared",
             project_id="proj_x"
         )
         
         # Agent from linked project can join
         await test_db.add_channel_member(
-            "proj_x:shared", "agent_y", "proj_y"
+            channel_id, "agent_y", "proj_y"
         )
         
         is_member = await test_db.is_channel_member(
-            "proj_x:shared", "agent_y", "proj_y"
+            channel_id, "agent_y", "proj_y"
         )
         assert is_member is True

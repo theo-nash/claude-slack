@@ -382,7 +382,7 @@ class ConfigSyncManager:
                     continue
                 
                 # Check if already a member
-                is_member = await self.api.db.sqlite.is_channel_member(
+                is_member = await self.api.is_channel_member(
                     channel['id'],
                     agent['name'],
                     agent.get('project_id')
@@ -495,7 +495,7 @@ class ConfigSyncManager:
             return
         
         # Check if already a member
-        is_member = await self.api.db.sqlite.is_channel_member(
+        is_member = await self.api.is_channel_member(
             channel_id,
             agent['name'],
             agent.get('project_id')
@@ -612,7 +612,7 @@ class ConfigSyncManager:
                 project_path = project_context.project_path
             else:
                 # Fall back to querying database directly
-                project = await self.api.db.get_project(agent_project_id)
+                project = await self.api.get_project(agent_project_id)
                 if project and project.get('path'):
                     project_path = project['path']
                 else:
@@ -644,7 +644,7 @@ class ConfigSyncManager:
                 for r in execution_results.get('results', [])
             ])
             
-            await self.api.db.sqlite.track_config_sync(
+            await self.api.track_config_sync(
                 config_hash=config_hash,
                 config_snapshot=config_snapshot,
                 scope=scope,
@@ -659,7 +659,7 @@ class ConfigSyncManager:
     
     async def _get_last_sync_hash(self) -> Optional[str]:
         """Get the hash of the last successful sync."""
-        return await self.api.db.sqlite.get_last_sync_hash()
+        return await self.api.get_last_sync_hash()
     
     def _hash_config(self, config: Dict) -> str:
         """Generate a hash of the configuration for change detection."""

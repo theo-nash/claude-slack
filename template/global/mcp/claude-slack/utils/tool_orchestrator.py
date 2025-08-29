@@ -250,7 +250,7 @@ class MCPToolOrchestrator:
     
     async def handle_list_my_channels(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """List agent's channels (replaces get_my_subscriptions)"""        
-        channels = await self.api.db.sqlite.get_agent_channels(
+        channels = await self.api.get_agent_channels(
             agent_name=agent['name'], 
             project_id=agent['project_id']
         )
@@ -289,7 +289,7 @@ class MCPToolOrchestrator:
         channel_id = self._resolve_channel_id(channel_name, scope, context)
         
         # Check if agent is member of channel
-        is_member = await self.api.db.sqlite.is_channel_member(
+        is_member = await self.api.is_channel_member(
             channel_id, agent['name'], agent['project_id']
         )
         
@@ -333,7 +333,7 @@ class MCPToolOrchestrator:
             sender_name=agent['name'],
             recipient_name=recipient['name'],
             sender_project_id=agent['project_id'],
-            recipient_project_id=recipient['project_id']
+            recipient_project_id=recipient['project_id'],
             content=content,
             metadata=metadata
         )
@@ -466,7 +466,7 @@ class MCPToolOrchestrator:
     async def handle_list_projects(self, args: Dict, agent: Optional[Dict], 
                                   context: ProjectContext) -> Dict:
         """List all known projects"""
-        projects = await self.api.db.list_projects()
+        projects = await self.api.list_projects()
         
         if not projects:
             return self._success_response("No projects registered")
@@ -521,7 +521,7 @@ class MCPToolOrchestrator:
         if not context or not context.project_id:
             return self._success_response("No project context")
         
-        links = await self.api.db.sqlite.get_project_links(context.project_id)
+        links = await self.api.get_project_links(context.project_id)
         
         if not links:
             return self._success_response("No linked projects")
@@ -694,7 +694,7 @@ class MCPToolOrchestrator:
             
             # Try linked projects if we have a context
             if context and context.project_id:
-                linked_projects = await self.api.db.sqlite.get_project_links(context.project_id)
+                linked_projects = await self.api.get_project_links(context.project_id)
                 for link in linked_projects:
                     agent = await self.api.get_agent(name, link['project_id'])
                     if agent:
@@ -719,7 +719,7 @@ class MCPToolOrchestrator:
         Resolve a project hint (name or partial ID) to full project ID.
         """
         # Could be project name or ID prefix
-        projects = await self.api.db.list_projects()
+        projects = await self.api.list_projects()
         
         for project in projects:
             if (project['name'] == project_hint or 

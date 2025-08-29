@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "template" / "globa
 from config.sync_manager import ConfigSyncManager
 from config.reconciliation import ReconciliationPlan, ActionPhase, ActionStatus
 from agents.discovery import DiscoveredAgent
-from db.manager import DatabaseManager
+from api.unified_api import ClaudeSlackAPI
 
 
 # ============================================================================
@@ -226,19 +226,24 @@ async def config_with_files(temp_env, sample_config, sample_agent_frontmatter):
     # Disable file logging for tests to avoid directory issues
     os.environ['CLAUDE_SLACK_LOG_LEVEL'] = 'CRITICAL'
     
-    # Create sync manager
-    sync_manager = ConfigSyncManager(temp_env["db_path"])
+    # Create API instance
+    api = ClaudeSlackAPI(
+        db_path=temp_env["db_path"],
+        enable_semantic_search=False
+    )
+    await api.initialize()
+    
+    # Create sync manager with API
+    sync_manager = ConfigSyncManager(api)
     
     # Point to the test config file
     sync_manager.config.config_path = Path(config_path)
     # Clear any cached config
     sync_manager.config._config_cache = None
     
-    # Initialize database
-    await sync_manager.db.initialize()
-    
     return {
         "sync_manager": sync_manager,
+        "api": api,
         "env": temp_env,
         "config": sample_config,
         "agents": sample_agent_frontmatter
@@ -343,7 +348,7 @@ class TestSessionInitialization:
         assert result["project_id"] is not None
         
         # Verify project was registered using the project_id
-        project = await sync.db.get_project(result["project_id"])
+        project = await sync.api.get_project(result["project_id"])
         assert project is not None
         assert project["path"] == str(test_project)
 
@@ -366,7 +371,7 @@ class TestChannelCreation:
         assert result["success"] == True
         
         # Verify global channels were created
-        channels = await sync.db.get_channels_by_scope(scope='global')
+        channels = await sync.api.get_channels_by_scope(scope='global')
         channel_names = {ch['name'] for ch in channels}
         
         assert 'general' in channel_names
@@ -376,11 +381,11 @@ class TestChannelCreation:
         # Verify channel properties
         general = next(ch for ch in channels if ch['name'] == 'general')
         assert general['access_type'] == 'open'
-        assert general['is_default'] == True
+        assert general['is_default'] == 1  # SQLite returns int for boolean
         
         security = next(ch for ch in channels if ch['name'] == 'security')
         assert security['access_type'] == 'members'
-        assert security['is_default'] == False
+        assert security['is_default'] == 0  # SQLite returns int for boolean
     
     @pytest.mark.asyncio
     async def test_project_channel_creation(self, config_with_files):
@@ -390,7 +395,7 @@ class TestChannelCreation:
         
         # Register project first
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         # Run reconciliation for project
         result = await sync.reconcile_all(scope='project', project_id=project_id)
@@ -398,7 +403,7 @@ class TestChannelCreation:
         assert result["success"] == True
         
         # Verify project channels were created
-        channels = await sync.db.get_channels_by_scope(scope='project', project_id=project_id)
+        channels = await sync.api.get_channels_by_scope(scope='project', project_id=project_id)
         channel_names = {ch['name'] for ch in channels}
         
         assert 'dev' in channel_names
@@ -423,7 +428,7 @@ class TestChannelCreation:
         assert result2["success"] == True
         
         # Verify no duplicate channels
-        channels = await sync.db.get_channels_by_scope(scope='global')
+        channels = await sync.api.get_channels_by_scope(scope='global')
         channel_names = [ch['name'] for ch in channels]
         
         # Check for duplicates
@@ -437,7 +442,7 @@ class TestChannelCreation:
         # Manually create a channel with invalid access_type
         # This should be caught by database constraints
         with pytest.raises(Exception):
-            await sync.db.create_channel(
+            await sync.api.create_channel(
                 channel_id="global:invalid",
                 channel_type="channel",
                 access_type="invalid_type",  # Invalid!
@@ -498,7 +503,7 @@ class TestAgentDiscovery:
         
         # Run reconciliation to register agents
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         result = await sync.reconcile_all(scope='all', 
                                          project_id=project_id,
@@ -507,7 +512,7 @@ class TestAgentDiscovery:
         assert result["success"] == True
         
         # Verify bob was registered with correct settings
-        bob = await sync.db.get_agent('bob', project_id)
+        bob = await sync.api.get_agent('bob', project_id)
         assert bob is not None
         assert bob['dm_policy'] == 'restricted'
         assert bob['discoverable'] == 'project'
@@ -526,7 +531,7 @@ class TestAgentDiscovery:
         
         # First register charlie as a global agent (since charlie is referenced in bob's whitelist)
         # Charlie should be a global agent based on the whitelist
-        await sync.db.register_agent(
+        await sync.api.register_agent(
             name='charlie',
             project_id=None,  # Global agent
             description='Security auditor',
@@ -535,7 +540,7 @@ class TestAgentDiscovery:
         
         # Run full reconciliation
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         result = await sync.reconcile_all(scope='all',
                                          project_id=project_id,
@@ -544,7 +549,7 @@ class TestAgentDiscovery:
         assert result["success"] == True
         
         # Manually add charlie to bob's DM whitelist since charlie was registered after bob
-        await sync.db.set_dm_permission(
+        await sync.api.set_dm_permission(
             agent_name='bob',
             agent_project_id=project_id,
             other_agent_name='charlie',
@@ -557,19 +562,19 @@ class TestAgentDiscovery:
         # Bob's whitelist includes alice and charlie
         
         # Check permission for alice
-        alice_perm = await sync.db.check_dm_permission(
+        alice_perm = await sync.api.check_dm_permission(
             'bob', project_id, 'alice', None
         )
         assert alice_perm == True, "Bob should allow DMs from alice"
         
         # Check permission for charlie  
-        charlie_perm = await sync.db.check_dm_permission(
+        charlie_perm = await sync.api.check_dm_permission(
             'bob', project_id, 'charlie', None
         )
         assert charlie_perm == True, "Bob should allow DMs from charlie"
         
         # Get permission stats to verify count
-        stats = await sync.db.get_dm_permission_stats(
+        stats = await sync.api.get_dm_permission_stats(
             agent_name='bob',
             agent_project_id=project_id
         )
@@ -587,13 +592,13 @@ class TestAgentDiscovery:
         # Verify notes channel was created for alice  
         # The actual format is "notes:alice:global" based on the log
         notes_channel_id = f"notes:alice:global"
-        channel = await sync.db.get_channel(notes_channel_id)
+        channel = await sync.api.get_channel(notes_channel_id)
         assert channel is not None, f"Notes channel {notes_channel_id} should exist"
         assert channel['channel_type'] == 'channel'
         assert channel['access_type'] == 'private'
         
         # Verify alice is a member
-        is_member = await sync.db.is_channel_member(notes_channel_id, 'alice', None)
+        is_member = await sync.api.is_channel_member(notes_channel_id, 'alice', None)
         assert is_member == True
 
 
@@ -636,7 +641,7 @@ class TestDefaultMemberships:
         
         # Register project and run reconciliation
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         result = await sync.reconcile_all(scope='all',
                                          project_id=project_id,
@@ -659,7 +664,7 @@ class TestDefaultMemberships:
         
         # Register project2 and run reconciliation
         project_id = sync.session_manager.generate_project_id(str(env["project2_dir"]))
-        await sync.db.register_project(project_id, str(env["project2_dir"]), "Project 2")
+        await sync.api.register_project(project_id, str(env["project2_dir"]), "Project 2")
         
         result = await sync.reconcile_all(scope='all',
                                          project_id=project_id,
@@ -685,14 +690,14 @@ class TestDefaultMemberships:
         
         # Register project and run reconciliation
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         # Create a global agent and a project agent
-        await sync.db.register_agent("global_agent", None, "Global agent")
-        await sync.db.register_agent("project_agent", project_id, "Project agent")
+        await sync.api.register_agent("global_agent", None, "Global agent")
+        await sync.api.register_agent("project_agent", project_id, "Project agent")
         
         # Create default channels
-        await sync.db.create_channel(
+        await sync.api.create_channel(
             channel_id=f"proj_{project_id[:8]}:project_default",
             channel_type="channel",
             access_type="open",
@@ -705,10 +710,10 @@ class TestDefaultMemberships:
         # Apply defaults
         plan = ReconciliationPlan()
         await sync._plan_default_access(plan, 'all', project_id)
-        results = await plan.execute(sync.db)
+        results = await plan.execute(sync.api)
         
         # Global agent should NOT be in project default channel
-        is_member = await sync.db.is_channel_member(
+        is_member = await sync.api.is_channel_member(
             f"proj_{project_id[:8]}:project_default",
             "global_agent",
             None
@@ -716,7 +721,7 @@ class TestDefaultMemberships:
         assert is_member == False
         
         # Project agent SHOULD be in project default channel
-        is_member = await sync.db.is_channel_member(
+        is_member = await sync.api.is_channel_member(
             f"proj_{project_id[:8]}:project_default",
             "project_agent",
             project_id
@@ -780,16 +785,16 @@ class TestReconciliation:
         assert result1["success"] == True
         
         # Get state after first reconciliation
-        channels1 = await sync.db.get_channels_by_scope(scope='global')
-        agents1 = await sync.db.get_agents_by_scope(scope='global')
+        channels1 = await sync.api.get_channels_by_scope(scope='global')
+        agents1 = await sync.api.get_agents_by_scope(scope='global')
         
         # Second reconciliation
         result2 = await sync.reconcile_all(scope='global')
         assert result2["success"] == True
         
         # Get state after second reconciliation
-        channels2 = await sync.db.get_channels_by_scope(scope='global')
-        agents2 = await sync.db.get_agents_by_scope(scope='global')
+        channels2 = await sync.api.get_channels_by_scope(scope='global')
+        agents2 = await sync.api.get_agents_by_scope(scope='global')
         
         # States should be identical
         assert len(channels1) == len(channels2)
@@ -802,7 +807,7 @@ class TestReconciliation:
         env = config_with_files["env"]
         
         # Get initial state (notes channels might exist from fixture)
-        initial_project_channels = await sync.db.get_channels_by_scope(scope='project')
+        initial_project_channels = await sync.api.get_channels_by_scope(scope='project')
         initial_project_count = len(initial_project_channels)
         
         # Reconcile only global scope
@@ -810,22 +815,22 @@ class TestReconciliation:
         assert result["success"] == True
         
         # Verify only global channels were created
-        global_channels = await sync.db.get_channels_by_scope(scope='global')
+        global_channels = await sync.api.get_channels_by_scope(scope='global')
         assert len(global_channels) > 0
         
         # Project channels should not have increased
-        project_channels = await sync.db.get_channels_by_scope(scope='project')
+        project_channels = await sync.api.get_channels_by_scope(scope='project')
         assert len(project_channels) == initial_project_count  # No new project channels
         
         # Now reconcile project scope
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         result = await sync.reconcile_all(scope='project', project_id=project_id)
         assert result["success"] == True
         
         # Now project channels should exist (more than initial)
-        project_channels_after = await sync.db.get_channels_by_scope(scope='project')
+        project_channels_after = await sync.api.get_channels_by_scope(scope='project')
         assert len(project_channels_after) > initial_project_count
     
     @pytest.mark.asyncio
@@ -884,7 +889,7 @@ class TestErrorHandling:
         sync = config_with_files["sync_manager"]
         
         # Simulate database error by closing connection
-        await sync.db.close()
+        await sync.api.close()
         
         # Try reconciliation - should handle error
         try:
@@ -945,22 +950,22 @@ class TestFullIntegration:
         assert session_context is not None
         
         # 2. Project exists
-        project = await sync.db.get_project(result["project_id"])
+        project = await sync.api.get_project(result["project_id"])
         assert project is not None
         
         # 3. Channels exist
-        channels = await sync.db.get_channels_by_scope()
+        channels = await sync.api.get_channels_by_scope()
         assert len(channels) > 0
         
         # 4. Agents exist
-        agents = await sync.db.get_agents_by_scope(scope='all')
+        agents = await sync.api.get_agents_by_scope(scope='all')
         assert len(agents) > 0
         
         # 5. Memberships exist (check via channel members)
         # Get memberships for a default channel
-        default_channels = await sync.db.get_channels_by_scope(scope='global', is_default=True)
+        default_channels = await sync.api.get_channels_by_scope(scope='global', is_default=True)
         if default_channels:
-            members = await sync.db.get_channel_members(default_channels[0]['id'])
+            members = await sync.api.get_channel_members(default_channels[0]['id'])
             assert len(members) > 0
     
     @pytest.mark.asyncio
@@ -988,8 +993,8 @@ class TestFullIntegration:
         project2_id = result2["project_id"]
         
         # Verify both projects have separate channels
-        proj1_channels = await sync.db.get_channels_by_scope(scope='project', project_id=project1_id)
-        proj2_channels = await sync.db.get_channels_by_scope(scope='project', project_id=project2_id)
+        proj1_channels = await sync.api.get_channels_by_scope(scope='project', project_id=project1_id)
+        proj2_channels = await sync.api.get_channels_by_scope(scope='project', project_id=project2_id)
         
         assert len(proj1_channels) > 0
         assert len(proj2_channels) > 0
@@ -1007,7 +1012,7 @@ class TestFullIntegration:
         config = config_with_files["config"]
         
         # First register charlie as a global agent (since charlie is referenced in bob's whitelist)
-        await sync.db.register_agent(
+        await sync.api.register_agent(
             name='charlie',
             project_id=None,  # Global agent
             description='Security auditor',
@@ -1016,7 +1021,7 @@ class TestFullIntegration:
         
         # Full reconciliation
         project_id = sync.session_manager.generate_project_id(str(env["project1_dir"]))
-        await sync.db.register_project(project_id, str(env["project1_dir"]), "Project 1")
+        await sync.api.register_project(project_id, str(env["project1_dir"]), "Project 1")
         
         result = await sync.reconcile_all(
             scope='all',
@@ -1026,7 +1031,7 @@ class TestFullIntegration:
         assert result["success"] == True
         
         # Manually add charlie to bob's DM whitelist since charlie was registered after bob
-        await sync.db.set_dm_permission(
+        await sync.api.set_dm_permission(
             agent_name='bob',
             agent_project_id=project_id,
             other_agent_name='charlie',
@@ -1036,19 +1041,19 @@ class TestFullIntegration:
         )
         
         # Verify channels match config (excluding notes channels)
-        global_channels = await sync.db.get_channels_by_scope(scope='global')
+        global_channels = await sync.api.get_channels_by_scope(scope='global')
         global_names = {ch['name'] for ch in global_channels if not ch['name'].startswith('notes-')}
         config_global_names = {ch['name'] for ch in config['default_channels']['global']}
         assert global_names == config_global_names
         
         # Verify agents were registered
-        all_agents = await sync.db.get_agents_by_scope(scope='all')
+        all_agents = await sync.api.get_agents_by_scope(scope='all')
         agent_names = {a['name'] for a in all_agents}
         assert 'alice' in agent_names  # Global agent
         assert 'bob' in agent_names    # Project agent
         
         # Verify memberships respect exclusions
-        bob = await sync.db.get_agent('bob', project_id)
+        bob = await sync.api.get_agent('bob', project_id)
         bob_channels = await sync.channel_manager.list_channels_for_agent('bob', project_id)
         bob_channel_names = {ch['name'] for ch in bob_channels}
         
@@ -1057,10 +1062,10 @@ class TestFullIntegration:
         
         # Verify DM permissions for restricted policy
         # Bob's whitelist includes alice and charlie
-        alice_perm = await sync.db.check_dm_permission('bob', project_id, 'alice', None)
+        alice_perm = await sync.api.check_dm_permission('bob', project_id, 'alice', None)
         assert alice_perm == True
         
-        charlie_perm = await sync.db.check_dm_permission('bob', project_id, 'charlie', None) 
+        charlie_perm = await sync.api.check_dm_permission('bob', project_id, 'charlie', None) 
         assert charlie_perm == True
 
 
@@ -1098,10 +1103,14 @@ class TestPerformance:
         os.environ['CLAUDE_CONFIG_DIR'] = str(temp_env["claude_dir"])
         os.environ['CLAUDE_SLACK_DIR'] = str(temp_env["base_path"])
         
-        sync = ConfigSyncManager(temp_env["db_path"])
+        api = ClaudeSlackAPI(
+            db_path=temp_env["db_path"],
+            enable_semantic_search=False
+        )
+        await api.initialize()
+        sync = ConfigSyncManager(api)
         sync.config.config_path = Path(config_path)
         sync.config._config_cache = None  # Clear cache to ensure fresh load
-        await sync.db.initialize()
         
         # Time the reconciliation
         import time
@@ -1113,7 +1122,7 @@ class TestPerformance:
         assert duration < 10  # Should complete in under 10 seconds
         
         # Verify all channels created (may include notes channels)
-        channels = await sync.db.get_channels_by_scope(scope='global')
+        channels = await sync.api.get_channels_by_scope(scope='global')
         non_notes_channels = [ch for ch in channels if not ch['name'].startswith('notes-')]
         assert len(non_notes_channels) == 100
     
@@ -1138,11 +1147,15 @@ dm_policy: open
         os.environ['CLAUDE_CONFIG_DIR'] = str(temp_env["claude_dir"])
         os.environ['CLAUDE_SLACK_DIR'] = str(temp_env["base_path"])
         
-        sync = ConfigSyncManager(temp_env["db_path"])
-        await sync.db.initialize()
+        api = ClaudeSlackAPI(
+            db_path=temp_env["db_path"],
+            enable_semantic_search=False
+        )
+        await api.initialize()
+        sync = ConfigSyncManager(api)
         
         # Create some default channels
-        await sync.db.create_channel(
+        await sync.api.create_channel(
             channel_id="global:general",
             channel_type="channel",
             access_type="open",
@@ -1161,7 +1174,7 @@ dm_policy: open
         assert duration < 30  # Should complete in under 30 seconds
         
         # Verify all agents registered
-        agents = await sync.db.get_agents_by_scope(scope='global')
+        agents = await sync.api.get_agents_by_scope(scope='global')
         assert len(agents) >= 50  # At least our 50 test agents
 
 

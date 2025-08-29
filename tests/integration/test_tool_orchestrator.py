@@ -17,16 +17,16 @@ class TestToolOrchestrator:
     """Test the MCPToolOrchestrator class."""
 
     @pytest_asyncio.fixture
-    async def orchestrator(self, test_db):
+    async def orchestrator(self, api):
         """Provide an MCPToolOrchestrator instance."""
-        orchestrator = MCPToolOrchestrator(test_db.db_path)
-        await orchestrator.db.initialize()
+        orchestrator = MCPToolOrchestrator(api_db_sqlite.db_path)
+        await orchestrator.api_db_sqlite.initialize()
         return orchestrator
 
     @pytest_asyncio.fixture
-    async def test_context(self, test_db):
+    async def test_context(self, api):
         """Provide a test project context."""
-        await test_db.register_project("proj_test", "/test/project", "Test Project")
+        await api_db_sqlite.register_project("proj_test", "/test/project", "Test Project")
         return ProjectContext(
             project_id="proj_test",
             project_path="/test/project",
@@ -34,12 +34,12 @@ class TestToolOrchestrator:
         )
 
     @pytest_asyncio.fixture
-    async def test_agents(self, test_db):
+    async def test_agents(self, api):
         """Register test agents."""
-        await test_db.register_project("proj_test", "/test/project", "Test Project")
+        await api_db_sqlite.register_project("proj_test", "/test/project", "Test Project")
         
         # Register test agents
-        await test_db.register_agent(
+        await api_db_sqlite.register_agent(
             name="alice",
             project_id="proj_test",
             description="Test agent Alice",
@@ -47,7 +47,7 @@ class TestToolOrchestrator:
             discoverable="public"
         )
         
-        await test_db.register_agent(
+        await api_db_sqlite.register_agent(
             name="bob",
             project_id=None,  # Global agent
             description="Test agent Bob",
@@ -79,7 +79,7 @@ class TestChannelOperations(TestToolOrchestrator):
         assert "Created global channel" in result["content"]
         
         # Verify channel was created
-        channel = await orchestrator.db.get_channel("global:test-channel")
+        channel = await orchestrator.api_db_sqlite.get_channel("global:test-channel")
         assert channel is not None
         assert channel["name"] == "test-channel"
         assert channel["scope"] == "global"
@@ -120,7 +120,7 @@ class TestChannelOperations(TestToolOrchestrator):
     async def test_list_channels(self, orchestrator, test_agents, test_context):
         """Test listing available channels."""
         # Create some channels first
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:general",
             channel_type="channel",
             access_type="open",
@@ -129,7 +129,7 @@ class TestChannelOperations(TestToolOrchestrator):
             description="General discussion"
         )
         
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="proj_test:dev",
             channel_type="channel",
             access_type="open",
@@ -155,7 +155,7 @@ class TestChannelOperations(TestToolOrchestrator):
     async def test_join_channel(self, orchestrator, test_agents, test_context):
         """Test joining an open channel."""
         # Create a channel first
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:test-join",
             channel_type="channel",
             access_type="open",
@@ -186,7 +186,7 @@ class TestChannelOperations(TestToolOrchestrator):
     async def test_leave_channel(self, orchestrator, test_agents, test_context):
         """Test leaving a channel."""
         # Create and join a channel first
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:test-leave",
             channel_type="channel",
             access_type="open",
@@ -215,7 +215,7 @@ class TestChannelOperations(TestToolOrchestrator):
     async def test_invite_to_channel(self, orchestrator, test_agents, test_context):
         """Test inviting another agent to a members channel."""
         # Create a members channel
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:members-only",
             channel_type="channel",
             access_type="members",
@@ -224,7 +224,7 @@ class TestChannelOperations(TestToolOrchestrator):
         )
         
         # Alice joins first
-        await orchestrator.db.add_channel_member(
+        await orchestrator.api_db_sqlite.add_channel_member(
             channel_id="global:members-only",
             agent_name="alice",
             agent_project_id="proj_test",
@@ -250,7 +250,7 @@ class TestChannelOperations(TestToolOrchestrator):
     async def test_list_my_channels(self, orchestrator, test_agents, test_context):
         """Test listing agent's channels."""
         # Create and join some channels
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:test1",
             channel_type="channel",
             access_type="open",
@@ -279,7 +279,7 @@ class TestMessageOperations(TestToolOrchestrator):
     async def test_send_channel_message(self, orchestrator, test_agents, test_context):
         """Test sending a message to a channel."""
         # Create channel and join it
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:messaging",
             channel_type="channel",
             access_type="open",
@@ -309,7 +309,7 @@ class TestMessageOperations(TestToolOrchestrator):
     async def test_send_channel_message_not_member(self, orchestrator, test_agents, test_context):
         """Test sending message when not a channel member."""
         # Create channel but don't join
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:no-access",
             channel_type="channel",
             access_type="open",
@@ -351,7 +351,7 @@ class TestMessageOperations(TestToolOrchestrator):
     async def test_send_direct_message_blocked(self, orchestrator, test_agents, test_context):
         """Test sending DM to agent with restricted policy."""
         # Register agent with closed DM policy
-        await orchestrator.db.register_agent(
+        await orchestrator.api_db_sqlite.register_agent(
             name="charlie",
             project_id=None,
             dm_policy="closed"
@@ -374,7 +374,7 @@ class TestMessageOperations(TestToolOrchestrator):
     async def test_get_messages(self, orchestrator, test_agents, test_context):
         """Test getting messages for an agent."""
         # Create channel and send some messages
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:test-msgs",
             channel_type="channel",
             access_type="open",
@@ -386,7 +386,7 @@ class TestMessageOperations(TestToolOrchestrator):
             "alice", "proj_test", "global:test-msgs"
         )
         
-        await orchestrator.db.send_message(
+        await orchestrator.api_db_sqlite.send_message(
             channel_id="global:test-msgs",
             sender_id="alice",
             sender_project_id="proj_test",
@@ -409,7 +409,7 @@ class TestMessageOperations(TestToolOrchestrator):
     async def test_search_messages(self, orchestrator, test_agents, test_context):
         """Test searching messages."""
         # Create channel and send messages
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id="global:search-test",
             channel_type="channel",
             access_type="open",
@@ -421,7 +421,7 @@ class TestMessageOperations(TestToolOrchestrator):
             "alice", "proj_test", "global:search-test"
         )
         
-        await orchestrator.db.send_message(
+        await orchestrator.api_db_sqlite.send_message(
             channel_id="global:search-test",
             sender_id="alice",
             sender_project_id="proj_test",
@@ -473,7 +473,7 @@ class TestProjectOperations(TestToolOrchestrator):
     async def test_list_projects(self, orchestrator, test_agents, test_context):
         """Test listing all projects."""
         # Register additional project
-        await orchestrator.db.register_project(
+        await orchestrator.api_db_sqlite.register_project(
             "proj_other", "/other/project", "Other Project"
         )
         
@@ -520,10 +520,10 @@ class TestProjectOperations(TestToolOrchestrator):
     async def test_get_linked_projects(self, orchestrator, test_context):
         """Test getting linked projects."""
         # Add another project and link it
-        await orchestrator.db.register_project(
+        await orchestrator.api_db_sqlite.register_project(
             "proj_linked", "/linked/project", "Linked Project"
         )
-        await orchestrator.db.add_project_link(
+        await orchestrator.api_db_sqlite.add_project_link(
             "proj_test", "proj_linked", "bidirectional"
         )
         
@@ -731,7 +731,7 @@ class TestValidationAndErrors(TestToolOrchestrator):
         """Test channel name resolution with and without scope prefix."""
         # Create a project channel (use correct ID format)
         proj_id_short = test_context.project_id[:8]
-        await orchestrator.db.create_channel(
+        await orchestrator.api_db_sqlite.create_channel(
             channel_id=f"proj_{proj_id_short}:dev",
             channel_type="channel",
             access_type="open",
@@ -792,7 +792,7 @@ class TestIntegrationScenarios(TestToolOrchestrator):
     async def test_full_channel_workflow(self, orchestrator, test_agents, test_context):
         """Test complete channel workflow: create, join, message, leave."""
         # Ensure agents are registered
-        await orchestrator.db.initialize()
+        await orchestrator.api_db_sqlite.initialize()
         
         # Step 1: Create channel (alice is already registered via test_agents fixture)
         result = await orchestrator.execute_tool(
@@ -856,17 +856,17 @@ class TestIntegrationScenarios(TestToolOrchestrator):
     async def test_cross_project_communication(self, orchestrator, test_context):
         """Test communication between agents in different projects."""
         # Ensure database is initialized
-        await orchestrator.db.initialize()
+        await orchestrator.api_db_sqlite.initialize()
         
         # Setup: Create two projects with agents
-        await orchestrator.db.register_project("proj_a", "/proj/a", "Project A")
-        await orchestrator.db.register_project("proj_b", "/proj/b", "Project B")
+        await orchestrator.api_db_sqlite.register_project("proj_a", "/proj/a", "Project A")
+        await orchestrator.api_db_sqlite.register_project("proj_b", "/proj/b", "Project B")
         
-        await orchestrator.db.register_agent("agent_a", "proj_a", dm_policy="open")
-        await orchestrator.db.register_agent("agent_b", "proj_b", dm_policy="open")
+        await orchestrator.api_db_sqlite.register_agent("agent_a", "proj_a", dm_policy="open")
+        await orchestrator.api_db_sqlite.register_agent("agent_b", "proj_b", dm_policy="open")
         
         # Link the projects
-        await orchestrator.db.add_project_link("proj_a", "proj_b", "bidirectional")
+        await orchestrator.api_db_sqlite.add_project_link("proj_a", "proj_b", "bidirectional")
         
         context_a = ProjectContext(project_id="proj_a", project_path="/proj/a", project_name="Project A")
         
@@ -898,7 +898,7 @@ class TestIntegrationScenarios(TestToolOrchestrator):
     async def test_notes_workflow(self, orchestrator, test_agents, test_context):
         """Test complete notes workflow."""
         # Ensure database is initialized
-        await orchestrator.db.initialize()
+        await orchestrator.api_db_sqlite.initialize()
         
         # Write multiple notes with tags
         for i in range(3):

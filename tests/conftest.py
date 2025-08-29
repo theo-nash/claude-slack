@@ -31,11 +31,13 @@ except ImportError:
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "template" / "global" / "mcp" / "claude-slack"))
+# Add template path for other imports but after parent so API takes precedence
+sys.path.insert(1, str(Path(__file__).parent.parent / "template" / "global" / "mcp" / "claude-slack"))
 
-from db.manager import DatabaseManager
-from channels.manager import ChannelManager
-from notes.manager import NotesManager
+# NEW: Import the unified API instead of individual managers
+from api.unified_api import ClaudeSlackAPI
+
+# Still need these for some tests
 from agents.manager import AgentManager
 from utils.tool_orchestrator import MCPToolOrchestrator, ProjectContext
 from config.sync_manager import ConfigSyncManager
@@ -47,29 +49,49 @@ logging.basicConfig(level=logging.CRITICAL)
 
 
 # ============================================================================
-# Database Fixtures
+# NEW API Fixtures (Primary)
 # ============================================================================
 
 @pytest_asyncio.fixture
-async def test_db():
-    """Provide a clean test database for each test."""
+async def api():
+    """Provide ClaudeSlackAPI instance for testing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        db = DatabaseManager(str(db_path))
-        await db.initialize()
-        yield db
-        # Cleanup happens automatically when tmpdir is deleted
+        # Disable semantic search for old tests - they don't need Qdrant
+        api_instance = ClaudeSlackAPI(
+            db_path=str(db_path),
+            enable_semantic_search=False  # Old tests don't need Qdrant
+        )
+        await api_instance.initialize()
+        yield api_instance
+        await api_instance.close()
+
+
+# ============================================================================
+# Compatibility Shims for Gradual Migration
+# ============================================================================
+
+@pytest_asyncio.fixture
+async def test_db(api):
+    """
+    Legacy fixture - returns the full API for compatibility.
+    Tests should use the high-level API methods.
+    """
+    return api
 
 
 @pytest_asyncio.fixture
-async def populated_db(test_db):
-    """Provide a database with basic test data."""
-    # Register projects
-    await test_db.register_project("proj_test1", "/path/to/proj1", "Test Project 1")
-    await test_db.register_project("proj_test2", "/path/to/proj2", "Test Project 2")
+async def populated_db(api):
+    """Provide a database with basic test data using the API."""
+    # Get the SQLite store for direct database operations
+    db = api.db.sqlite
+    
+    # Register projects using the SQLite store directly (old tests expect this)
+    await db.register_project("proj_test1", "/path/to/proj1", "Test Project 1")
+    await db.register_project("proj_test2", "/path/to/proj2", "Test Project 2")
     
     # Register agents
-    await test_db.register_agent(
+    await db.register_agent(
         name="alice",
         project_id="proj_test1",
         description="Test agent Alice",
@@ -77,7 +99,7 @@ async def populated_db(test_db):
         discoverable="public"
     )
     
-    await test_db.register_agent(
+    await db.register_agent(
         name="bob",
         project_id="proj_test2",
         description="Test agent Bob",
@@ -85,7 +107,7 @@ async def populated_db(test_db):
         discoverable="public"
     )
     
-    await test_db.register_agent(
+    await db.register_agent(
         name="charlie",
         project_id=None,  # Global agent
         description="Global test agent Charlie",
@@ -94,7 +116,7 @@ async def populated_db(test_db):
     )
     
     # Create some channels
-    await test_db.create_channel(
+    await db.create_channel(
         channel_id="global:general",
         channel_type="channel",
         access_type="open",
@@ -103,7 +125,7 @@ async def populated_db(test_db):
         description="General discussion"
     )
     
-    await test_db.create_channel(
+    await db.create_channel(
         channel_id="proj_test1:dev",
         channel_type="channel",
         access_type="open",
@@ -113,7 +135,7 @@ async def populated_db(test_db):
         description="Development discussion"
     )
     
-    await test_db.create_channel(
+    await db.create_channel(
         channel_id="proj_test1:private",
         channel_type="channel",
         access_type="members",
@@ -123,7 +145,7 @@ async def populated_db(test_db):
         description="Private channel"
     )
     
-    await test_db.create_channel(
+    await db.create_channel(
         channel_id="proj_test2:dev",
         channel_type="channel", 
         access_type="open",
@@ -133,49 +155,102 @@ async def populated_db(test_db):
         description="Project 2 development"
     )
     
-    yield test_db
+    # Return the SQLite store for old tests that expect it
+    yield db
 
 
 # ============================================================================
-# Manager Fixtures
+# Manager Fixtures (Compatibility Shims)
 # ============================================================================
 
 @pytest_asyncio.fixture
-async def channel_manager(test_db):
-    """Provide a ChannelManager instance with test database."""
-    return ChannelManager(test_db.db_path)
+async def channel_manager(api):
+    """
+    Legacy fixture - returns a compatibility wrapper for channel operations.
+    Since join_channel and leave_channel are now on the API itself,
+    we create a wrapper that forwards these calls.
+    """
+    class ChannelManagerWrapper:
+        def __init__(self, api):
+            self.api = api
+            self.channels = api.channels  # For any direct channel manager calls
+            
+        async def join_channel(self, agent_name, agent_project_id, channel_id):
+            return await self.api.join_channel(agent_name, agent_project_id, channel_id)
+        
+        async def leave_channel(self, agent_name, agent_project_id, channel_id):
+            return await self.api.leave_channel(agent_name, agent_project_id, channel_id)
+        
+        async def create_dm_channel(self, agent1_name, agent1_project_id, 
+                                  agent2_name, agent2_project_id):
+            # Create a DM channel using the MessageStore (which forwards to SQLite)
+            return await self.api.db.create_or_get_dm_channel(
+                agent1_name, agent1_project_id, agent2_name, agent2_project_id
+            )
+        
+        async def invite_to_channel(self, channel_id, inviting_agent_name=None, 
+                                   inviting_project_id=None, invited_agent_name=None, 
+                                   invited_project_id=None, 
+                                   # Alternative parameter names used by some tests
+                                   inviter_name=None, inviter_project_id=None,
+                                   invitee_name=None, invitee_project_id=None):
+            # Handle both parameter naming conventions
+            inviter = inviting_agent_name or inviter_name
+            inviter_proj = inviting_project_id or inviter_project_id
+            invitee = invited_agent_name or invitee_name
+            invitee_proj = invited_project_id or invitee_project_id
+            
+            # Check if channel is open (can't invite to open channels)
+            channel = await self.api.db.sqlite.get_channel(channel_id)
+            if channel and channel.get('access_type') == 'open':
+                return False  # Can't invite to open channels
+            
+            # Use SQLite store for invite operations
+            return await self.api.db.sqlite.add_channel_member(
+                channel_id, invitee, invitee_proj,
+                invited_by=inviter, source='invite',
+                can_leave=True, can_send=True
+            )
+    
+    return ChannelManagerWrapper(api)
 
 
 @pytest_asyncio.fixture
-async def notes_manager(test_db):
-    """Provide a NotesManager instance with test database."""
-    return NotesManager(test_db.db_path)
+async def notes_manager(api):
+    """
+    Legacy fixture - returns API's notes manager for compatibility.
+    """
+    return api.notes
 
 
 @pytest_asyncio.fixture
-async def agent_manager(test_db):
+async def agent_manager(api):
     """Provide an AgentManager instance with test database."""
-    return AgentManager(test_db.db_path)
+    # AgentManager still exists in template, needs db_path
+    return AgentManager(api.db.sqlite.db_path)
 
 
 @pytest_asyncio.fixture
-async def session_manager(test_db):
-    """Provide a SessionManager instance with test database."""
-    return SessionManager(test_db.db_path)
+async def session_manager(api):
+    """Provide a SessionManager instance with API."""
+    # SessionManager now takes API instance
+    return SessionManager(api)
 
 
 @pytest_asyncio.fixture
-async def tool_orchestrator(test_db, channel_manager, notes_manager, agent_manager):
-    """Provide a MCPToolOrchestrator instance with all managers."""
-    orchestrator = MCPToolOrchestrator(test_db.db_path)
-    # The orchestrator initializes its own managers internally
-    return orchestrator
+async def tool_orchestrator(api):
+    """
+    Provide a MCPToolOrchestrator instance with API.
+    The new orchestrator takes an API instance, not a db_path.
+    """
+    return MCPToolOrchestrator(api)
 
 
 @pytest_asyncio.fixture
-async def config_sync_manager(test_db):
-    """Provide a ConfigSyncManager instance."""
-    return ConfigSyncManager(test_db.db_path)
+async def config_sync_manager(api):
+    """Provide a ConfigSyncManager instance with API."""
+    # ConfigSyncManager now uses the API
+    return ConfigSyncManager(api)
 
 
 # ============================================================================
