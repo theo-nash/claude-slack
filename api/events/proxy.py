@@ -30,11 +30,13 @@ class AutoEventProxy:
     EVENT_RULES = {
         # Message operations
         'send_message': ('message.created', EventTopic.MESSAGES),
+        'update_message': ('message.updated', EventTopic.MESSAGES),
         'edit_message': ('message.edited', EventTopic.MESSAGES),
         'delete_message': ('message.deleted', EventTopic.MESSAGES),
         
         # Channel operations
         'create_channel': ('channel.created', EventTopic.CHANNELS),
+        'create_or_get_dm_channel': ('channel.dm_created', EventTopic.CHANNELS),
         'update_channel': ('channel.updated', EventTopic.CHANNELS),
         'archive_channel': ('channel.archived', EventTopic.CHANNELS),
         'delete_channel': ('channel.deleted', EventTopic.CHANNELS),
@@ -52,11 +54,29 @@ class AutoEventProxy:
         'update_agent_status': ('agent.status_changed', EventTopic.AGENTS),
         'delete_agent': ('agent.deleted', EventTopic.AGENTS),
         
-        # Note operations
+        # Note operations (from notes manager)
+        'write_note': ('note.created', EventTopic.NOTES),
         'create_note': ('note.created', EventTopic.NOTES),
         'update_note': ('note.updated', EventTopic.NOTES),
         'delete_note': ('note.deleted', EventTopic.NOTES),
         'tag_note': ('note.tagged', EventTopic.NOTES),
+        
+        # Project operations
+        'register_project': ('project.registered', EventTopic.SYSTEM),
+        'add_project_link': ('project.linked', EventTopic.SYSTEM),
+        'remove_project_link': ('project.unlinked', EventTopic.SYSTEM),
+        
+        # DM permission operations
+        'set_dm_permission': ('dm.permission_set', EventTopic.SYSTEM),
+        'update_dm_policy': ('dm.policy_updated', EventTopic.SYSTEM),
+        'remove_dm_permission': ('dm.permission_removed', EventTopic.SYSTEM),
+        
+        # Session operations
+        'register_session': ('session.created', EventTopic.SYSTEM),
+        'update_session': ('session.updated', EventTopic.SYSTEM),
+        
+        # Tool call tracking
+        'record_tool_call': ('tool.called', EventTopic.SYSTEM),
         
         # Generic patterns (checked if no exact match)
         'create_': ('entity.created', EventTopic.SYSTEM),
@@ -64,6 +84,8 @@ class AutoEventProxy:
         'delete_': ('entity.deleted', EventTopic.SYSTEM),
         'archive_': ('entity.archived', EventTopic.SYSTEM),
         'register_': ('entity.registered', EventTopic.SYSTEM),
+        'add_': ('entity.added', EventTopic.SYSTEM),
+        'remove_': ('entity.removed', EventTopic.SYSTEM),
     }
     
     def __init__(self, target: Any, event_stream: Any, context: Optional[Dict] = None):
