@@ -12,6 +12,7 @@ from .channels.manager import ChannelManager
 from .notes.manager import NotesManager
 from .config import Config
 from .models import DMPolicy, Discoverability, DMPermission, AgentInfo
+from .events import SimpleEventStream, AutoEventProxy
 
 
 class ClaudeSlackAPI:
@@ -64,10 +65,16 @@ class ClaudeSlackAPI:
                 'qdrant_path': os.path.join(os.path.dirname(db_path), 'qdrant')
             }
         
-        # Initialize MessageStore as the primary database abstraction
-        self.db = MessageStore(db_path, qdrant_config)
+        # Initialize event streaming first
+        self.events = SimpleEventStream()
         
-        # Initialize other managers
+        # Initialize MessageStore as the primary database abstraction
+        db = MessageStore(db_path, qdrant_config)
+        
+        # Wrap database with auto-event proxy for automatic event emission
+        self.db = AutoEventProxy(db, self.events)
+        
+        # Initialize other managers with the proxied database
         self.channels = ChannelManager(self.db)
         self.notes = NotesManager(self.db)  # Now uses MessageStore
         
@@ -90,9 +97,11 @@ class ClaudeSlackAPI:
         Initialize all managers and ensure database schema exists.
         """
         await self.db.initialize()
+        await self.events.start()
     
     async def close(self):
         """Close all connections."""
+        await self.events.stop()
         await self.db.close()
     
     # ============================================================================
@@ -1093,6 +1102,68 @@ class ClaudeSlackAPI:
                     print(f"Failed to join {channel['id']}: {e}")
         
         return joined
+    
+    # ============================================================================
+    # Event Streaming API
+    # ============================================================================
+    
+    async def subscribe_events(
+        self,
+        client_id: str,
+        topics: Optional[List[str]] = None,
+        replay_recent: bool = True
+    ):
+        """
+        Subscribe to event stream.
+        
+        Args:
+            client_id: Unique client identifier
+            topics: List of topics to subscribe to (None = all)
+            replay_recent: Whether to replay recent events on connect
+            
+        Yields:
+            Event objects as they occur
+        """
+        async for event in self.events.subscribe(client_id, topics, replay_recent):
+            yield event
+    
+    async def subscribe_sse(
+        self,
+        client_id: str,
+        topics: Optional[List[str]] = None,
+        last_event_id: Optional[str] = None
+    ):
+        """
+        Subscribe to events with SSE formatting.
+        
+        Args:
+            client_id: Unique client identifier  
+            topics: List of topics to subscribe to
+            last_event_id: Last event ID for reconnection
+            
+        Yields:
+            SSE-formatted strings ready for streaming
+        """
+        async for sse_data in self.events.subscribe_sse(client_id, topics, last_event_id):
+            yield sse_data
+    
+    async def unsubscribe_events(self, client_id: str):
+        """
+        Unsubscribe a client from events.
+        
+        Args:
+            client_id: Client to unsubscribe
+        """
+        await self.events.unsubscribe(client_id)
+    
+    def get_event_stats(self) -> Dict[str, Any]:
+        """
+        Get event streaming statistics.
+        
+        Returns:
+            Dictionary with streaming stats
+        """
+        return self.events.get_stats()
     
     # ============================================================================
     # Magic Method: Pass-through to MessageStore
