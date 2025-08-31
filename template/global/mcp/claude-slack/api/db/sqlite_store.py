@@ -12,9 +12,10 @@ import aiosqlite
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from .db_helpers import with_connection, aconnect
+from .filters import MongoFilterParser, SQLiteFilterBackend, FilterValidator
 
 # Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1558,6 +1559,195 @@ class SQLiteStore:
     # ============================================================================
     # Search and Query
     # ============================================================================
+    
+    @with_connection(writer=False)
+    async def search_messages_advanced(self, conn,
+                                      agent_name: Optional[str] = None,
+                                      agent_project_id: Optional[str] = None,
+                                      query: Optional[str] = None,
+                                      metadata_filters: Optional[Dict[str, Any]] = None,
+                                      channel_ids: Optional[List[str]] = None,
+                                      sender_ids: Optional[List[str]] = None,
+                                      min_confidence: Optional[float] = None,
+                                      since: Optional[datetime] = None,
+                                      until: Optional[datetime] = None,
+                                      limit: int = 100,
+                                      offset: int = 0,
+                                      order_by: str = 'timestamp DESC') -> List[Dict]:
+        """
+        Advanced search with MongoDB-style metadata filtering.
+        
+        Args:
+            agent_name: Agent performing the search (for permission check)
+            agent_project_id: Agent's project ID
+            query: Optional FTS text query
+            metadata_filters: MongoDB-style filter dictionary
+            channel_ids: Filter to specific channels
+            sender_ids: Filter to specific senders
+            min_confidence: Minimum confidence threshold
+            since: Only messages after this time
+            until: Only messages before this time
+            limit: Maximum results
+            offset: Pagination offset
+            order_by: SQL ORDER BY clause
+            
+        Returns:
+            List of matching messages with full metadata
+            
+        Examples:
+            # Find high-priority alerts
+            results = await db.search_messages_advanced(
+                metadata_filters={
+                    "type": "alert",
+                    "priority": {"$gte": 7},
+                    "resolved": {"$ne": True}
+                }
+            )
+            
+            # Complex query with arrays
+            results = await db.search_messages_advanced(
+                query="error",
+                metadata_filters={
+                    "$or": [
+                        {"tags": {"$contains": "critical"}},
+                        {"severity": {"$gt": 8}}
+                    ],
+                    "environment": {"$in": ["production", "staging"]}
+                }
+            )
+        """
+        # Build base query components
+        tables = ["messages m"]
+        where_conditions = []
+        params = []
+        
+        # Add FTS join if text query provided
+        if query:
+            tables.append("INNER JOIN messages_fts fts ON m.id = fts.rowid")
+            where_conditions.append("fts.content MATCH ?")
+            params.append(query)
+        
+        # Add agent permission check if agent specified
+        if agent_name is not None:
+            tables.append("INNER JOIN agent_channels ac ON m.channel_id = ac.channel_id")
+            where_conditions.append("ac.agent_name = ?")
+            params.append(agent_name)
+            where_conditions.append("ac.agent_project_id IS NOT DISTINCT FROM ?")
+            params.append(agent_project_id)
+        
+        # Add channel filter
+        if channel_ids:
+            placeholders = ','.join(['?' for _ in channel_ids])
+            where_conditions.append(f"m.channel_id IN ({placeholders})")
+            params.extend(channel_ids)
+        
+        # Add sender filter
+        if sender_ids:
+            placeholders = ','.join(['?' for _ in sender_ids])
+            where_conditions.append(f"m.sender_id IN ({placeholders})")
+            params.extend(sender_ids)
+        
+        # Add confidence filter
+        if min_confidence is not None:
+            where_conditions.append("m.confidence >= ?")
+            params.append(min_confidence)
+        
+        # Add time range filters
+        if since:
+            where_conditions.append("m.timestamp >= ?")
+            params.append(since.isoformat() if isinstance(since, datetime) else since)
+        
+        if until:
+            where_conditions.append("m.timestamp <= ?")
+            params.append(until.isoformat() if isinstance(until, datetime) else until)
+        
+        # Parse and apply MongoDB-style metadata filters
+        if metadata_filters:
+            # Pre-flight validation
+            validator = FilterValidator.create_default()
+            try:
+                validated_filters = validator.validate(metadata_filters)
+            except Exception as e:
+                self.logger.error(f"Filter validation failed: {e}")
+                raise ValueError(f"Invalid filter structure: {e}")
+            
+            # Parse and convert to SQL
+            parser = MongoFilterParser()
+            backend = SQLiteFilterBackend(
+                metadata_column='m.metadata',
+                table_alias=None,  # Already prefixed in column name
+                use_fts=False  # We handle FTS separately
+            )
+            
+            try:
+                expression = parser.parse(validated_filters)
+                filter_sql, filter_params = backend.convert(expression)
+                where_conditions.append(filter_sql)
+                params.extend(filter_params)
+            except Exception as e:
+                self.logger.error(f"Failed to parse metadata filters: {e}")
+                raise ValueError(f"Invalid metadata filters: {e}")
+        
+        # Build complete query
+        table_clause = ' '.join(tables)
+        where_clause = ' AND '.join(where_conditions) if where_conditions else '1=1'
+        
+        # Select all message fields plus channel info if available
+        select_fields = """
+            m.id, m.channel_id, m.sender_id, m.sender_project_id,
+            m.content, m.timestamp, m.thread_id, m.metadata,
+            m.confidence, m.topic_name, m.ai_metadata,
+            m.model_version, m.intent_type, m.is_edited, m.edited_at
+        """
+        
+        # Add channel info if we joined with agent_channels
+        if agent_name is not None:
+            select_fields += ", ac.channel_name, ac.channel_type, ac.scope"
+        
+        sql = f"""
+            SELECT {select_fields}
+            FROM {table_clause}
+            WHERE {where_clause}
+            ORDER BY m.{order_by}
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        
+        cursor = await conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        
+        results = []
+        for row in rows:
+            result = {
+                'id': row[0],
+                'channel_id': row[1],
+                'sender_id': row[2],
+                'sender_project_id': row[3],
+                'content': row[4],
+                'timestamp': row[5],
+                'thread_id': row[6],
+                'metadata': json.loads(row[7]) if row[7] else {},
+                'confidence': row[8],
+                'topic_name': row[9],
+                'ai_metadata': json.loads(row[10]) if row[10] else None,
+                'model_version': row[11],
+                'intent_type': row[12],
+                'is_edited': bool(row[13]),
+                'edited_at': row[14]
+            }
+            
+            # Add channel info if available
+            if agent_name is not None and len(row) > 15:
+                result.update({
+                    'channel_name': row[15],
+                    'channel_type': row[16],
+                    'scope': row[17]
+                })
+            
+            results.append(result)
+        
+        self.logger.info(f"Advanced search found {len(results)} messages (limit={limit})")
+        return results
     
     @with_connection(writer=False)
     async def search_messages(self, conn,

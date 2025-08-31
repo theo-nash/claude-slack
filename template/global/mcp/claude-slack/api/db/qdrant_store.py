@@ -29,6 +29,7 @@ from qdrant_client.models import (
 from sentence_transformers import SentenceTransformer
 
 from ..ranking import RankingProfile, RankingProfiles
+from .filters import MongoFilterParser, QdrantFilterBackend, FilterValidator
 
 
 class QdrantStore:
@@ -217,264 +218,59 @@ class QdrantStore:
                      metadata_filters: Optional[Dict[str, Any]] = None,
                      min_confidence: Optional[float] = None) -> Optional[Filter]:
         """
-        Build Qdrant filter from parameters.
+        Build Qdrant filter from parameters using the shared filter system.
         Supports MongoDB-style operators with arbitrary nested metadata filtering.
-        
-        Supported operators:
-        - Comparison: $eq, $ne, $gt, $gte, $lt, $lte
-        - Array/List: $in, $nin, $contains, $not_contains, $all, $size
-        - Logical: $and, $or, $not
-        - Existence: $exists, $null
-        - Text: $regex, $text
-        - Special: $empty
         """
-        must_conditions = []
-        should_conditions = []  # For $or operator
-        must_not_conditions = []  # For negative operators
+        # Build combined filter object
+        combined_filters = {}
         
-        # Handle basic filters
+        # Add basic filters as top-level conditions
         if channel_ids:
-            must_conditions.append(FieldCondition(
-                key="channel_id",
-                match=MatchAny(any=channel_ids)
-            ))
+            combined_filters['channel_id'] = {'$in': channel_ids}
         
         if sender_ids:
-            must_conditions.append(FieldCondition(
-                key="sender_id",
-                match=MatchAny(any=sender_ids)
-            ))
+            combined_filters['sender_id'] = {'$in': sender_ids}
         
         if min_confidence is not None:
-            must_conditions.append(FieldCondition(
-                key="confidence",
-                range=Range(gte=min_confidence)
-            ))
+            combined_filters['confidence'] = {'$gte': min_confidence}
         
-        # Handle metadata filters with MongoDB-style operators
+        # Merge metadata filters
         if metadata_filters:
-            parsed = self._parse_metadata_filters(metadata_filters)
-            must_conditions.extend(parsed['must'])
-            should_conditions.extend(parsed['should'])
-            must_not_conditions.extend(parsed['must_not'])
-        
-        # Build the final filter
-        filter_kwargs = {}
-        
-        if must_conditions:
-            filter_kwargs['must'] = must_conditions
-        
-        if should_conditions:
-            filter_kwargs['should'] = should_conditions
+            # Validate filters first
+            validator = FilterValidator.create_default()
+            try:
+                validated_filters = validator.validate(metadata_filters)
+            except Exception as e:
+                self.logger.error(f"Filter validation failed: {e}")
+                raise ValueError(f"Invalid filter structure: {e}")
             
-        if must_not_conditions:
-            filter_kwargs['must_not'] = must_not_conditions
-        
-        return Filter(**filter_kwargs) if filter_kwargs else None
-    
-    def _parse_metadata_filters(self, filters: Dict[str, Any]) -> Dict[str, List]:
-        """
-        Parse metadata filters recursively to handle all MongoDB operators.
-        Returns dict with 'must', 'should', and 'must_not' condition lists.
-        """
-        result = {
-            'must': [],
-            'should': [],
-            'must_not': []
-        }
-        
-        for field_path, value in filters.items():
-            # Handle top-level logical operators
-            if field_path == "$and":
-                # All conditions must match
-                for condition in value:
-                    parsed = self._parse_metadata_filters(condition)
-                    result['must'].extend(parsed['must'])
-                    # Note: Nested should/must_not within $and become must conditions
-                    if parsed['should']:
-                        # Convert OR within AND to a nested filter
-                        result['must'].append(Filter(should=parsed['should']))
-                    if parsed['must_not']:
-                        result['must'].append(Filter(must_not=parsed['must_not']))
-                        
-            elif field_path == "$or":
-                # At least one condition must match
-                for condition in value:
-                    parsed = self._parse_metadata_filters(condition)
-                    # Each OR branch becomes a should condition with its own filter
-                    branch_filter = {}
-                    if parsed['must']:
-                        branch_filter['must'] = parsed['must']
-                    if parsed['should']:
-                        branch_filter['should'] = parsed['should']
-                    if parsed['must_not']:
-                        branch_filter['must_not'] = parsed['must_not']
-                    
-                    if branch_filter:
-                        result['should'].append(Filter(**branch_filter))
-                        
-            elif field_path == "$not":
-                # Negate the condition
-                parsed = self._parse_metadata_filters(value)
-                # Swap must and must_not
-                result['must_not'].extend(parsed['must'])
-                result['must'].extend(parsed['must_not'])
-                # Handle should conditions (need to negate them)
-                if parsed['should']:
-                    # All should conditions must NOT match
-                    for cond in parsed['should']:
-                        result['must_not'].append(cond)
-                        
+            # Merge validated filters with basic filters
+            # If there are both, wrap in $and
+            if combined_filters:
+                combined_filters = {
+                    '$and': [
+                        combined_filters,
+                        validated_filters
+                    ]
+                }
             else:
-                # Regular field condition
-                conditions = self._parse_field_condition(field_path, value)
-                for category, conds in conditions.items():
-                    result[category].extend(conds)
+                combined_filters = validated_filters
         
-        return result
-    
-    def _parse_field_condition(self, field_path: str, value: Any) -> Dict[str, List]:
-        """
-        Parse a single field condition and return categorized conditions.
-        """
-        result = {
-            'must': [],
-            'should': [],
-            'must_not': []
-        }
+        # If no filters, return None
+        if not combined_filters:
+            return None
         
-        # Ensure metadata prefix for non-system fields
-        if not field_path.startswith('metadata.') and field_path not in ['channel_id', 'sender_id', 'confidence']:
-            field_path = f"metadata.{field_path}"
+        # Parse using shared system
+        parser = MongoFilterParser()
+        backend = QdrantFilterBackend(metadata_prefix='metadata')
         
-        # Handle MongoDB operators
-        if isinstance(value, dict) and any(k.startswith('$') for k in value):
-            for op, op_value in value.items():
-                # Comparison operators
-                if op == "$eq":
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchValue(value=op_value)
-                    ))
-                    
-                elif op == "$ne":
-                    result['must_not'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchValue(value=op_value)
-                    ))
-                    
-                elif op == "$gt":
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        range=Range(gt=op_value)
-                    ))
-                    
-                elif op == "$gte":
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        range=Range(gte=op_value)
-                    ))
-                    
-                elif op == "$lt":
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        range=Range(lt=op_value)
-                    ))
-                    
-                elif op == "$lte":
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        range=Range(lte=op_value)
-                    ))
-                
-                # Array/List operators
-                elif op in ["$in", "$contains"]:
-                    values = op_value if isinstance(op_value, list) else [op_value]
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchAny(any=values)
-                    ))
-                    
-                elif op in ["$nin", "$not_contains"]:
-                    values = op_value if isinstance(op_value, list) else [op_value]
-                    result['must_not'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchAny(any=values)
-                    ))
-                    
-                elif op == "$all":
-                    # All values must be present (multiple must conditions)
-                    for val in op_value:
-                        result['must'].append(FieldCondition(
-                            key=field_path,
-                            match=MatchAny(any=[val])
-                        ))
-                
-                elif op == "$size":
-                    # Array size check - assumes we index array lengths as field__len
-                    result['must'].append(FieldCondition(
-                        key=f"{field_path}__len",
-                        match=MatchValue(value=op_value)
-                    ))
-                
-                # Existence operators
-                elif op == "$exists":
-                    if op_value:
-                        # Field must exist (not null)
-                        # In Qdrant, we check that field is NOT null
-                        result['must_not'].append(IsNullCondition(
-                            is_null=PayloadField(key=field_path)
-                        ))
-                    else:
-                        # Field must not exist (is null)
-                        result['must'].append(IsNullCondition(
-                            is_null=PayloadField(key=field_path)
-                        ))
-                        
-                elif op == "$null":
-                    # Check if field is null
-                    result['must'].append(IsNullCondition(
-                        is_null=PayloadField(key=field_path)
-                    ))
-                    
-                elif op == "$empty":
-                    # Check if field is empty (for arrays/strings)
-                    result['must'].append(IsEmptyCondition(
-                        is_empty=PayloadField(key=field_path)
-                    ))
-                
-                # Text operators
-                elif op == "$regex":
-                    # Text pattern matching
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchText(text=op_value)
-                    ))
-                    
-                elif op == "$text":
-                    # Full text search
-                    result['must'].append(FieldCondition(
-                        key=field_path,
-                        match=MatchText(text=op_value)
-                    ))
-                
-                # Range combinations (between values)
-                elif op == "$between":
-                    # Expects [min, max]
-                    if isinstance(op_value, list) and len(op_value) == 2:
-                        result['must'].append(FieldCondition(
-                            key=field_path,
-                            range=Range(gte=op_value[0], lte=op_value[1])
-                        ))
-                        
-        else:
-            # Direct equality match
-            result['must'].append(FieldCondition(
-                key=field_path,
-                match=MatchValue(value=value)
-            ))
-        
-        return result
+        try:
+            expression = parser.parse(combined_filters)
+            qdrant_filter = backend.convert(expression)
+            return qdrant_filter
+        except Exception as e:
+            self.logger.error(f"Failed to build Qdrant filter: {e}")
+            raise ValueError(f"Failed to build filter: {e}")
     
     async def search(self,
                     query: str,

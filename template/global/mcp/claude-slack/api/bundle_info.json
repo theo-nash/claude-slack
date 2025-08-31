@@ -1,8 +1,8 @@
 {
-  "bundled_at": "2025-08-29T20:17:39.886Z",
+  "bundled_at": "2025-08-31T19:48:52.833Z",
   "api_version": "4.1.0",
-  "files_bundled": 18,
+  "files_bundled": 27,
   "files_skipped": 0,
-  "bundle_size": 265710,
+  "bundle_size": 361262,
   "requirements": 6
 }

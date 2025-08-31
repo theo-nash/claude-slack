@@ -588,18 +588,19 @@ class MessageStore:
                             min_confidence: Optional[float] = None,
                             limit: int = 20) -> List[Dict]:
         """
-        Perform filter-based search using SQLite.
+        Perform filter-based search using SQLite with MongoDB-style filtering.
         
         This is used when no query is provided or Qdrant is unavailable.
         """
-        # For now, this is a simplified implementation
-        # In production, you'd want to build proper SQL queries
-        # with metadata filtering support
-        
-        # This would need to be implemented based on your specific needs
-        # For now, return empty list
-        self.logger.debug("Filter search called but not fully implemented yet")
-        return []
+        # Use the advanced search method with MongoDB-style filters
+        self.logger.debug(f"Performing advanced filter search with metadata_filters: {metadata_filters}")
+        return await self.sqlite.search_messages_advanced(
+            channel_ids=channel_ids,
+            sender_ids=sender_ids,
+            metadata_filters=metadata_filters,
+            min_confidence=min_confidence,
+            limit=limit
+        )
     
     async def _filter_search_agent(self,
                                   agent_name: str,
@@ -610,48 +611,22 @@ class MessageStore:
                                   min_confidence: Optional[float] = None,
                                   limit: int = 20) -> List[Dict]:
         """
-        Perform filter-based search with agent permissions using SQLite.
+        Perform filter-based search with agent permissions using SQLite with MongoDB-style filtering.
         
         This is used when no semantic query is provided or Qdrant is unavailable,
         but we still need to respect agent permissions.
         """
-        # Use the existing get_agent_messages which already handles permissions
-        # We just need to apply additional filters
-        self.logger.debug(f"Performing filter search for agent {agent_name}")
-        messages = await self.sqlite.get_messages(
+        # Use the advanced search method with agent context for permissions
+        self.logger.debug(f"Performing advanced filter search for agent {agent_name}")
+        return await self.sqlite.search_messages_advanced(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
-            channel_id=None,  # We're using channel_ids (plural) for filtering
-            limit=limit * 3,  # Get extra for post-filtering
-            since=None
+            channel_ids=channel_ids,
+            sender_ids=sender_ids,
+            metadata_filters=metadata_filters,
+            min_confidence=min_confidence,
+            limit=limit
         )
-        
-        # Apply additional filters in memory
-        filtered = messages
-        
-        # Filter by specific channels if requested
-        if channel_ids:
-            filtered = [m for m in filtered if m['channel_id'] in channel_ids]
-        
-        # Filter by senders if requested
-        if sender_ids:
-            filtered = [m for m in filtered if m['sender_id'] in sender_ids]
-        
-        # Filter by confidence if specified
-        if min_confidence is not None:
-            filtered = [m for m in filtered 
-                       if m.get('metadata', {}).get('confidence', 0) >= min_confidence]
-        
-        # Apply metadata filters if specified
-        if metadata_filters:
-            # This would need more sophisticated filtering logic
-            # For now, simple implementation
-            pass
-        
-        # Limit results
-        results = filtered[:limit]
-        self.logger.debug(f"Filter search returning {len(results)} results for agent {agent_name}")
-        return results
     
     def _calculate_decay(self, age_hours: float, half_life_hours: float) -> float:
         """Calculate exponential decay score based on age"""
