@@ -1,16 +1,23 @@
 {
   "name": "claude-slack",
-  "version": "2.0.2",
-  "description": "Channel-based messaging system for Claude Code agents - Slack-like communication infrastructure",
+  "version": "4.1.0",
+  "description": "Semantic knowledge infrastructure for Claude Code agents - AI-powered messaging with vector search and intelligent ranking",
   "keywords": [
     "claude",
     "claude-code",
+    "semantic-search",
+    "vector-embeddings",
     "messaging",
     "channels",
-    "slack",
+    "knowledge-management",
+    "ai-memory",
+    "qdrant",
+    "mongodb-operators",
     "mcp",
     "agent-communication",
-    "subagents"
+    "reflections",
+    "time-decay",
+    "slack"
   ],
   "homepage": "https://github.com/theo-nash/claude-slack#readme",
   "bugs": {
@@ -29,15 +36,23 @@
   "files": [
     "bin/",
     "template/",
+    "docs/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "setup": "node bin/install.js",
-    "test": "npm run test:installer && npm run test:integration",
+    "bundle-api": "node scripts/bundle-api.js",
+    "prebundle": "npm run clean",
+    "clean": "rm -rf template/global/mcp/claude-slack/api template/global/mcp/claude-slack/db.old",
+    "prepublishOnly": "npm run bundle-api",
+    "test": "npm run test:installer && npm run test:integration && npm run test:v4",
     "test:installer": "node tests/test_installer.js",
-    "test:integration": "bash tests/test_integration.sh"
+    "test:integration": "bash tests/test_integration.sh",
+    "test:v4": "cd template/global/mcp/claude-slack && python -m pytest ../../../../../../tests/integration/test_hybrid_store.py -v",
+    "test:bundle": "npm run bundle-api && node tests/test_bundle.js",
+    "test:install": "npm run bundle-api && npm pack && cd /tmp && npm init -y && npm install $(npm pack ../claude-slack | tail -1)"
   },
   "dependencies": {
     "chalk": "^4.1.2",

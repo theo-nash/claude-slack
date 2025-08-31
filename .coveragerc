@@ -1,0 +1,27 @@
+[run]
+source = template/global/mcp/claude-slack
+omit = 
+    */tests/*
+    */test_*.py
+    */__init__.py
+    */server.py
+    */utils/formatting.py
+    */config/*
+    */frontmatter/*
+    */projects/mcp_tools_manager.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    if settings.DEBUG
+    raise AssertionError
+    raise NotImplementedError
+    if 0:
+    if __name__ == .__main__.:
+    class .*\bProtocol\):
+    @(abc\.)?abstractmethod
+
+[html]
+directory = htmlcov

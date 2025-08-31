@@ -62,7 +62,8 @@ class LoggingManager:
             self.log_dir,
             self.log_dir / 'hooks',
             self.log_dir / 'managers',
-            self.log_dir / 'archive'
+            self.log_dir / 'archive',
+            self.log_dir / 'actions'
         ]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
@@ -108,6 +109,8 @@ class LoggingManager:
             log_file = self.log_dir / 'hooks' / f"{name.lower()}.log"
         elif component == 'manager':
             log_file = self.log_dir / 'managers' / f"{name.lower()}.log"
+        elif component == 'action':
+            log_file = self.log_dir / 'actions' / f"{name.lower()}.log"
         else:
             log_file = self.log_dir / f"{name.lower()}.log"
         

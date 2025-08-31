@@ -12,6 +12,10 @@ from .formatting import (
     format_peek_notes
 )
 
+from .environment_config import env_config
+
+from .tool_orchestrator import MCPToolOrchestrator, ProjectContext
+
 __all__ = [
     'format_time_ago',
     'format_messages_concise',
@@ -19,5 +23,8 @@ __all__ = [
     'format_search_results_concise',
     'format_notes_concise',
     'format_note_search_results',
-    'format_peek_notes'
+    'format_peek_notes',
+    'env_config',
+    'MCPToolOrchestrator',
+    'ProjectContext'
 ]

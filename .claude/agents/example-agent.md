@@ -10,8 +10,6 @@ channels:
   - dev
   - testing
   - releases
-  - proj_b3279ea0:test-channel
-  - proj_b3279ea0:final-test
 direct_messages: enabled
 message_preferences:
   auto_subscribe_patterns:

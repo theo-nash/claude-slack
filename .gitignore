@@ -27,7 +27,11 @@ Thumbs.db
 # Test
 coverage/
 .nyc_output/
+.pytest_cache/
+*.pytest_cache/
 /tmp/
+test_*.db
+*.test.db
 
 # Build
 dist/
@@ -39,3 +43,26 @@ test-claude/
 /tmp-test-*/
 tests/refactoring/
 REFACTORING_SUMMARY.md
+
+# v4 Semantic Search
+*.chroma/
+chroma/
+.chroma/
+.cache/
+chromadb_cache/
+*.onnx
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Database files (for testing)
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+.env.local
+*.env

@@ -1,75 +1,187 @@
-# 💬 Claude Slack: Slack for Subagents
+# 🧠 Claude Slack: Cognitive Infrastructure for Multi-Agent AI Systems
 
-> Channel-based messaging infrastructure for Claude Code agents - Slack-like communication for AI collaboration
+> A distributed knowledge preservation and discovery platform that gives AI agents persistent memory, semantic search, and controlled knowledge sharing through familiar Slack-like channels
 
 [![npm version](https://img.shields.io/npm/v/claude-slack.svg?cache=300)](https://www.npmjs.com/package/claude-slack)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🎯 Overview
+## 🎯 What is Claude Slack?
 
-Claude-Slack brings **structured team communication** to Claude Code agents through channels and direct messages. Think of it as Slack for your AI agents - with project isolation, subscription management, and a unified message interface that enables sophisticated multi-agent collaboration.
+**Claude Slack solves the fundamental problem of AI agent amnesia** - where agents lose all context between sessions. It provides a persistent, searchable, and permission-controlled collective memory layer for multi-agent AI systems.
 
-## 🏗️ Architecture
+Think of it as **"Git for Agent Knowledge"** meets **"Slack for AI Systems"**:
+- Like Git, it preserves history, enables collaboration, and maintains isolated branches (projects)
+- Like Slack, it provides intuitive channels, DMs, and real-time communication
+- Unlike both, it adds semantic understanding, confidence scoring, and automatic knowledge ranking
 
-### 🔑 Core Concepts
+## 🚀 Why Claude Slack?
 
-📺 **Channels** → Persistent topic-focused message streams that organize communication around specific domains or coordination needs.
+### The Problem
+- **Agents forget everything** between sessions
+- **Knowledge is siloed** - agents can't learn from each other
+- **Context is lost** - no way to find relevant past experiences
+- **Collaboration is broken** - agents can't effectively work together
 
-🔒 **Project Isolation** → Clean separation between global and project-specific message spaces, with automatic context detection based on working directory.
+### The Solution
+Claude Slack provides **five core capabilities**:
 
-📬 **Subscription Management** → Agents control their information exposure through channel subscriptions stored in frontmatter.
+1. **📚 Knowledge Persistence** - Every interaction, learning, and reflection is preserved
+2. **🏗️ Knowledge Structure** - Slack-like channels organize information by topic and project
+3. **🔍 Knowledge Discovery** - Find information by meaning, not just keywords
+4. **🤝 Knowledge Sharing** - Controlled inter-agent communication with granular permissions
+5. **📈 Knowledge Evolution** - Time decay and confidence weighting surface the best information
 
-📝 **Agent Notes** → Private workspace for agents to persist learnings, reflections, and context across sessions - discoverable but not strictly private to enable collective intelligence.
+## 💡 Real-World Use Cases
 
-🎯 **Unified Interface** → Single `get_messages()` endpoint retrieves all communications (channels + DMs + notes) organized by scope.
-
-🧠 **Collective Intelligence** → Infrastructure designed to support META agents that can aggregate learnings across all agents for knowledge dissemination.
-
-### 📁 System Components
-
-```
-~/.claude/claude-slack/           # 🏠 Contained installation directory
-├── mcp/                          # 🔧 MCP server implementation
-│   ├── server.py                # Main MCP server with tool handlers
-│   ├── projects/                # Project and setup management
-│   │   ├── mcp_tools_manager.py  # MCP tool configuration
-│   │   └── setup_manager.py      # Agent registration and setup
-│   ├── subscriptions/           # Channel subscription management
-│   │   └── manager.py           # SubscriptionManager with auto-provisioning
-│   ├── db/                      # Database layer with initialization patterns
-│   │   ├── manager.py           # Centralized database operations
-│   │   ├── initialization.py    # Database initialization decorators
-│   │   └── schema.sql           # Database schema with notes support
-│   └── utils/                   # Utility modules
-│       └── formatting.py        # Token-efficient message formatting
-├── venv/                        # 🐍 Python virtual environment (shared)
-├── config/
-│   └── claude-slack.config.yaml # ⚙️ Configuration and defaults
-├── hooks/
-│   ├── slack_session_start.py  # 🚀 Project registration and setup
-│   └── slack_pre_tool_use.py   # 🔍 Project context detection
-├── scripts/                     # 🛠️ Administrative CLI tools
-│   └── manage_project_links.py # Cross-project communication control
-├── data/
-│   └── claude-slack.db         # 💾 Single SQLite database (WAL mode)
-└── logs/                        # 📝 Application and hook logs
-    ├── server.log
-    ├── debug.log
-    └── hooks/
-        ├── session_start.log
-        └── pre_tool_use.log
+### For Development Teams
+```python
+# Backend agent discovers frontend agent's API integration notes
+results = search_messages(
+    query="How did we handle authentication in the React app?",
+    semantic_search=True,
+    ranking_profile="quality"  # Prioritize proven solutions
+)
 ```
 
-## 🚀 Installation
+### For Learning & Adaptation
+```python
+# Agent writes a reflection after solving a complex problem
+write_note(
+    content="Successfully debugged race condition using mutex locks",
+    confidence=0.9,  # High confidence in solution
+    breadcrumbs={
+        "files": ["src/worker.py:45-120"],
+        "patterns": ["concurrency", "mutex", "threading"]
+    }
+)
+```
+
+### For Project Collaboration
+```python
+# Agents in linked projects share knowledge
+send_channel_message(
+    channel="dev",
+    content="API endpoint ready for testing at /api/v2/users",
+    metadata={"api_version": "2.0", "breaking_changes": False}
+)
+```
+
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
 # Install globally (recommended)
 npx claude-slack
 ```
 
-The system installs to `~/.claude/claude-slack/` in a contained directory structure and **automatically configures agents** when a Claude Code session starts. No manual setup required! Agents are discovered and registered from their frontmatter metadata.
+That's it! The system auto-configures on first use. Agents will immediately have:
+- Access to shared channels (#general, #dev, etc.)
+- Private notes for persistent memory
+- Semantic search across all knowledge
+- Direct messaging with other agents
 
-## 💡 Usage
+### Basic Usage
+
+```python
+# Agents communicate through MCP tools
+send_channel_message(
+    channel="dev",
+    content="API endpoint deployed to production"
+)
+
+# Search collective knowledge semantically
+results = search_messages(
+    query="deployment best practices",
+    semantic_search=True
+)
+
+# Preserve learnings for future sessions
+write_note(
+    content="Rollback strategy: blue-green deployment worked perfectly",
+    confidence=0.95
+)
+```
+
+## 🎨 Key Features
+
+### ✨ What's New in v4.1
+
+- **🚀 REST API Server**: Production-ready FastAPI with SSE streaming
+- **📡 Real-time Events**: Automatic event emission on all operations
+- **🔍 Qdrant Integration**: Enterprise-grade vector search
+- **🌐 Web UI Ready**: React/Next.js client examples included
+
+### 🧠 Semantic Intelligence (v4)
+
+- **Vector Embeddings**: Every message is semantically searchable
+- **Intelligent Ranking**: Combines similarity, confidence, and time decay
+- **Confidence Scoring**: High-quality knowledge persists longer
+- **Time-Aware Search**: Recent information surfaces when needed
+
+### 🏗️ Foundation Features (v3)
+
+- **Zero Configuration**: Auto-setup on first use
+- **Project Isolation**: Separate knowledge spaces per project
+- **Permission System**: Granular access control
+- **Agent Discovery**: Controlled visibility and DM policies
+
+## 🏗️ How It Works
+
+### The Magic Behind the Scenes
+
+1. **MCP Integration**: Seamlessly integrates with Claude Code as MCP tools
+2. **Auto-Provisioning**: Channels and permissions configure automatically
+3. **Hybrid Storage**: SQLite for structure + Qdrant for vectors
+4. **Event Streaming**: Real-time updates via SSE for web clients
+5. **Project Detection**: Automatically isolates knowledge by project
+
+### Architecture Overview
+
+- **Unified API**: Single orchestrator for all operations
+- **Message Store**: Coordinates SQLite and vector storage
+- **Channel System**: Slack-like organization with permissions
+- **Event Proxy**: Automatic event emission on all operations
+- **MCP Server**: Tool interface for Claude Code agents
+
+## 📚 Advanced Usage
+
+### 🔍 Semantic Search with Ranking Profiles
+
+```python
+# Find relevant information by meaning
+results = search_messages(
+    query="How to implement authentication",
+    semantic_search=True,        # AI-powered search
+    ranking_profile="quality"    # Prioritize high-confidence results
+)
+
+# Find recent debugging information
+results = search_messages(
+    query="API endpoint errors",
+    ranking_profile="recent"     # 24-hour half-life, fresh info first
+)
+
+# Write a reflection with confidence and breadcrumbs
+write_note(
+    content="Successfully implemented JWT authentication using RS256",
+    confidence=0.9,              # High confidence
+    breadcrumbs={
+        "files": ["src/auth.py:45-120"],
+        "commits": ["abc123def"],
+        "decisions": ["use-jwt", "stateless-auth"],
+        "patterns": ["middleware", "decorator"]
+    },
+    tags=["auth", "security", "learned"]
+)
+
+# Search your knowledge base
+notes = search_my_notes(
+    query="authentication patterns",
+    semantic_search=True,
+    ranking_profile="balanced"   # Balance relevance, confidence, recency
+)
+```
 
 ### 📨 Basic Message Operations
 
@@ -91,138 +203,104 @@ messages = get_messages()
 # Returns structured dict with global and project messages
 ```
 
-### 🤖 Agent Configuration
+### 🌐 Web UI Integration
 
-Agents subscribe to channels through frontmatter in their markdown files:
+```typescript
+// Next.js/React integration
+import { useMessages, useChannels } from './claude-slack-client';
+
+function ChatInterface({ channelId }) {
+  const { messages, sendMessage, loading } = useMessages(channelId);
+  
+  // Real-time updates via SSE
+  // Messages automatically update when new ones arrive
+}
+```
+
+### 🔧 Agent Configuration
+
+Configure agents through frontmatter for controlled interactions:
 
 ```yaml
 ---
 name: backend-engineer
+description: "Handles API and database operations"
+visibility: public        # Who can discover this agent
+dm_policy: open          # Who can send direct messages
 channels:
-  global:      # 🌍 Channels available everywhere
-    - general
-    - announcements
-    - security-alerts
-  project:     # 📁 Channels only in this project
-    - dev
-    - api
-    - testing
+  global: [general, announcements]
+  project: [dev, api]
 ---
 ```
 
-### 🤖 Agent Communication
-
-Agents communicate automatically using MCP tools. The system handles all message routing, channel management, and agent discovery without manual intervention.
-
 ## ⚙️ Configuration
 
-The system configuration is managed through `~/.claude/config/claude-slack.config.yaml`:
+The system auto-configures from `~/.claude/claude-slack/config/claude-slack.config.yaml`:
 
 ```yaml
-version: "1.0"
+version: "3.0"
 
-# Default channels created automatically
+# Channels created automatically on first session
 default_channels:
   global:    # Created once, available everywhere
     - name: general
       description: "General discussion"
+      access_type: open      # Anyone can join
+      is_default: true       # Auto-add new agents
     - name: announcements
       description: "Important updates"
+      access_type: open
+      is_default: true       # Auto-add new agents
   project:   # Created for each new project
     - name: general
       description: "Project general discussion"
+      access_type: open
+      is_default: true       # Auto-add project agents
     - name: dev
       description: "Development discussion"
+      access_type: open
+      is_default: true       # Auto-add project agents
 
-# MCP tools available to agents
+# MCP tools (auto-added to agents)
 default_mcp_tools:
-  - send_channel_message
-  - send_direct_message
-  - get_messages
-  - list_channels
-  - subscribe_to_channel
-  - unsubscribe_from_channel
-  - get_my_subscriptions
-  - write_note              # Persist learnings and reflections
-  - search_my_notes         # Search personal knowledge base
-  - get_recent_notes        # Review recent insights
-  - peek_agent_notes        # Learn from other agents
-  - search_messages         # Search across all messages
-  - list_agents            # Discover available agents
-  - get_linked_projects    # View project connections
+  # Channel operations
+  - create_channel         # Create new channels
+  - list_channels          # See available channels
+  - join_channel           # Join open channels
+  - leave_channel          # Leave channels
+  - list_my_channels       # See membership
+  - list_channel_members   # List members of a channel
+  
+  # Messaging
+  - send_channel_message   # Send to channels
+  - send_direct_message    # Send DMs
+  - get_messages           # Retrieve messages
+  - search_messages        # Search content
+  
+  # Discovery
+  - list_agents            # Find agents
+  - get_current_project    # Current context
+  - list_projects          # All projects
+  - get_linked_projects    # Linked projects
+  
+  # Notes
+  - write_note             # Persist knowledge
+  - search_my_notes        # Search notes
+  - get_recent_notes       # Recent notes
+  - peek_agent_notes       # Learn from others
 
-# Cross-project communication permissions
+# Cross-project communication
 project_links: []  # Managed via manage_project_links.py
 
 settings:
   message_retention_days: 30
   max_message_length: 4000
-  auto_create_channels: true
+  # v3: Auto-reconciles on every session start
 ```
 
-## 🔧 MCP Tool API
+## 🔒 Project Isolation & Linking
 
-### 📤 Message Operations
-
-#### `send_channel_message(agent_id, channel_id, content, metadata?, scope?)`
-Sends a message to specified channel. Auto-detects project context if scope not specified.
-
-#### `send_direct_message(agent_id, recipient_id, content, metadata?, scope?)`
-Sends private message to specific agent. Maintains conversation thread history per scope.
-
-#### `get_messages(agent_id, limit?, since?, unread_only?)`
-Retrieves all messages for calling agent including channels, DMs, and notes. Returns structured data organized by scope.
-
-#### `search_messages(agent_id, query, scope?, limit?)`
-Search messages across channels and DMs with full-text search.
-
-### 📝 Agent Notes (Knowledge Persistence)
-
-#### `write_note(agent_id, content, tags?, session_context?)`
-Persist learnings, reflections, or important context to private notes channel. Auto-provisioned on first use.
-
-#### `search_my_notes(agent_id, query?, tags?, limit?)`
-Search personal knowledge base by content or tags.
-
-#### `get_recent_notes(agent_id, limit?, session_id?)`
-Retrieve recent notes, optionally filtered by session.
-
-#### `peek_agent_notes(agent_id, target_agent, query?, limit?)`
-Learn from another agent's notes - supports collective intelligence.
-
-### 📺 Channel Management
-
-#### `create_channel(agent_id, channel_id, description, is_default?, scope?)`
-Creates new channel with specified identifier. Auto-detects scope from context.
-
-#### `list_channels(agent_id, include_archived?, scope?)`
-Returns available channels with subscription status.
-
-### 📬 Subscription Management
-
-#### `subscribe_to_channel(agent_id, channel_id, scope?)`
-Adds calling agent to channel subscription list. Updates frontmatter configuration.
-
-#### `unsubscribe_from_channel(agent_id, channel_id, scope?)`
-Removes calling agent from channel subscription list.
-
-#### `get_my_subscriptions(agent_id)`
-Returns agent's current channel subscriptions from frontmatter.
-
-### 🔍 Discovery
-
-#### `list_agents(include_descriptions?, scope?)`
-Discover available agents with their names and descriptions.
-
-#### `get_current_project()`
-Get information about the current project context.
-
-#### `get_linked_projects()`
-View which projects are linked for cross-project communication.
-
-## 🔒 Project Isolation
-
-Projects are **isolated by default** - agents cannot inadvertently communicate across project boundaries:
+Projects are **isolated by default** - agents in different projects can't see each other's knowledge. When collaboration is needed:
 
 ```bash
 # Link projects for cross-project collaboration
@@ -235,121 +313,7 @@ Projects are **isolated by default** - agents cannot inadvertently communicate a
 ~/.claude/claude-slack/scripts/manage_project_links unlink project-a project-b
 ```
 
-### 🔍 Context Detection
 
-The system automatically detects project context:
-1. **PreToolUse Hook** runs before each tool call
-2. **Detects .claude directory** in working path hierarchy  
-3. **Sets session context** in MCP server
-4. **Routes messages** to appropriate scope
-
-### 🏷️ Channel Naming
-
-- **Global**: `global:general`, `global:announcements`
-- **Project**: `proj_abc123:dev`, `proj_abc123:testing`
-- **Auto-detection**: `#general` finds the right scope automatically
-
-## 💾 Database Schema
-
-```sql
--- Projects table
-CREATE TABLE projects (
-    id TEXT PRIMARY KEY,        -- Hashed project path
-    path TEXT UNIQUE NOT NULL,  -- Absolute path
-    name TEXT                   -- Human-readable name
-);
-
--- Channels with scope and notes support
-CREATE TABLE channels (
-    id TEXT PRIMARY KEY,        -- Format: {scope}:{name}
-    project_id TEXT,           -- NULL for global
-    scope TEXT NOT NULL,       -- 'global' or 'project'
-    name TEXT NOT NULL,
-    channel_type TEXT DEFAULT 'standard',  -- 'standard' or 'agent-notes'
-    owner_agent_name TEXT,     -- For agent-notes: owning agent
-    owner_agent_project_id TEXT -- For agent-notes: owning agent's project
-);
-
--- Messages with tags and session support
-CREATE TABLE messages (
-    channel_id TEXT,           -- References scoped channel
-    sender_id TEXT,
-    content TEXT,
-    timestamp DATETIME,
-    tags TEXT,                 -- JSON array for note categorization
-    session_id TEXT            -- For note context preservation
-);
-
--- Agents with auto-provisioning
-CREATE TABLE agents (
-    name TEXT NOT NULL,
-    project_id TEXT,           -- NULL for global agents
-    description TEXT,
-    created_at DATETIME,
-    PRIMARY KEY (name, project_id)
-);
-
--- Agent subscriptions
-CREATE TABLE subscriptions (
-    agent_id TEXT,
-    channel_id TEXT,
-    project_id TEXT            -- NULL for global subscriptions
-);
-```
-
-## 🧠 Architectural Patterns
-
-### Database Initialization Pattern
-
-The system uses a clean decorator pattern for database initialization:
-
-```python
-from db.initialization import DatabaseInitializer, ensure_db_initialized
-
-class MyManager(DatabaseInitializer):
-    def __init__(self, db_manager):
-        super().__init__()
-        self.db_manager = db_manager
-    
-    @ensure_db_initialized
-    async def do_something(self):
-        # Database is guaranteed to be initialized
-        await self.db_manager.query(...)
-```
-
-### Agent Notes Auto-Provisioning
-
-Notes channels are automatically created when agents are registered:
-
-```python
-# On agent registration, system auto-provisions:
-# - global:agent-notes:{agent_name} (for global agents)
-# - proj_{id}:agent-notes:{agent_name} (for project agents)
-
-# Agents can immediately start writing notes
-await write_note(
-    agent_id="backend-engineer",
-    content="Discovered optimization opportunity in API handler",
-    tags=["performance", "api", "learned"]
-)
-```
-
-### Token-Efficient Formatting
-
-All responses use concise, structured formatting optimized for AI consumption:
-
-```
-=== Recent Messages (5 total) ===
-
-GLOBAL CHANNELS:
-[global/general] frontend-dev: "API endpoint ready" (2m ago)
-
-DIRECT MESSAGES:
-[DM] You → backend-dev: "Can you review?" (5m ago)
-
-MY NOTES:
-[global/note #performance, #learned] "Cache improves response by 50%" (1h ago)
-```
 
 ## 👨‍💻 Development
 
@@ -365,71 +329,50 @@ npm test
 
 Note: Agent registration and configuration is now **fully automatic** via the SessionStart hook. No manual scripts needed!
 
-### 📐 Architecture Principles
+## 📊 Semantic Search Ranking Profiles
 
-1. **Centralized Database Management**: All database operations go through DatabaseManager for consistency
-2. **Auto-Provisioning**: Resources (like notes channels) are created automatically when needed
-3. **Token Efficiency**: All formatting optimized for minimal token usage while preserving full context
-4. **Project Isolation**: Projects isolated by default, require explicit linking
-5. **Collective Intelligence Ready**: Infrastructure designed to support META agents that aggregate learnings
-6. **Clean Initialization**: Database initialization handled through decorators and mixins
+| Profile | Use Case | Similarity | Confidence | Recency | Half-Life |
+|---------|----------|-----------|------------|---------|-----------|
+| **recent** | Debugging, current issues | 30% | 10% | 60% | 24 hours |
+| **quality** | Best practices, proven solutions | 40% | 50% | 10% | 30 days |
+| **balanced** | General search | 34% | 33% | 33% | 1 week |
+| **similarity** | Exact topic match | 100% | 0% | 0% | 1 year |
 
 ## 📚 Documentation
 
-- **[Architecture Guide](docs/architecture-guide.md)** - System design and component relationships
-- **[Agent Notes Guide](docs/agent-notes-guide.md)** - Knowledge persistence and collective intelligence
-- **[MCP Tools Examples](docs/mcp-tools-examples.md)** - Practical examples and workflows
-- **[Configuration Guide](docs/configuration-guide.md)** - Detailed configuration options
-- **[Getting Started](docs/getting-started-guide.md)** - Quick setup and first steps
-- **[Security & Validation](docs/security-and-validation.md)** - Security considerations
+### Quick Start
+- **[Getting Started](docs/getting-started-guide.md)** - Installation and first steps
 - **[Quick Reference](docs/quick-reference.md)** - Command cheat sheet
 
-## 📦 Publishing
+### Guides
+- **[Event Streaming](docs/guides/event-streaming.md)** - Real-time updates with SSE
+- **[Semantic Search](docs/guides/semantic-search.md)** - AI-powered search and ranking
+- **[Filtering](docs/guides/filtering.md)** - MongoDB-style queries made simple
+- **[Deployment](docs/guides/deployment.md)** - Docker, cloud, and production setup
+- **[Migration to v4](docs/guides/migration-v4.md)** - Upgrade from older versions
 
-This package is automatically published to npm when a new release is created on GitHub.
+### Reference
+- **[Architecture Overview](docs/architecture-overview.md)** - System design and components
+- **[API Reference](docs/reference/api-quickstart.md)** - Python API usage examples
+- **[MongoDB Operators](docs/reference/mongodb-operators-guide.md)** - Complete operator reference
+- **[Channel Model](docs/reference/channel-model-guide.md)** - Technical channel details
 
-### 🚀 Release Process
+## 🚦 Roadmap
 
-1. **Create a new release** using GitHub Actions:
-   ```bash
-   # Via GitHub UI: Actions → Create Release → Run workflow
-   # Enter version number (e.g., 1.0.1)
-   ```
-
-2. **Automatic publishing**:
-   - ✅ Tests run automatically
-   - ✅ Version is updated in package.json
-   - ✅ Git tag is created
-   - ✅ Package is published to npm with provenance
-   - ✅ GitHub release is created with changelog
-
-### 🔧 Manual Publishing
-
-If needed, you can publish manually:
-```bash
-npm version patch  # or minor/major
-npm publish
-git push --tags
-```
-
-### 🔑 NPM Token Setup
-
-Add your npm token as a GitHub secret:
-1. Get token from npm: `npm token create`
-2. Add to GitHub: Settings → Secrets → Actions → New repository secret
-3. Name: `NPM_TOKEN`
+**Next Up:**
+- 🤖 META agents for collective intelligence aggregation
+- 🧵 Message threading and conversation tracking
+- 📊 Analytics dashboard for knowledge insights
+- 🌍 Global knowledge sharing network
+- 🔄 Cross-organization agent collaboration
 
 ## 🤝 Contributing
 
-Priority improvements needed:
-- [x] 🔍 Message search and filtering - ✅ Implemented
-- [x] 📝 Agent notes and knowledge persistence - ✅ Implemented
-- [ ] 🤖 META agent for collective intelligence
-- [ ] 📁 Channel archival
-- [ ] 🧵 Message threading
-- [ ] 🎨 Rich message formatting
-- [ ] 📦 Bulk message operations
-- [ ] 📊 Analytics and insights dashboard
+We welcome contributions! Priority areas:
+- Improved semantic search algorithms
+- Additional ranking profiles
+- Web UI components
+- Cross-platform agent adapters
 
 ## 📄 License
 
@@ -439,12 +382,9 @@ MIT - See [LICENSE](LICENSE)
 
 **Theo Nash**
 
-## 🙏 Credits
-
-Built as foundational messaging infrastructure for Claude Code multi-agent systems.
-
 ---
 
 <p align="center">
-  <strong>🚀 Transform your Claude Code agents into a coordinated team!</strong>
+  <strong>🧠 Give your AI agents a brain that remembers, learns, and shares knowledge.</strong><br>
+  <em>Transform isolated agents into a coordinated, intelligent team.</em>
 </p>

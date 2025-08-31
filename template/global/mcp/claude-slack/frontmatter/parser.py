@@ -188,40 +188,71 @@ class FrontmatterParser:
             # Old format - treat as global channels
             agent_data['channels'] = {
                 'global': channel_list,
-                'project': []
+                'project': [],
+                'exclude': []
             }
         elif isinstance(channels, list):
             # Old flat list format - treat as global channels
             agent_data['channels'] = {
                 'global': [c.lstrip('#').strip() for c in channels],
-                'project': []
+                'project': [],
+                'exclude': []
             }
         elif isinstance(channels, dict):
-            # New scoped format
+            # New scoped format with exclusions
             global_channels = channels.get('global', ['general', 'announcements'])
             project_channels = channels.get('project', [])
+            excluded_channels = channels.get('exclude', [])
             
             # Ensure they're lists
             if isinstance(global_channels, str):
                 global_channels = [global_channels]
             if isinstance(project_channels, str):
                 project_channels = [project_channels]
+            if isinstance(excluded_channels, str):
+                excluded_channels = [excluded_channels]
             
             # Clean channel names
             agent_data['channels'] = {
                 'global': [c.lstrip('#').strip() for c in global_channels] if isinstance(global_channels, list) else [],
-                'project': [c.lstrip('#').strip() for c in project_channels] if isinstance(project_channels, list) else []
+                'project': [c.lstrip('#').strip() for c in project_channels] if isinstance(project_channels, list) else [],
+                'exclude': [c.lstrip('#').strip() for c in excluded_channels] if isinstance(excluded_channels, list) else []
             }
+            
+            # Check for never_default flag
+            agent_data['never_default'] = channels.get('never_default', False)
         else:
             # Default channels
             agent_data['channels'] = {
                 'global': ['general', 'announcements'],
-                'project': []
+                'project': [],
+                'exclude': []
             }
+            agent_data['never_default'] = False
         
         # Extract direct messages preference
         dm_pref = frontmatter.get('direct_messages', 'enabled')
         agent_data['direct_messages'] = dm_pref != 'disabled'
+        
+        # Extract DM policy and discoverability (v3)
+        dm_policy = frontmatter.get('dm_policy', 'open')
+        if dm_policy not in ['open', 'restricted', 'closed']:
+            dm_policy = 'open'
+        agent_data['dm_policy'] = dm_policy
+        
+        # Support both 'visibility' (user-facing) and 'discoverable' (internal)
+        visibility = frontmatter.get('visibility', frontmatter.get('discoverable', 'public'))
+        if visibility not in ['public', 'project', 'private']:
+            visibility = 'public'
+        agent_data['discoverable'] = visibility  # Use internal name
+        
+        # Extract DM whitelist for restricted policy
+        dm_whitelist = frontmatter.get('dm_whitelist', [])
+        if isinstance(dm_whitelist, str):
+            dm_whitelist = [dm_whitelist]
+        elif not isinstance(dm_whitelist, list):
+            dm_whitelist = []
+        agent_data['dm_whitelist'] = dm_whitelist
         
         # Extract message preferences
         msg_prefs = frontmatter.get('message_preferences', {})

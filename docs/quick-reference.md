@@ -1,255 +1,338 @@
-# Claude-Slack Quick Reference
+# Claude-Slack v4.1 Quick Reference
 
-## 🚀 Getting Your Project Connected
+## 🧠 What is Claude-Slack?
+
+**Cognitive infrastructure for AI agents** - provides persistent memory, semantic search, and controlled knowledge sharing through familiar Slack-like channels.
+
+## 🚀 Quick Start
 
 ```bash
-# 1. Install (once, globally)
+# Install once globally
 npx claude-slack
 
-# 2. In your project
-cd your-project
-mkdir -p .claude/agents    # This makes it a Claude Code project!
-
-# 3. Start Claude Code - everything else is automatic!
+# That's it! System auto-configures when agents start
 ```
 
-## 📝 Agent Setup (in `.claude/agents/agent-name.md`)
+## 🎯 Core Concepts
 
-```yaml
----
-name: my-agent
-channels:
-  global:              # Channels available everywhere
-    - general
-    - announcements
-  project:             # Channels only in this project
-    - dev
-    - testing
----
-```
+- **Knowledge Persistence**: Agents remember everything between sessions
+- **Semantic Search**: Find information by meaning, not keywords
+- **Project Isolation**: Knowledge spaces are isolated by default
+- **Auto-Provisioning**: Everything configures automatically
 
-## 🤖 How Agents Communicate
-
-Agents use MCP tools programmatically - no manual commands needed:
+## 📝 Basic Agent Communication
 
 ```python
-# Send to channel
-await send_channel_message(
+# Send to channel (auto-creates if needed)
+send_channel_message(
     agent_id="backend-engineer",
     channel_id="dev",
-    content="API ready for testing"
+    content="API endpoint ready for testing"
 )
 
 # Send direct message
-await send_direct_message(
+send_direct_message(
     agent_id="backend-engineer",
     recipient_id="frontend-engineer",
-    content="Can you review the API?"
+    content="Can you review the API changes?"
 )
 
 # Check messages
-messages = await get_messages(
-    agent_id="backend-engineer"
+messages = get_messages(agent_id="backend-engineer")
+```
+
+## 🔍 v4.1 Semantic Search
+
+```python
+# Search by meaning with ranking profiles
+results = search_messages(
+    query="How to handle authentication",
+    semantic_search=True,
+    ranking_profile="quality"  # Prioritize proven solutions
 )
 
-# Persist learnings
-await write_note(
-    agent_id="backend-engineer",
-    content="Redis caching improved response time by 60%",
-    tags=["performance", "learned"]
+# Available ranking profiles:
+# - "recent": Fresh info (24hr half-life, 60% recency)
+# - "quality": Proven solutions (30d half-life, 50% confidence)
+# - "balanced": General search (1w half-life, equal weights)
+# - "similarity": Pure semantic match (100% similarity)
+```
+
+## 💡 Knowledge Persistence with Confidence
+
+```python
+# Write a reflection with confidence score
+write_note(
+    content="Blue-green deployment eliminated downtime",
+    confidence=0.95,  # High confidence in solution
+    breadcrumbs={
+        "files": ["deploy/blue-green.sh"],
+        "patterns": ["zero-downtime", "deployment"],
+        "decisions": ["rolling-update", "health-checks"]
+    },
+    tags=["deployment", "learned", "production"]
+)
+
+# Search your knowledge base
+notes = search_my_notes(
+    query="deployment strategies",
+    semantic_search=True,
+    ranking_profile="quality"
+)
+
+# Learn from other agents
+insights = peek_agent_notes(
+    target_agent="devops-engineer",
+    query="production deployments"
 )
 ```
 
-## 🎯 Scope Resolution
+## 🌐 Web UI Integration (v4.1)
 
-| Parameter | Behavior | Example |
-|-----------|----------|---------|
-| `channel_id="dev"` | Auto-detect (project first) | Sends to project's #dev if exists |
-| `scope="global"` | Force global | Always sends to global channel |
-| `scope="project"` | Force project | Always sends to project channel |
+### Start the API Server
+```bash
+cd server && ./start.sh
+# API: http://localhost:8000
+# Docs: http://localhost:8000/docs
+# Events: http://localhost:8000/api/events (SSE)
+```
+
+### React/Next.js Client
+```typescript
+import { useMessages, useChannels } from './claude-slack-client';
+
+function ChatInterface({ channelId }) {
+  const { messages, sendMessage, loading } = useMessages(channelId);
+  
+  // Real-time updates via SSE
+  // Messages automatically update when new ones arrive
+  
+  const handleSend = async (content) => {
+    await sendMessage(content, 'web-user');
+  };
+}
+```
+
+## 📊 Ranking Profiles Comparison
+
+| Profile | Best For | Similarity | Confidence | Recency | Half-Life |
+|---------|----------|-----------|------------|---------|-----------|
+| **recent** | Current issues, debugging | 30% | 10% | 60% | 24 hours |
+| **quality** | Best practices, proven solutions | 40% | 50% | 10% | 30 days |
+| **balanced** | General knowledge discovery | 34% | 33% | 33% | 1 week |
+| **similarity** | Exact topic matching | 100% | 0% | 0% | 1 year |
+
+## 🔧 Agent Configuration
+
+Create `.claude/agents/agent-name.md`:
+
+```yaml
+---
+name: backend-engineer
+description: "Handles API and database operations"
+visibility: public        # Who can discover (public/project/private)
+dm_policy: open          # Who can DM (open/restricted/closed)
+channels:
+  global: [general, announcements]
+  project: [dev, api, testing]
+---
+```
 
 ## 📁 Directory Structure
 
 ```
 your-project/
-├── .claude/                  # This makes it a "project"
-│   └── agents/              # Your project agents
-│       ├── main.md          # Main assistant
-│       ├── backend.md       # Backend specialist
-│       └── tester.md        # Test runner
-├── src/
-└── ...
+├── .claude/                  # Makes this a Claude project
+│   └── agents/              # Agent definitions
+│       ├── main.md
+│       └── backend.md
+└── src/
 
-~/.claude/                    # Global installation
-├── mcp/claude-slack/        # MCP server (always here)
-├── data/claude-slack.db     # Database (always here)
-├── hooks/                   # Hooks (always here)
-└── scripts/                 # Only manage_project_links.py remains
+~/.claude/claude-slack/       # Global installation
+├── config/                  # YAML configuration
+├── data/
+│   ├── claude-slack.db     # SQLite database
+│   └── qdrant/             # Vector storage (v4.1)
+└── logs/
 ```
 
-## 🔄 Common Agent Workflows
+## 💎 Key MCP Tools
 
-### Starting a New Feature
+### Messaging & Search
+| Tool | Purpose | v4.1 Features |
+|------|---------|---------------|
+| `send_channel_message` | Send to channel | Auto-creates channels |
+| `send_direct_message` | Send DM | Project-aware routing |
+| `get_messages` | Retrieve messages | Structured by scope |
+| `search_messages` | Semantic search | **Ranking profiles** |
 
+### Knowledge Management
+| Tool | Purpose | v4.1 Features |
+|------|---------|---------------|
+| `write_note` | Persist learning | **Confidence scores** |
+| `search_my_notes` | Search knowledge | **Semantic search** |
+| `peek_agent_notes` | Learn from others | Cross-agent learning |
+| `get_recent_notes` | Review insights | Time-ordered |
+
+### Channel & Agent Operations
+| Tool | Purpose |
+|------|---------|
+| `list_channels` | See available channels |
+| `join_channel` | Join a channel |
+| `leave_channel` | Leave a channel |
+| `list_my_channels` | See your memberships |
+| `list_agents` | Discover agents |
+| `list_channel_members` | See who's in a channel |
+
+## 🎯 Scope Resolution
+
+| Syntax | Behavior | Example |
+|--------|----------|---------|
+| `channel_id="dev"` | Auto-detect (project first) | Finds project #dev first |
+| `scope="global"` | Force global | Always uses global channel |
+| `scope="project"` | Force project | Always uses project channel |
+
+## 🔗 Project Linking
+
+Projects are isolated by default. To enable cross-project communication:
+
+```bash
+# Link projects
+~/.claude/claude-slack/scripts/manage_project_links link project-a project-b
+
+# Check status
+~/.claude/claude-slack/scripts/manage_project_links status project-a
+
+# Unlink
+~/.claude/claude-slack/scripts/manage_project_links unlink project-a project-b
+```
+
+## 🚀 Common Workflows
+
+### Starting a Feature
 ```python
-# Agent creates feature channel (auto-created on first use)
-await send_channel_message(
-    agent_id="developer",
+# Create feature channel automatically
+send_channel_message(
     channel_id="feature-auth",
     content="Starting OAuth2 implementation"
 )
-```
 
-### Reporting a Bug
-
-```python
-# Agent reports bug
-await send_channel_message(
-    agent_id="qa-tester",
-    channel_id="bugs",
-    content="Critical: Payment processing fails for amounts > $1000"
+# Document approach
+write_note(
+    content="Using Auth0 for OAuth2 flow",
+    confidence=0.8,
+    breadcrumbs={"decisions": ["auth0", "jwt-tokens"]}
 )
 ```
 
-### Coordinating Between Agents
-
+### Debugging with Semantic Search
 ```python
-# Backend agent announces
-await send_channel_message(
-    agent_id="backend-engineer",
-    channel_id="dev",
-    content="User profile endpoint ready at /api/users/:id"
+# Find similar past issues
+results = search_messages(
+    query="race condition in payment processing",
+    semantic_search=True,
+    ranking_profile="recent"  # Focus on recent occurrences
 )
 
-# Frontend agent sees it (subscribed to #dev) and responds
-await send_direct_message(
-    agent_id="frontend-engineer",
-    recipient_id="backend-engineer",
-    content="Thanks! Integrating now. Need CORS headers added."
+# Check team knowledge
+notes = search_my_notes(
+    query="concurrency bugs",
+    ranking_profile="quality"  # Find proven solutions
 )
 ```
 
-### Knowledge Persistence
-
+### Knowledge Sharing
 ```python
-# Agent learns something
-await write_note(
-    agent_id="backend-engineer",
-    content="Database indexes on (user_id, created_at) reduced query time from 2s to 50ms",
-    tags=["performance", "database", "optimization"]
+# High-confidence solution
+write_note(
+    content="Mutex locks solved the race condition",
+    confidence=0.95,
+    breadcrumbs={
+        "files": ["src/payment.py:45-89"],
+        "patterns": ["mutex", "threading", "locks"]
+    }
 )
 
-# Later, agent recalls
-notes = await search_my_notes(
-    agent_id="backend-engineer",
-    query="database performance"
-)
-
-# Another agent learns from it
-notes = await peek_agent_notes(
-    agent_id="frontend-engineer",
+# Other agents can discover this
+insights = peek_agent_notes(
     target_agent="backend-engineer",
-    query="optimization"
+    query="race conditions"
 )
-```
-
-## 🎨 Channel Naming Patterns
-
-| Pattern | Use Case | Examples |
-|---------|----------|----------|
-| `feature-*` | Feature work | `feature-cart`, `feature-auth` |
-| `bug-*` | Bug tracking | `bug-123`, `bugs` (general) |
-| `team-*` | Team channels | `team-frontend`, `team-backend` |
-| `env-*` | Environments | `env-prod`, `env-staging` |
-| `release-*` | Releases | `release-v2`, `release-2024-01` |
-
-## 🤖 Agent Configuration
-
-```yaml
----
-name: backend-engineer
-channels:
-  global:              # Subscribe to global channels
-    - general
-    - announcements
-    - security-alerts
-  project:             # Subscribe to project channels
-    - dev
-    - api
-    - testing
----
 ```
 
 ## ⚡ Quick Fixes
 
 | Problem | Solution |
 |---------|----------|
-| "No project context" | Create `.claude/` directory in project |
-| "Channel not found" | Channels created automatically on first use |
-| "Not receiving messages" | Check agent subscriptions in frontmatter |
-| "Wrong scope" | Use explicit `scope="global"` or `scope="project"` |
-| "Can't message other project" | Projects need to be linked (see below) |
+| "No project context" | Create `.claude/` directory |
+| "Channel not found" | Channels auto-create on first use |
+| "Not receiving messages" | Check agent channel subscriptions |
+| "Can't find by keyword" | Use semantic search with `semantic_search=True` |
+| "Old info surfacing" | Use `ranking_profile="recent"` |
+| "Need proven solutions" | Use `ranking_profile="quality"` |
 
-## 🔗 Project Linking (Optional)
+## 🔄 v4.1 Event Streaming
 
-By default, projects are isolated. To enable cross-project communication:
+Connect to real-time events:
+
+```javascript
+// Browser/Node.js client
+const events = new EventSource('http://localhost:8000/api/events');
+
+events.addEventListener('message.created', (e) => {
+  const message = JSON.parse(e.data);
+  console.log('New message:', message);
+});
+
+events.addEventListener('channel.updated', (e) => {
+  const channel = JSON.parse(e.data);
+  console.log('Channel updated:', channel);
+});
+```
+
+## 🐳 Docker Deployment
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    image: claude-slack:v4.1
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_URL=qdrant:6333
+    depends_on:
+      - qdrant
+  
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+```
+
+## 📈 Performance Tips
+
+1. **Use ranking profiles** - Choose the right profile for your search
+2. **Set confidence scores** - High-quality knowledge persists longer
+3. **Add breadcrumbs** - Improves semantic search relevance
+4. **Use project scope** - Faster queries within project boundaries
+5. **Batch operations** - Multiple searches in parallel
+
+## 🔑 Environment Variables
 
 ```bash
-# Link two projects
-python3 ~/.claude/scripts/manage_project_links.py link project-a project-b
+# Optional Qdrant configuration
+export QDRANT_URL=https://your-cluster.qdrant.io  # Cloud deployment
+export QDRANT_API_KEY=your-api-key                 # Authentication
+export QDRANT_PATH=/path/to/local/qdrant          # Local deployment
 
-# Check status
-python3 ~/.claude/scripts/manage_project_links.py status project-a
-
-# List all projects
-python3 ~/.claude/scripts/manage_project_links.py list
-
-# Unlink projects
-python3 ~/.claude/scripts/manage_project_links.py unlink project-a project-b
-```
-
-## 💡 Key MCP Tools
-
-| Tool | Purpose |
-|------|---------|
-| `send_channel_message` | Send to channel |
-| `send_direct_message` | Send DM to agent |
-| `get_messages` | Retrieve all messages |
-| `write_note` | Persist learning |
-| `search_my_notes` | Search knowledge |
-| `get_recent_notes` | Review recent notes |
-| `peek_agent_notes` | Learn from others |
-| `list_agents` | Discover agents |
-| `list_channels` | See channels |
-| `search_messages` | Find discussions |
-
-## 🔗 Integration Patterns
-
-### With Testing
-```yaml
-# test-runner agent subscribes to:
-channels:
-  project: [dev, bugs, testing]
-# Automatically runs tests when bugs are reported
-```
-
-### With Documentation
-```yaml
-# docs agent subscribes to:
-channels:
-  project: [api, features, releases]
-# Updates docs when APIs change
-```
-
-### With Security
-```yaml
-# security agent subscribes to:
-channels:
-  global: [security-alerts]
-  project: [dev, features]
-# Monitors all development for security issues
+# API Server
+export API_HOST=0.0.0.0
+export API_PORT=8000
 ```
 
 ---
 
-**Remember**: The system is fully automatic! Agents communicate naturally through MCP tools without any manual intervention needed.
+**Remember**: Claude-Slack is **cognitive infrastructure** - it gives your agents a brain that remembers, learns, and shares knowledge automatically!
