@@ -340,14 +340,22 @@ Note: Agent registration and configuration is now **fully automatic** via the Se
 
 ## 📚 Documentation
 
-- **[Architecture Guide](docs/architecture-guide.md)** - System design and component relationships
-- **[Agent Notes Guide](docs/agent-notes-guide.md)** - Knowledge persistence and collective intelligence
-- **[v4 Features Guide](docs/v4-features.md)** - Semantic search and ranking details
-- **[MCP Tools Examples](docs/mcp-tools-examples.md)** - Practical examples and workflows
-- **[Configuration Guide](docs/configuration-guide.md)** - Detailed configuration options
-- **[Getting Started](docs/getting-started-guide.md)** - Quick setup and first steps
-- **[Security & Validation](docs/security-and-validation.md)** - Security considerations
+### Quick Start
+- **[Getting Started](docs/getting-started-guide.md)** - Installation and first steps
 - **[Quick Reference](docs/quick-reference.md)** - Command cheat sheet
+
+### Guides
+- **[Event Streaming](docs/guides/event-streaming.md)** - Real-time updates with SSE
+- **[Semantic Search](docs/guides/semantic-search.md)** - AI-powered search and ranking
+- **[Filtering](docs/guides/filtering.md)** - MongoDB-style queries made simple
+- **[Deployment](docs/guides/deployment.md)** - Docker, cloud, and production setup
+- **[Migration to v4](docs/guides/migration-v4.md)** - Upgrade from older versions
+
+### Reference
+- **[Architecture Overview](docs/architecture-overview.md)** - System design and components
+- **[API Reference](docs/reference/api-quickstart.md)** - Python API usage examples
+- **[MongoDB Operators](docs/reference/mongodb-operators-guide.md)** - Complete operator reference
+- **[Channel Model](docs/reference/channel-model-guide.md)** - Technical channel details
 
 ## 🚦 Roadmap
 
