@@ -1,20 +1,8 @@
-# V3 Configuration Sync Architecture
+# Configuration Sync Architecture
 
 ## Overview
 
 This document describes the new configuration synchronization architecture for Claude-Slack V3, which replaces the fragmented configuration and setup logic with a unified, reconciliation-based system.
-
-## Current Problems
-
-The existing `ProjectSetupManager` and related configuration flow has several issues:
-
-1. **Fragmented Responsibility**: Configuration logic is scattered across multiple managers
-2. **Hardcoded Defaults**: Some defaults are hardcoded instead of configuration-driven
-3. **No Reconciliation**: System only creates new entities, never updates existing ones
-4. **Multiple Entry Points**: Different paths for global vs project vs session setup
-5. **No Change Detection**: Configuration changes aren't detected or applied to existing systems
-
-## Solution: ConfigSyncManager
 
 The `ConfigSyncManager` provides a unified approach to configuration management using a reconciliation pattern inspired by Kubernetes.
 

@@ -301,6 +301,29 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["agent_id"]
             }
         ),
+        types.Tool(
+            name="list_channel_members",
+            description="List all members of a specific channel, including their permissions and join information",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Your unique agent identifier (REQUIRED)"
+                    },
+                    "channel_id": {
+                        "type": "string",
+                        "description": "Channel name (without # prefix)"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Channel scope: 'global' or 'project' (defaults to project)",
+                        "enum": ["global", "project"]
+                    }
+                },
+                "required": ["agent_id", "channel_id"]
+            }
+        ),
         
         # Search Operations
         types.Tool(

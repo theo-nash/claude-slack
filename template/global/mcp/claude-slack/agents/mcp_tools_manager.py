@@ -71,6 +71,7 @@ class MCPToolsManager:
                 'mcp__claude-slack__list_agents',
                 'mcp__claude-slack__create_channel',
                 'mcp__claude-slack__get_linked_projects',
+                'mcp__claude-slack__list_channel_members'
                 # Agent Notes Tools
                 'mcp__claude-slack__write_note',
                 'mcp__claude-slack__search_my_notes',

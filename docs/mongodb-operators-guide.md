@@ -2,7 +2,21 @@
 
 ## Overview
 
-Claude-Slack v4.1 now supports comprehensive MongoDB-style query operators for filtering messages by their nested metadata. This enables powerful, expressive queries on arbitrary JSON structures without any schema registration.
+Claude-Slack v4.1 implements a robust MongoDB-style query system with a modular, backend-agnostic architecture. The system parses MongoDB queries into abstract expression trees that can be converted to different backend formats (SQLite with JSON support, Qdrant vector database). This enables powerful, expressive queries on arbitrary JSON structures without any schema registration.
+
+## Architecture
+
+The filtering system uses a three-tier architecture:
+
+```
+MongoDB Query → Parser → Abstract Expression Tree → Backend Converter → Native Query
+```
+
+### Components
+- **MongoFilterParser** (`filters/base.py`): Parses MongoDB queries into abstract trees
+- **SQLiteFilterBackend** (`filters/sqlite_backend.py`): Converts to SQLite JSON queries  
+- **QdrantFilterBackend** (`filters/qdrant_backend.py`): Converts to Qdrant filters
+- **MongoToSQLFilter** (`mongo_filter.py`): Legacy direct MongoDB→SQL converter
 
 ## Supported Operators
 
@@ -197,33 +211,38 @@ results = await api.search_messages(
 
 ## Implementation Notes
 
-### Automatic Array Length Indexing
+### Backend-Specific Behavior
 
-When messages are stored, the system automatically extracts and indexes array lengths to support the `$size` operator:
+#### SQLite Backend
+- Uses SQLite's JSON functions (`json_extract`, `json_each`, `json_array_length`)
+- Direct fields (`channel_id`, `sender_id`, `content`, `timestamp`, `confidence`) bypass JSON extraction
+- Comparison operators cast JSON values to appropriate SQL types (REAL, INTEGER, TEXT)
+- `$regex` falls back to LIKE pattern matching (not full regex without extension)
+- `$text` requires FTS5 setup or falls back to LIKE
 
-```python
-# Original metadata
-{
-    "files": ["a.py", "b.py", "c.py"],
-    "tags": ["security", "auth"]
-}
+#### Qdrant Backend  
+- Converts to native Qdrant Filter objects
+- Automatically adds `metadata.` prefix for non-root fields
+- `$all` operator creates multiple AND conditions
+- `$size` uses special `__len` field suffix
+- Timestamps are converted from ISO strings to Unix timestamps
 
-# Additional indexed fields (automatic)
-{
-    "metadata.files__len": 3,
-    "metadata.tags__len": 2
-}
-```
+### Security Features
+- Maximum nesting depth protection (default 10 levels) prevents DoS attacks
+- Parameter binding prevents SQL injection
+- Input validation at multiple levels
 
 ### Field Path Resolution
 
 - Fields are automatically prefixed with `metadata.` if not already present
-- System fields (`channel_id`, `sender_id`, `confidence`) don't get prefixed
+- System fields (`channel_id`, `sender_id`, `confidence`, `timestamp`) don't get prefixed
 - Dot notation works for arbitrary nesting depth
+- Both backends handle nested paths consistently
 
 ### Query Optimization
 
-- Qdrant handles all these operators natively without transformation
+- Qdrant handles all operators natively without transformation
+- SQLite uses indexed JSON extraction where possible
 - No schema registration required
 - Queries execute in < 50ms for typical datasets
 
@@ -240,10 +259,12 @@ When messages are stored, the system automatically extracts and indexes array le
 ## Best Practices
 
 1. **Use specific operators**: `$gte` is more efficient than `$not` + `$lt`
-2. **Index array lengths**: Automatic for `$size` support
-3. **Combine filters**: Use `$and` explicitly for clarity
-4. **Leverage dot notation**: Query nested fields directly
-5. **Test complex queries**: Use the test script to validate
+2. **Prefer native operators**: Use operators that map directly to backend capabilities
+3. **Combine filters efficiently**: Use `$and` explicitly for clarity
+4. **Leverage dot notation**: Query nested fields directly without schema registration
+5. **Test complex queries**: Validate with the comprehensive test suite
+6. **Consider backend differences**: SQLite for structural queries, Qdrant for semantic search
+7. **Avoid deep nesting**: Stay within the 10-level default depth limit
 
 ## Migration from v4.0
 
@@ -269,12 +290,23 @@ results = await api.search_messages(
 )
 ```
 
-## Future Operators (Roadmap)
+## Implementation Status
 
-These operators require SQLite post-filtering and will be added later:
+### Fully Supported (Both Backends)
+✅ All comparison operators (`$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$between`)  
+✅ All logical operators (`$and`, `$or`, `$not`)  
+✅ Array operators (`$in`, `$nin`, `$contains`, `$not_contains`, `$all`, `$size`)  
+✅ Existence operators (`$exists`, `$null`, `$empty`)  
 
-- `$elemMatch` - Complex array element matching
-- `$where` - JavaScript expressions
-- `$expr` - Expression evaluation
-- `$jsonSchema` - Schema validation
-- Aggregation pipeline operators
+### Partially Supported
+⚠️ `$regex` - SQLite uses LIKE pattern matching, Qdrant has full support  
+⚠️ `$text` - Requires FTS5 setup in SQLite, native in Qdrant
+
+### Not Implemented
+❌ `$elemMatch` - Complex array element matching  
+❌ `$where` - JavaScript expressions (security risk)  
+❌ `$expr` - Expression evaluation  
+❌ `$type` - Type checking  
+❌ `$mod` - Modulo operation  
+❌ Aggregation operators (`$sum`, `$avg`, `$min`, `$max`)  
+❌ Geospatial operators (not applicable to use case)

@@ -74,6 +74,7 @@ default_mcp_tools:
   - join_channel           # v3: Join open channels or accept invites
   - leave_channel          # v3: Leave if permissions allow
   - list_my_channels       # v3: Shows channels where agent is member
+  - list_channel_members   # v4.1: List all members of a specific channel
   
   # Messaging
   - send_channel_message

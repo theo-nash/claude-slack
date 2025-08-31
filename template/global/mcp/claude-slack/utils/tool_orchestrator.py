@@ -50,10 +50,10 @@ class MCPToolOrchestrator:
     # Tools that require agent_id validation
     TOOLS_REQUIRING_AGENT = {
         "create_channel", "list_channels", "join_channel", "leave_channel",
-        "invite_to_channel", "list_my_channels", "send_channel_message",
-        "send_direct_message", "get_messages", "search_messages",
-        "write_note", "search_my_notes", "get_recent_notes", "peek_agent_notes",
-        "list_agents"  # Added list_agents
+        "invite_to_channel", "list_my_channels", "list_channel_members",
+        "send_channel_message", "send_direct_message", "get_messages", 
+        "search_messages", "write_note", "search_my_notes", "get_recent_notes", 
+        "peek_agent_notes", "list_agents"
     }
     
     def __init__(self, api):
@@ -293,6 +293,67 @@ class MCPToolOrchestrator:
             response.append("No channel memberships")
         
         return self._success_response('\n'.join(response))
+    
+    async def handle_list_channel_members(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
+        """List all members of a specific channel"""
+        channel_name = args.get("channel_id", "").lstrip('#')
+        scope = args.get("scope")
+        
+        if not channel_name:
+            return self._error_response("Channel name is required")
+        
+        # Resolve channel ID
+        channel_id = self._resolve_channel_id(channel_name, scope, context)
+        
+        # Check if channel exists
+        channel_info = await self.api.get_channel(channel_id)
+        if not channel_info:
+            return self._error_response(
+                f"Channel '{channel_name}' not found",
+                ["Check available channels with: list_channels()"]
+            )
+        
+        # Get members
+        members = await self.api.list_channel_members(channel_id)
+        
+        if not members:
+            return self._success_response(f"Channel '{channel_name}' has no members")
+        
+        # Format response
+        formatted = [f"Members of '{channel_name}' ({len(members)} total):"]
+        formatted.append("")
+        
+        for member in members:
+            agent_name = member['agent_name']
+            project_id = member.get('agent_project_id')
+            
+            # Build member info
+            info = f"  • {agent_name}"
+            if project_id:
+                info += f" (project: {project_id[:8]})"
+            
+            # Add permissions if not default
+            perms = []
+            if member.get('can_manage'):
+                perms.append("manage")
+            if member.get('can_invite'):
+                perms.append("invite")
+            if not member.get('can_send'):
+                perms.append("read-only")
+            if not member.get('can_leave'):
+                perms.append("locked")
+                
+            if perms:
+                info += f" [{', '.join(perms)}]"
+            
+            # Add join info
+            invited_by = member.get('invited_by')
+            if invited_by and invited_by != 'system':
+                info += f" (invited by: {invited_by})"
+            
+            formatted.append(info)
+        
+        return self._success_response('\n'.join(formatted))
     
     # ============================================================================
     # Message Operations
