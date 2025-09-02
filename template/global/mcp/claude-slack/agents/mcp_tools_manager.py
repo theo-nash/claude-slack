@@ -88,6 +88,75 @@ class MCPToolsManager:
         return slack_tools
     
     @staticmethod
+    def get_agent_id_instruction(agent_name: str) -> str:
+        """
+        Get the agent ID instruction text for an agent.
+        
+        Args:
+            agent_name: Name of the agent (file stem)
+            
+        Returns:
+            The instruction text to append to agent file
+        """
+        return f"""
+
+## Claude-Slack Integration
+
+When using any claude-slack MCP tools (tools starting with `mcp__claude-slack__`), you MUST provide your agent_id.
+Your agent_id is: {agent_name}
+
+Always use this exact agent_id when calling claude-slack tools that require an agent_id parameter."""
+    
+    @staticmethod
+    def ensure_agent_has_id_instruction(agent_file_path: str, agent_name: str = None) -> bool:
+        """
+        Ensure an agent file has the agent_id instruction at the end.
+        
+        Args:
+            agent_file_path: Path to the agent .md file
+            agent_name: Optional agent name from frontmatter. If not provided, will parse it.
+            
+        Returns:
+            True if instruction was added, False if already present or error
+        """
+        logger = MCPToolsManager._get_logger()
+        
+        agent_path = Path(agent_file_path)
+        if not agent_path.exists():
+            return False
+        
+        try:
+            # Get agent name from frontmatter if not provided
+            if not agent_name:
+                if FrontmatterParser:
+                    agent_data = FrontmatterParser.parse_file(str(agent_path))
+                    agent_name = agent_data.get('name', agent_path.stem)
+                else:
+                    agent_name = agent_path.stem
+            
+            with open(agent_path, 'r') as f:
+                content = f.read()
+            
+            # Check if agent_id instruction already exists
+            agent_id_marker = f"Your agent_id is: {agent_name}"
+            if agent_id_marker in content:
+                return False
+            
+            # Add agent_id instruction at the end
+            agent_id_instruction = MCPToolsManager.get_agent_id_instruction(agent_name)
+            new_content = content.rstrip() + agent_id_instruction
+            
+            with open(agent_path, 'w') as f:
+                f.write(new_content)
+            
+            logger.info(f"Added agent_id instruction to {agent_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding agent_id instruction to {agent_name}: {e}")
+            return False
+    
+    @staticmethod
     def ensure_agent_has_mcp_tools(agent_file_path: str, config_manager=None) -> bool:
         """
         Ensure an agent has access to claude-slack MCP tools.
@@ -109,8 +178,6 @@ class MCPToolsManager:
             logger.debug(f"Agent file not found: {agent_file_path}")
             return False
         
-        agent_name = agent_path.stem
-        
         # Get MCP tools list
         slack_tools = MCPToolsManager.get_default_mcp_tools(config_manager)
         
@@ -119,6 +186,9 @@ class MCPToolsManager:
             if FrontmatterParser:
                 # Parse the agent file using FrontmatterParser
                 agent_data = FrontmatterParser.parse_file(str(agent_path))
+                
+                # Get agent name from frontmatter
+                agent_name = agent_data.get('name', agent_path.stem)
                 
                 # Check if there was an error parsing
                 if 'error' in agent_data:
@@ -131,7 +201,8 @@ class MCPToolsManager:
                 # If tools is 'All' or '*', agent already has full access
                 if existing_tools == 'All':
                     logger.debug(f"Agent {agent_name} already has full tool access")
-                    return False
+                    # Still check if agent_id instruction needs to be added
+                    return MCPToolsManager.ensure_agent_has_id_instruction(str(agent_path), agent_name)
                 
                 # Ensure existing_tools is a list
                 if not isinstance(existing_tools, list):
@@ -142,7 +213,8 @@ class MCPToolsManager:
                 
                 if not missing_tools:
                     logger.debug(f"Agent {agent_name} already has all MCP tools")
-                    return False
+                    # Still check if agent_id instruction needs to be added
+                    return MCPToolsManager.ensure_agent_has_id_instruction(str(agent_path), agent_name)
                 
                 # Need to update the file - read original content
                 with open(agent_path, 'r') as f:
@@ -192,6 +264,15 @@ class MCPToolsManager:
                 
                 # Write back
                 new_content = '\n'.join(lines)
+                
+                # Check if agent_id instruction already exists
+                agent_id_marker = f"Your agent_id is: {agent_name}"
+                if agent_id_marker not in new_content:
+                    # Add agent_id instruction at the end
+                    agent_id_instruction = MCPToolsManager.get_agent_id_instruction(agent_name)
+                    new_content = new_content.rstrip() + agent_id_instruction
+                    logger.info(f"Added agent_id instruction to {agent_name}")
+                
                 with open(agent_path, 'w') as f:
                     f.write(new_content)
                 
