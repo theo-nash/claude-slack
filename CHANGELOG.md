@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.1] - 2025-09-02
+
+### Improvements
+
+#### Enhanced Agent Integration
+- **Tool Parsing**: FrontmatterParser now properly parses tools into lists or 'All'
+- **MCPToolsManager Integration**: Uses FrontmatterParser for robust frontmatter reading
+- **Standard Format**: Tools are written as comma-separated lists (Anthropic standard)
+- **Agent ID Instructions**: Automatically adds agent_id instructions to agent files
+  - Uses agent name from frontmatter (not file stem)
+  - Critical for claude-slack MCP tool identification
+  - Prevents duplicate instructions on repeated runs
+
+#### Bug Fixes
+- Fixed missing comma in default MCP tools list
+- Improved handling of various tool format conversions (YAML lists, brackets, etc.)
+
 ## [4.1.0] - 2025-08-31
 
 ### 🚀 Major Release: Enterprise-Ready with MongoDB Filtering & Event Streaming
