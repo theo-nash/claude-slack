@@ -158,6 +158,55 @@ class FrontmatterParser:
         return text
     
     @staticmethod
+    def _parse_tools(tools_value: Any) -> Any:
+        """
+        Parse tools value into a list of tool names or special value
+        
+        Args:
+            tools_value: Raw tools value from frontmatter
+            
+        Returns:
+            Either a string ('All', '*') or a list of tool names
+        """
+        if tools_value is None:
+            return 'All'
+        
+        # Handle special values that mean "all tools"
+        if isinstance(tools_value, str):
+            normalized = tools_value.strip().strip('"').strip("'")
+            if normalized in ['All', 'all', '*']:
+                return 'All'
+            
+            # Check for list format: [tool1, tool2]
+            if normalized.startswith('[') and normalized.endswith(']'):
+                tools_str = normalized[1:-1]
+                if tools_str.strip():
+                    return [t.strip().strip('"').strip("'") for t in tools_str.split(',') if t.strip()]
+                return []
+            
+            # Check for comma-separated format
+            if ',' in normalized:
+                return [t.strip().strip('"').strip("'") for t in normalized.split(',') if t.strip()]
+            
+            # Single tool
+            if normalized:
+                return [normalized]
+            return []
+        
+        # Handle list format
+        if isinstance(tools_value, list):
+            tools = []
+            for tool in tools_value:
+                if isinstance(tool, str):
+                    tool = tool.strip().strip('"').strip("'")
+                    if tool:
+                        tools.append(tool)
+            return tools if tools else []
+        
+        # Default to All for any other type
+        return 'All'
+    
+    @staticmethod
     def _normalize_agent_data(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize and validate agent data from frontmatter
@@ -173,7 +222,7 @@ class FrontmatterParser:
         agent_data = {
             'name': frontmatter.get('name', 'unknown'),
             'description': frontmatter.get('description', ''),
-            'tools': frontmatter.get('tools', 'All')
+            'tools': FrontmatterParser._parse_tools(frontmatter.get('tools', 'All'))
         }
         
         # Extract channels - support both old and new formats

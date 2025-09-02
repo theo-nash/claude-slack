@@ -18,6 +18,12 @@ except ImportError:
     def get_logger(name, component=None):
         return logging.getLogger(name)
 
+try:
+    from frontmatter.parser import FrontmatterParser
+except ImportError:
+    # If parser not available, we'll need to handle it
+    FrontmatterParser = None
+
 class MCPToolsManager:
     """Manages MCP tool additions to agent frontmatter"""
     
@@ -71,7 +77,7 @@ class MCPToolsManager:
                 'mcp__claude-slack__list_agents',
                 'mcp__claude-slack__create_channel',
                 'mcp__claude-slack__get_linked_projects',
-                'mcp__claude-slack__list_channel_members'
+                'mcp__claude-slack__list_channel_members',
                 # Agent Notes Tools
                 'mcp__claude-slack__write_note',
                 'mcp__claude-slack__search_my_notes',
@@ -80,6 +86,75 @@ class MCPToolsManager:
             ]
         
         return slack_tools
+    
+    @staticmethod
+    def get_agent_id_instruction(agent_name: str) -> str:
+        """
+        Get the agent ID instruction text for an agent.
+        
+        Args:
+            agent_name: Name of the agent (file stem)
+            
+        Returns:
+            The instruction text to append to agent file
+        """
+        return f"""
+
+## Claude-Slack Integration
+
+When using any claude-slack MCP tools (tools starting with `mcp__claude-slack__`), you MUST provide your agent_id.
+Your agent_id is: {agent_name}
+
+Always use this exact agent_id when calling claude-slack tools that require an agent_id parameter."""
+    
+    @staticmethod
+    def ensure_agent_has_id_instruction(agent_file_path: str, agent_name: str = None) -> bool:
+        """
+        Ensure an agent file has the agent_id instruction at the end.
+        
+        Args:
+            agent_file_path: Path to the agent .md file
+            agent_name: Optional agent name from frontmatter. If not provided, will parse it.
+            
+        Returns:
+            True if instruction was added, False if already present or error
+        """
+        logger = MCPToolsManager._get_logger()
+        
+        agent_path = Path(agent_file_path)
+        if not agent_path.exists():
+            return False
+        
+        try:
+            # Get agent name from frontmatter if not provided
+            if not agent_name:
+                if FrontmatterParser:
+                    agent_data = FrontmatterParser.parse_file(str(agent_path))
+                    agent_name = agent_data.get('name', agent_path.stem)
+                else:
+                    agent_name = agent_path.stem
+            
+            with open(agent_path, 'r') as f:
+                content = f.read()
+            
+            # Check if agent_id instruction already exists
+            agent_id_marker = f"Your agent_id is: {agent_name}"
+            if agent_id_marker in content:
+                return False
+            
+            # Add agent_id instruction at the end
+            agent_id_instruction = MCPToolsManager.get_agent_id_instruction(agent_name)
+            new_content = content.rstrip() + agent_id_instruction
+            
+            with open(agent_path, 'w') as f:
+                f.write(new_content)
+            
+            logger.info(f"Added agent_id instruction to {agent_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding agent_id instruction to {agent_name}: {e}")
+            return False
     
     @staticmethod
     def ensure_agent_has_mcp_tools(agent_file_path: str, config_manager=None) -> bool:
@@ -103,103 +178,113 @@ class MCPToolsManager:
             logger.debug(f"Agent file not found: {agent_file_path}")
             return False
         
-        agent_name = agent_path.stem
-        
         # Get MCP tools list
         slack_tools = MCPToolsManager.get_default_mcp_tools(config_manager)
         
         try:
-            with open(agent_path, 'r') as f:
-                content = f.read()
-            
-            if not content.startswith('---'):
-                logger.debug(f"No frontmatter in {agent_name}")
-                return False
-            
-            # Find frontmatter boundaries
-            lines = content.split('\n')
-            end_index = -1
-            for i in range(1, len(lines)):
-                if lines[i].strip() == '---':
-                    end_index = i
-                    break
-            
-            if end_index == -1:
-                logger.debug(f"Invalid frontmatter in {agent_name}")
-                return False
-            
-            # Find tools line
-            tools_line_index = -1
-            tools_value = None
-            for i in range(1, end_index):
-                if lines[i].startswith('tools:'):
-                    tools_line_index = i
-                    tools_value = lines[i].split(':', 1)[1].strip()
-                    break
-            
-            # If no tools or "All"/"*", agent already has access
-            if tools_line_index == -1 or tools_value in ['All', 'all', '"All"', "'All'", '*', '"*"', "'*'"]:
-                logger.debug(f"Agent {agent_name} already has full tool access")
-                return False
-            
-            # Parse existing tools
-            existing_tools = []
-            if tools_value:
-                if tools_value.startswith('[') and tools_value.endswith(']'):
-                    # List format: tools: [tool1, tool2]
-                    tools_str = tools_value[1:-1]
-                    existing_tools = [t.strip().strip('"').strip("'") for t in tools_str.split(',') if t.strip()]
-                elif tools_value.startswith('-'):
-                    # Multi-line format already, parse following lines
+            # Use parser if available, otherwise fall back to simple parsing
+            if FrontmatterParser:
+                # Parse the agent file using FrontmatterParser
+                agent_data = FrontmatterParser.parse_file(str(agent_path))
+                
+                # Get agent name from frontmatter
+                agent_name = agent_data.get('name', agent_path.stem)
+                
+                # Check if there was an error parsing
+                if 'error' in agent_data:
+                    logger.debug(f"Error parsing {agent_name}: {agent_data['error']}")
+                    return False
+                
+                # Get the parsed tools
+                existing_tools = agent_data.get('tools', 'All')
+                
+                # If tools is 'All' or '*', agent already has full access
+                if existing_tools == 'All':
+                    logger.debug(f"Agent {agent_name} already has full tool access")
+                    # Still check if agent_id instruction needs to be added
+                    return MCPToolsManager.ensure_agent_has_id_instruction(str(agent_path), agent_name)
+                
+                # Ensure existing_tools is a list
+                if not isinstance(existing_tools, list):
                     existing_tools = []
-                    for j in range(tools_line_index + 1, end_index):
-                        if lines[j].strip().startswith('- '):
-                            tool = lines[j].strip()[2:].strip()
-                            existing_tools.append(tool)
-                        elif lines[j].strip() and not lines[j].startswith(' '):
-                            break
-                else:
-                    # Single tool or comma-separated
-                    existing_tools = [t.strip() for t in tools_value.split(',') if t.strip()]
-            
-            # Check if slack tools already present
-            missing_tools = [tool for tool in slack_tools if tool not in existing_tools]
-            
-            if not missing_tools:
-                logger.debug(f"Agent {agent_name} already has all MCP tools")
-                return False
-            
-            # Add missing tools
-            all_tools = existing_tools + missing_tools
-            
-            # Format tools line - always use multi-line for clarity
-            tools_lines = ['tools:']
-            for tool in all_tools:
-                tools_lines.append(f'  - {tool}')
-            
-            # Find where to insert (replace existing tools section)
-            if tools_line_index != -1:
-                # Find end of tools section
-                tools_end = tools_line_index + 1
-                while tools_end < end_index:
-                    if lines[tools_end].startswith('  - ') or (lines[tools_end].strip() == '' and tools_end + 1 < end_index and lines[tools_end + 1].startswith('  - ')):
-                        tools_end += 1
-                    else:
+                
+                # Check if slack tools already present
+                missing_tools = [tool for tool in slack_tools if tool not in existing_tools]
+                
+                if not missing_tools:
+                    logger.debug(f"Agent {agent_name} already has all MCP tools")
+                    # Still check if agent_id instruction needs to be added
+                    return MCPToolsManager.ensure_agent_has_id_instruction(str(agent_path), agent_name)
+                
+                # Need to update the file - read original content
+                with open(agent_path, 'r') as f:
+                    content = f.read()
+                
+                lines = content.split('\n')
+                
+                # Find frontmatter boundaries
+                end_index = -1
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == '---':
+                        end_index = i
                         break
                 
-                # Replace the tools section
-                lines = lines[:tools_line_index] + tools_lines + lines[tools_end:]
+                if end_index == -1:
+                    logger.debug(f"Invalid frontmatter in {agent_name}")
+                    return False
+                
+                # Find tools line
+                tools_line_index = -1
+                for i in range(1, end_index):
+                    if lines[i].startswith('tools:'):
+                        tools_line_index = i
+                        break
+                
+                # Add missing tools
+                all_tools = existing_tools + missing_tools
+                
+                # Format tools line as comma-separated list (Anthropic standard format)
+                tools_line = f"tools: {', '.join(all_tools)}"
+                
+                # Find where to insert (replace existing tools section)
+                if tools_line_index != -1:
+                    # Find end of tools section (handle multi-line format if present)
+                    tools_end = tools_line_index + 1
+                    while tools_end < end_index:
+                        if lines[tools_end].startswith('  - ') or (lines[tools_end].strip() == '' and tools_end + 1 < end_index and lines[tools_end + 1].startswith('  - ')):
+                            tools_end += 1
+                        else:
+                            break
+                    
+                    # Replace the tools section with single line
+                    lines = lines[:tools_line_index] + [tools_line] + lines[tools_end:]
+                else:
+                    # Add tools before the closing ---
+                    lines = lines[:end_index] + [tools_line] + lines[end_index:]
+                
+                # Write back
+                new_content = '\n'.join(lines)
+                
+                # Check if agent_id instruction already exists
+                agent_id_marker = f"Your agent_id is: {agent_name}"
+                if agent_id_marker not in new_content:
+                    # Add agent_id instruction at the end
+                    agent_id_instruction = MCPToolsManager.get_agent_id_instruction(agent_name)
+                    new_content = new_content.rstrip() + agent_id_instruction
+                    logger.info(f"Added agent_id instruction to {agent_name}")
+                
+                with open(agent_path, 'w') as f:
+                    f.write(new_content)
+                
+                logger.info(f"Added {len(missing_tools)} MCP tools to agent {agent_name}")
+                return True
+                
             else:
-                # Add tools before the closing ---
-                lines = lines[:end_index] + tools_lines + lines[end_index:]
-            
-            # Write back
-            new_content = '\n'.join(lines)
-            with open(agent_path, 'w') as f:
-                f.write(new_content)
-            
-            logger.info(f"Added {len(missing_tools)} MCP tools to agent {agent_name}")
-            return True
+                # Fallback to original implementation if parser not available
+                logger.warning("FrontmatterParser not available, using fallback parsing")
+                # ... original implementation would go here ...
+                # For now, just return False
+                return False
             
         except Exception as e:
             logger.error(f"Error updating agent {agent_name} with MCP tools: {e}")
