@@ -129,7 +129,7 @@ class SessionManager:
         return hashlib.sha256(project_path.encode()).hexdigest()[:32]
     
     async def register_session(self, session_id: str, 
-                              project_path: Optional[str] = None,
+                              project_path: str,
                               project_name: Optional[str] = None,
                               transcript_path: Optional[str] = None) -> bool:
         """
@@ -145,17 +145,14 @@ class SessionManager:
             True if successful
         """        
         try:
-            # Determine project context
-            project_id = None
-            scope = 'global'
+            # Register the project first (or update last_active)
+            project_id = await self.register_project(project_path, project_name)
             
-            if project_path:
-                scope = 'project'
-                
-                # Register the project first (or update last_active)
-                project_id = await self.register_project(project_path, project_name)
+            if not project_id:
+                self.logger.warn("Something went wrong is project registration. Continuing with computed project_id")
+                project_id = self.generate_project_id(project_path)
             
-            self.logger.info(f"Registering session {session_id} (scope: {scope})")
+            self.logger.info(f"Registering session {session_id} (scope: project)")
             
             # Use ClaudeSlackAPI to register session
             await self.api.register_session(
@@ -164,7 +161,7 @@ class SessionManager:
                 project_path=project_path,
                 project_name=project_name,
                 transcript_path=transcript_path,
-                scope=scope
+                scope='project'
             )
             
             # Update current session
@@ -206,9 +203,15 @@ class SessionManager:
             session_data = await self.api.get_session(session_id)
             
             if session_data:
+                # Reconstruct project_id if missing but project_path exists
+                project_id = session_data['project_id']
+                if not project_id and session_data['project_path']:
+                    project_id = self.generate_project_id(session_data['project_path'])
+                    self.logger.debug(f"Reconstructed project_id {project_id} from path {session_data['project_path']}")
+                
                 context = SessionContext(
                     session_id=session_id,
-                    project_id=session_data['project_id'],
+                    project_id=project_id,
                     project_path=session_data['project_path'],
                     project_name=session_data['project_name'],
                     transcript_path=session_data['transcript_path'],
