@@ -45,7 +45,19 @@ class ClaudeSlackAPI:
         """
         # Default database path
         if db_path is None:
-            db_path = os.path.expanduser("~/.claude/claude-slack/data/claude-slack.db")
+            config_dir = os.environ.get('CLAUDE_CONFIG_DIR')
+            if config_dir:
+                config_dir = Path(config_dir).expanduser().resolve()
+            else:
+                config_dir = Path.home() / '.claude'
+                
+            claude_slack_dir = os.environ.get('CLAUDE_SLACK_DIR')
+            if claude_slack_dir:
+                claude_slack_dir = Path(claude_slack_dir)
+            else:
+                claude_slack_dir = config_dir / 'claude-slack'
+                
+            db_path = claude_slack_dir / 'data' / 'claude-slack.db'
         
         self.db_path = db_path
         
