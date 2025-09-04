@@ -9,7 +9,8 @@ while maintaining privacy and searchability.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
 from datetime import datetime
 
 
@@ -144,6 +145,8 @@ class NotesManager:
                           agent_project_id: Optional[str],
                           query: Optional[str] = None,
                           tags: Optional[List[str]] = None,
+                          since: Optional[Union[datetime, str]] = None,
+                          until: Optional[Union[datetime, str]] = None,
                           limit: int = 50) -> List[Dict[str, Any]]:
         """
         Search an agent's notes using semantic search if available.
@@ -153,6 +156,8 @@ class NotesManager:
             agent_project_id: Agent's project ID
             query: Optional text to search for (uses semantic search if available)
             tags: Optional tags to filter by
+            since: Only return notes after this timestamp (datetime or ISO string)
+            until: Only return notes before this timestamp (datetime or ISO string)
             limit: Maximum number of results
             
         Returns:
@@ -180,6 +185,12 @@ class NotesManager:
                     {"tags": {"$contains": tag}} for tag in tags
                 ]
         
+        # Parse date strings if needed
+        if since and isinstance(since, str):
+            since = datetime.fromisoformat(since)
+        if until and isinstance(until, str):
+            until = datetime.fromisoformat(until)
+        
         # Use search_agent_messages for permission-safe searching
         # This will use semantic search if query is provided and Qdrant is available
         messages = await self.store.search_agent_messages(
@@ -188,6 +199,8 @@ class NotesManager:
             query=query,
             channel_ids=[channel_id],  # Only search in notes channel
             metadata_filters=metadata_filters,
+            since=since,
+            until=until,
             limit=limit
         )
         

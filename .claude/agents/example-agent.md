@@ -92,3 +92,10 @@ await mcp__claude-slack__send_channel_message({
     content: "Hello from example-agent!"
 })
 ```
+
+## Claude-Slack Integration
+
+When using any claude-slack MCP tools (tools starting with `mcp__claude-slack__`), you MUST provide your agent_id.
+Your agent_id is: example-agent
+
+Always use this exact agent_id when calling claude-slack tools that require an agent_id parameter.

@@ -198,15 +198,16 @@ def main():
                 
         # For MCP tools, the tool_name might be the MCP server name
         # and the actual tool would be in tool_input
-        is_slack_tool = (
-            'claude_slack' in tool_name or 
-            'claude-slack' in tool_name or
-            (tool_name == 'mcp' and 'claude-slack' in str(tool_input))
-        )
+        # We will let the matcher take care of this to make it extensible to other uses
+        # is_slack_tool = (
+        #     'claude_slack' in tool_name or 
+        #     'claude-slack' in tool_name or
+        #     (tool_name == 'mcp' and 'claude-slack' in str(tool_input))
+        # )
         
-        if not is_slack_tool:
-            logger.debug(f"Not a slack tool, passing through: {tool_name}")
-            return 0
+        # if not is_slack_tool:
+        #     logger.debug(f"Not a slack tool, passing through: {tool_name}")
+        #     return 0
                 
         logger.info(f"Processing slack tool: {tool_name}")
         

@@ -11,11 +11,13 @@ import sqlite3
 import aiosqlite
 import hashlib
 import json
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from .db_helpers import with_connection, aconnect
 from .filters import MongoFilterParser, SQLiteFilterBackend, FilterValidator
+from ..utils.time_utils import now_timestamp, to_timestamp, from_timestamp, format_timestamp
 
 # Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -653,13 +655,16 @@ class SQLiteStore:
         if metadata and isinstance(metadata, dict):
             confidence = metadata.get('confidence')
         
-        # Insert the message
+        # Get current Unix timestamp
+        timestamp = now_timestamp()
+        
+        # Insert the message with explicit timestamp
         cursor = await conn.execute("""
             INSERT INTO messages 
-            (channel_id, sender_id, sender_project_id, content, metadata, thread_id, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (channel_id, sender_id, sender_project_id, content, metadata, thread_id, confidence, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (channel_id, sender_id, sender_project_id, content,
-              json.dumps(metadata) if metadata else None, thread_id, confidence))
+              json.dumps(metadata) if metadata else None, thread_id, confidence, timestamp))
         
         message_id = cursor.lastrowid
         
@@ -780,10 +785,10 @@ class SQLiteStore:
             query += f" AND m.sender_id IN ({placeholders})"
             params.extend(sender_ids)
         
-        # Add time filter if specified
+        # Add time filter if specified - now using Unix timestamps
         if since:
             query += " AND m.timestamp > ?"
-            params.append(since.isoformat() if isinstance(since, datetime) else since)
+            params.append(to_timestamp(since))
         
         # Order by timestamp descending and limit
         query += " ORDER BY m.timestamp DESC LIMIT ?"
@@ -1057,14 +1062,13 @@ class SQLiteStore:
                                actions_taken: str, success: bool,
                                error_message: Optional[str] = None):
         """Track configuration sync in history table"""
-        from datetime import datetime, timezone
         await conn.execute("""
             INSERT INTO config_sync_history
             (config_hash, config_snapshot, scope, project_id, 
              actions_taken, success, error_message, applied_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (config_hash, config_snapshot, scope, project_id,
-              actions_taken, success, error_message, datetime.now(timezone.utc).isoformat()))
+              actions_taken, success, error_message, now_timestamp()))
     
     @with_connection(writer=False)
     async def get_last_sync_hash(self, conn) -> Optional[str]:
@@ -1652,14 +1656,14 @@ class SQLiteStore:
             where_conditions.append("m.confidence >= ?")
             params.append(min_confidence)
         
-        # Add time range filters
+        # Add time range filters - now using Unix timestamps
         if since:
             where_conditions.append("m.timestamp >= ?")
-            params.append(since.isoformat() if isinstance(since, datetime) else since)
+            params.append(to_timestamp(since))
         
         if until:
             where_conditions.append("m.timestamp <= ?")
-            params.append(until.isoformat() if isinstance(until, datetime) else until)
+            params.append(to_timestamp(until))
         
         # Parse and apply MongoDB-style metadata filters
         if metadata_filters:

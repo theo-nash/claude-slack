@@ -146,14 +146,15 @@ class MessageStore:
             try:
                 # Get the timestamp from the just-created message
                 message = await self.sqlite.get_message(message_id)
-                timestamp = datetime.fromisoformat(message['timestamp'])
+                # Timestamp is now stored as Unix timestamp (float)
+                timestamp = message['timestamp']  # Already a float/Unix timestamp
                 
                 await self.qdrant.index_message(
                     message_id=message_id,
                     content=content,
                     channel_id=channel_id,
                     sender_id=sender_id,
-                    timestamp=timestamp,
+                    timestamp=timestamp,  # Pass as-is, will be handled by index_message
                     metadata=metadata,
                     confidence=confidence,
                     sender_project_id=sender_project_id
@@ -295,6 +296,8 @@ class MessageStore:
                              sender_ids: Optional[List[str]] = None,
                              metadata_filters: Optional[Dict[str, Any]] = None,
                              min_confidence: Optional[float] = None,
+                             since: Optional[datetime] = None,
+                             until: Optional[datetime] = None,
                              limit: int = 20,
                              ranking_profile: Union[str, RankingProfile, Dict] = "balanced") -> List[Dict]:
         """
@@ -312,6 +315,8 @@ class MessageStore:
             sender_ids: Filter by senders
             metadata_filters: Arbitrary nested metadata filters with MongoDB-style operators
             min_confidence: Minimum confidence threshold
+            since: Only return messages after this timestamp
+            until: Only return messages before this timestamp
             limit: Maximum results
             ranking_profile: Ranking profile for semantic search
             
@@ -341,6 +346,8 @@ class MessageStore:
                 sender_ids=sender_ids,
                 metadata_filters=metadata_filters,
                 min_confidence=min_confidence,
+                since=since,
+                until=until,
                 limit=limit,
                 ranking_profile=ranking_profile
             )
@@ -352,6 +359,8 @@ class MessageStore:
                 sender_ids=sender_ids,
                 metadata_filters=metadata_filters,
                 min_confidence=min_confidence,
+                since=since,
+                until=until,
                 limit=limit
             )
         
@@ -366,6 +375,8 @@ class MessageStore:
                                    sender_ids: Optional[List[str]] = None,
                                    metadata_filters: Optional[Dict[str, Any]] = None,
                                    min_confidence: Optional[float] = None,
+                                   since: Optional[datetime] = None,
+                                   until: Optional[datetime] = None,
                                    limit: int = 20,
                                    ranking_profile: Union[str, RankingProfile, Dict] = "balanced") -> List[Dict]:
         """
@@ -436,6 +447,8 @@ class MessageStore:
                 sender_ids=sender_ids,
                 metadata_filters=metadata_filters,
                 min_confidence=min_confidence,
+                since=since,
+                until=until,
                 limit=limit,
                 ranking_profile=ranking_profile
             )
@@ -449,6 +462,8 @@ class MessageStore:
                 sender_ids=sender_ids,
                 metadata_filters=metadata_filters,
                 min_confidence=min_confidence,
+                since=since,
+                until=until,
                 limit=limit
             )
         
@@ -461,6 +476,8 @@ class MessageStore:
                               sender_ids: Optional[List[str]] = None,
                               metadata_filters: Optional[Dict[str, Any]] = None,
                               min_confidence: Optional[float] = None,
+                              since: Optional[datetime] = None,
+                              until: Optional[datetime] = None,
                               limit: int = 20,
                               ranking_profile: Union[str, RankingProfile, Dict] = "balanced") -> List[Dict]:
         """
@@ -488,6 +505,8 @@ class MessageStore:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit * 3  # Get extra for re-ranking
         )
         
@@ -521,11 +540,16 @@ class MessageStore:
             msg = id_to_message[msg_id]
             payload = message_payloads[msg_id]
             
-            # Parse timestamp
-            try:
-                msg_time = datetime.fromisoformat(msg['timestamp'].replace(' ', 'T'))
-            except:
-                msg_time = datetime.strptime(msg['timestamp'], '%Y-%m-%d %H:%M:%S')
+            # Parse timestamp - now stored as Unix timestamp
+            timestamp = msg['timestamp']
+            if isinstance(timestamp, (int, float)):
+                msg_time = datetime.fromtimestamp(timestamp)
+            else:
+                # Fallback for legacy format (shouldn't happen with new data)
+                try:
+                    msg_time = datetime.fromisoformat(str(timestamp).replace(' ', 'T'))
+                except:
+                    msg_time = datetime.strptime(str(timestamp), '%Y-%m-%d %H:%M:%S')
             
             # Calculate time decay
             age_hours = max(0, (now - msg_time).total_seconds() / 3600)
@@ -586,6 +610,8 @@ class MessageStore:
                             sender_ids: Optional[List[str]] = None,
                             metadata_filters: Optional[Dict[str, Any]] = None,
                             min_confidence: Optional[float] = None,
+                            since: Optional[datetime] = None,
+                            until: Optional[datetime] = None,
                             limit: int = 20) -> List[Dict]:
         """
         Perform filter-based search using SQLite with MongoDB-style filtering.
@@ -599,6 +625,8 @@ class MessageStore:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit
         )
     
@@ -609,6 +637,8 @@ class MessageStore:
                                   sender_ids: Optional[List[str]] = None,
                                   metadata_filters: Optional[Dict[str, Any]] = None,
                                   min_confidence: Optional[float] = None,
+                                  since: Optional[datetime] = None,
+                                  until: Optional[datetime] = None,
                                   limit: int = 20) -> List[Dict]:
         """
         Perform filter-based search with agent permissions using SQLite with MongoDB-style filtering.
@@ -625,6 +655,8 @@ class MessageStore:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit
         )
     

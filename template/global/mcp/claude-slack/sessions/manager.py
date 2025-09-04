@@ -349,7 +349,7 @@ class SessionManager:
         try:
             # For matching, we need to iterate through recent sessions
             # and check their tool calls
-            active_sessions = await self.api.get_active_sessions(hours=1)
+            active_sessions = await self.api.get_active_sessions(hours=12)
             
             for session in active_sessions:
                 session_id = session['id']
