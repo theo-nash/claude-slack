@@ -4,7 +4,8 @@ This is the main entry point for all claude-slack operations.
 """
 
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
 from pathlib import Path
 
 from .db.message_store import MessageStore
@@ -13,7 +14,7 @@ from .notes.manager import NotesManager
 from .config import Config
 from .models import DMPolicy, Discoverability, DMPermission, AgentInfo
 from .events import SimpleEventStream, AutoEventProxy
-
+from api.utils.time_utils import to_timestamp
 
 class ClaudeSlackAPI:
     """
@@ -45,7 +46,19 @@ class ClaudeSlackAPI:
         """
         # Default database path
         if db_path is None:
-            db_path = os.path.expanduser("~/.claude/claude-slack/data/claude-slack.db")
+            config_dir = os.environ.get('CLAUDE_CONFIG_DIR')
+            if config_dir:
+                config_dir = Path(config_dir).expanduser().resolve()
+            else:
+                config_dir = Path.home() / '.claude'
+                
+            claude_slack_dir = os.environ.get('CLAUDE_SLACK_DIR')
+            if claude_slack_dir:
+                claude_slack_dir = Path(claude_slack_dir)
+            else:
+                claude_slack_dir = config_dir / 'claude-slack'
+                
+            db_path = claude_slack_dir / 'data' / 'claude-slack.db'
         
         self.db_path = db_path
         
@@ -160,6 +173,8 @@ class ClaudeSlackAPI:
                              message_type: Optional[str] = None,
                              metadata_filters: Optional[Dict] = None,
                              min_confidence: Optional[float] = None,
+                             since: Optional[Union[datetime, str]] = None,
+                             until: Optional[Union[datetime, str]] = None,
                              limit: int = 20,
                              ranking_profile: str = "balanced") -> List[Dict]:
         """
@@ -186,6 +201,8 @@ class ClaudeSlackAPI:
                     {"breadcrumbs.metrics.test_coverage": {"$gte": 0.9}}
                     {"outcome": "success", "complexity": {"$lte": 5}}
             min_confidence: Minimum confidence threshold
+            since: Only return messages after this timestamp (datetime or ISO string)
+            until: Only return messages before this timestamp (datetime or ISO string)
             limit: Maximum results
             ranking_profile: Scoring profile for semantic search results:
                 - 'recent': Prioritize recent messages (good for debugging, current status)
@@ -203,6 +220,12 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
+        
         # Use MessageStore's unified search
         return await self.db.search_messages(
             query=query,
@@ -211,6 +234,8 @@ class ClaudeSlackAPI:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )
@@ -224,6 +249,8 @@ class ClaudeSlackAPI:
                                    message_type: Optional[str] = None,
                                    metadata_filters: Optional[Dict] = None,
                                    min_confidence: Optional[float] = None,
+                                   since: Optional[Union[datetime, str]] = None,
+                                   until: Optional[Union[datetime, str]] = None,
                                    limit: int = 20,
                                    ranking_profile: str = "balanced") -> List[Dict]:
         """
@@ -241,6 +268,8 @@ class ClaudeSlackAPI:
             message_type: Filter by message type from metadata (legacy, use metadata_filters)
             metadata_filters: Arbitrary nested metadata filters with MongoDB-style operators
             min_confidence: Minimum confidence threshold
+            since: Only return messages after this timestamp (datetime or ISO string)
+            until: Only return messages before this timestamp (datetime or ISO string)
             limit: Maximum results
             ranking_profile: Scoring profile for semantic search results:
                 - 'recent': Prioritize recent messages (good for debugging, current status)
@@ -258,6 +287,12 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
+        
         # Use MessageStore's agent-scoped search
         return await self.db.search_agent_messages(
             agent_name=agent_name,
@@ -267,6 +302,8 @@ class ClaudeSlackAPI:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )
@@ -279,6 +316,7 @@ class ClaudeSlackAPI:
                                 agent_name: str,
                                 agent_project_id: Optional[str] = None,
                                 channel_id: Optional[str] = None,
+                                message_ids: Optional[List[int]] = None,
                                 limit: int = 100,
                                 since: Optional[str] = None) -> List[Dict]:
         """
@@ -291,24 +329,31 @@ class ClaudeSlackAPI:
             agent_name: Agent requesting messages
             agent_project_id: Agent's project ID
             channel_id: Optional filter by specific channel
-            limit: Maximum messages
-            since: ISO timestamp to get messages after
+            message_ids: Optional list of specific message IDs to retrieve
+            limit: Maximum messages (ignored if message_ids is provided)
+            since: ISO timestamp to get messages after (ignored if message_ids is provided)
             
         Returns:
             List of message dictionaries visible to the agent
         """
-        # Convert since string to datetime if provided
-        since_dt = None
-        if since:
-            from datetime import datetime
-            since_dt = datetime.fromisoformat(since)
+        # If specific message IDs requested, use get_messages_by_ids
+        if message_ids:
+            return await self.db.get_messages_by_ids(
+                message_ids=message_ids,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id
+            )
+        
+        # Otherwise use the regular flow
+        # Convert since to Unix timestamp if provided
+        since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_agent_messages(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
             channel_id=channel_id,
             limit=limit,
-            since=since_dt
+            since=since_ts
         )
     
     async def get_messages(self,
@@ -333,18 +378,15 @@ class ClaudeSlackAPI:
         Returns:
             List of message dictionaries (no permission filtering)
         """
-        # Convert since string to datetime if provided
-        since_dt = None
-        if since:
-            from datetime import datetime
-            since_dt = datetime.fromisoformat(since)
+        # Convert since to Unix timestamp if provided
+        since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_messages(
             channel_ids=channel_ids,
             sender_ids=sender_ids,
             message_ids=message_ids,
             limit=limit,
-            since=since_dt
+            since=since_ts
         )
     
     # ============================================================================
@@ -592,6 +634,18 @@ class ClaudeSlackAPI:
         result = []
         
         all_channels = await self.db.get_channels_by_scope(scope=scope_filter, project_id=project_id, is_default=is_default)
+        
+        # Enrich channels with project names
+        project_cache = {}
+        for channel in all_channels:
+            if channel.get('project_id') and channel['project_id'] not in project_cache:
+                project = await self.db.get_project(channel['project_id'])
+                if project:
+                    project_cache[channel['project_id']] = project.get('name')
+            
+            # Add project_name to channel data
+            if channel.get('project_id') and channel['project_id'] in project_cache:
+                channel['project_name'] = project_cache[channel['project_id']]
         
         # Add agent access detail, if provided
         if agent_name:
@@ -854,6 +908,8 @@ class ClaudeSlackAPI:
                                 agent_project_id: Optional[str] = None,
                                 query: Optional[str] = None,
                                 tags: Optional[List[str]] = None,
+                                since: Optional[Union[datetime, str]] = None,
+                                until: Optional[Union[datetime, str]] = None,
                                 limit: int = 50) -> List[Dict]:
         """
         Search agent's notes with optional semantic search.
@@ -867,6 +923,8 @@ class ClaudeSlackAPI:
             agent_project_id: Optional agent's project ID
             query: Optional search query (triggers semantic search if available)
             tags: Optional tags to filter by
+            since: Only return notes after this timestamp (datetime or ISO string)
+            until: Only return notes before this timestamp (datetime or ISO string)
             limit: Maximum results
             
         Returns:
@@ -877,6 +935,8 @@ class ClaudeSlackAPI:
             agent_project_id=agent_project_id,
             query=query,
             tags=tags,
+            since=since,
+            until=until,
             limit=limit
         )
     
@@ -957,6 +1017,8 @@ class ClaudeSlackAPI:
             sender_ids=agent_names,  # For notes, sender = agent
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )

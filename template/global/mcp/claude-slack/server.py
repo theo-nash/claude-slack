@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.environment_config import env_config
 from utils.tool_orchestrator import MCPToolOrchestrator, ProjectContext
+from utils.performance import timing_decorator, Timer, get_performance_summary
 from sessions.manager import SessionManager
 
 # Initialize server
@@ -213,7 +214,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_messages",
-            description="Check for new messages from your channels and DMs. TIP: Call this at the start of each session to catch up on context",
+            description="Check for new messages from your channels and DMs, or get specific messages by ID. TIP: Call this at the start of each session to catch up on context",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -221,18 +222,23 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Your unique agent identifier (REQUIRED)"
                     },
+                    "message_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Optional list of specific message IDs to retrieve"
+                    },
                     "since": {
                         "type": "string",
-                        "description": "ISO timestamp to get messages since"
+                        "description": "ISO timestamp to get messages since (ignored if message_ids provided)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of messages",
+                        "description": "Maximum number of messages (ignored if message_ids provided)",
                         "default": 100
                     },
                     "unread_only": {
                         "type": "boolean",
-                        "description": "Only return unread messages",
+                        "description": "Only return unread messages (ignored if message_ids provided)",
                         "default": False
                     }
                 },
@@ -517,6 +523,28 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["agent_id", "target_agent"]
             }
         ),
+        
+        # Performance Diagnostics
+        types.Tool(
+            name="get_performance_stats",
+            description="Get performance statistics for debugging slow tool calls",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "component": {
+                        "type": "string",
+                        "description": "Filter by component (server/orchestrator/database)",
+                        "enum": ["all", "server", "orchestrator", "database"]
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "Reset statistics after retrieving",
+                        "default": False
+                    }
+                },
+                "required": []
+            }
+        ),
     ]
 
 # Keep the validate_agent_and_provide_help function for backward compatibility
@@ -539,6 +567,7 @@ Example: If your agent frontmatter has 'name: alice', use:
     return True, "", agent_id
 
 @app.call_tool()
+@timing_decorator('server')
 async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextContent]:
     """
     Handle tool calls using MCPToolOrchestrator.
@@ -553,17 +582,20 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
     logger.debug(f"Tool {name} called with args: {arguments}")
     
     # Ensure system is initialized
-    if not tool_orchestrator:
-        await initialize()
+    with Timer('initialization_check', 'server'):
+        if not tool_orchestrator:
+            await initialize()
     
     # Get current project context from session by matching tool call
     # The PreToolUse hook records the full MCP tool name, so we need to prepend it
-    full_tool_name = f"mcp__claude-slack__{name}"
-    session_id = await session_manager.match_tool_call_session(full_tool_name, arguments)
-    logger.debug(f"Session ID resolved: {session_id}")
+    with Timer('session_resolution', 'server'):
+        full_tool_name = f"mcp__claude-slack__{name}"
+        session_id = await session_manager.match_tool_call_session(full_tool_name, arguments)
+        logger.debug(f"Session ID resolved: {session_id}")
     
     # Get session context if available
-    ctx = await session_manager.get_session_context(session_id) if session_id else None
+    with Timer('context_retrieval', 'server'):
+        ctx = await session_manager.get_session_context(session_id) if session_id else None
     
     # Create ProjectContext for orchestrator
     context = None
@@ -579,9 +611,52 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> list[types.TextCont
             transcript_path=ctx.transcript_path
         )
     
+    # Handle performance diagnostics tool directly
+    if name == "get_performance_stats":
+        from utils.performance import PERF_ENABLED
+        
+        if not PERF_ENABLED:
+            return [types.TextContent(
+                type="text", 
+                text="Performance monitoring is disabled.\n\n"
+                     "To enable, set environment variable: CLAUDE_SLACK_PERF=1\n"
+                     "Then restart the MCP server."
+            )]
+        
+        component_filter = arguments.get('component', 'all')
+        reset = arguments.get('reset', False)
+        
+        summary = get_performance_summary()
+        
+        # Filter by component if requested
+        if component_filter != 'all':
+            summary = {k: v for k, v in summary.items() if k == component_filter}
+        
+        # Format the output
+        output = ["=== Performance Statistics ===\n"]
+        for comp, stats in summary.items():
+            output.append(f"\n{comp.upper()}:")
+            output.append(f"  Total calls: {stats['total_calls']}")
+            output.append(f"  Avg duration: {stats['avg_duration_ms']}ms")
+            output.append(f"  Min/Max: {stats['min_duration_ms']}ms / {stats['max_duration_ms']}ms")
+            output.append(f"  Slow calls (>100ms): {stats['slow_calls']}")
+            
+            if stats['by_function']:
+                output.append("  By function:")
+                for func, fstats in stats['by_function'].items():
+                    output.append(f"    {func}: {fstats['calls']} calls, avg {fstats['avg_ms']}ms")
+        
+        if reset:
+            from utils.performance import reset_performance_data
+            reset_performance_data()
+            output.append("\n[Performance data reset]")
+        
+        return [types.TextContent(type="text", text="\n".join(output))]
+    
     # Execute tool using orchestrator
     try:
-        result = await tool_orchestrator.execute_tool(name, arguments, context)
+        with Timer(f'tool_execution_{name}', 'server'):
+            result = await tool_orchestrator.execute_tool(name, arguments, context)
         
         # Format response based on result
         if result['success']:

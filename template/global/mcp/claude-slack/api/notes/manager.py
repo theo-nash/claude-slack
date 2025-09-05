@@ -9,7 +9,8 @@ while maintaining privacy and searchability.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
 from datetime import datetime
 
 
@@ -144,6 +145,8 @@ class NotesManager:
                           agent_project_id: Optional[str],
                           query: Optional[str] = None,
                           tags: Optional[List[str]] = None,
+                          since: Optional[Union[datetime, str]] = None,
+                          until: Optional[Union[datetime, str]] = None,
                           limit: int = 50) -> List[Dict[str, Any]]:
         """
         Search an agent's notes using semantic search if available.
@@ -153,19 +156,41 @@ class NotesManager:
             agent_project_id: Agent's project ID
             query: Optional text to search for (uses semantic search if available)
             tags: Optional tags to filter by
+            since: Only return notes after this timestamp (datetime or ISO string)
+            until: Only return notes before this timestamp (datetime or ISO string)
             limit: Maximum number of results
             
         Returns:
             List of notes matching the criteria
+            
+        Note:
+            To filter by session, pass session_context in the note's metadata when writing,
+            then search with query="session context text" or use the underlying
+            store.search_agent_messages directly with metadata_filters={'session_context': 'value'}
         """
         channel_id = self.get_notes_channel_id(agent_name, agent_project_id)
         
-        # Build metadata filters
+        # Build metadata filters using MongoDB-style syntax
         metadata_filters = {"type": "note"}
+        
+        # Add tag filtering using the new filtering system's $contains operator
         if tags:
-            # For simplicity, check if any tag matches
-            # In a more sophisticated implementation, you'd use $contains
-            pass  # TODO: Implement tag filtering in metadata_filters
+            # If multiple tags provided, match notes that have ANY of the tags
+            if len(tags) == 1:
+                # Single tag: use $contains directly
+                metadata_filters["tags"] = {"$contains": tags[0]}
+            else:
+                # Multiple tags: use $or to match any of them
+                metadata_filters["$or"] = [
+                    {"tags": {"$contains": tag}} for tag in tags
+                ]
+        
+        # Convert to Unix timestamp if needed
+        from api.utils.time_utils import to_timestamp
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
         
         # Use search_agent_messages for permission-safe searching
         # This will use semantic search if query is provided and Qdrant is available
@@ -175,6 +200,8 @@ class NotesManager:
             query=query,
             channel_ids=[channel_id],  # Only search in notes channel
             metadata_filters=metadata_filters,
+            since=since,
+            until=until,
             limit=limit
         )
         
@@ -182,12 +209,6 @@ class NotesManager:
         results = []
         for msg in messages:
             metadata = msg.get('metadata', {})
-            
-            # Filter by tags if specified (post-filter for now)
-            if tags:
-                note_tags = metadata.get('tags', [])
-                if not any(tag in note_tags for tag in tags):
-                    continue
             
             results.append({
                 'id': msg['id'],
@@ -225,29 +246,6 @@ class NotesManager:
             limit=limit
         )
     
-    async def get_session_notes(self,
-                               agent_name: str,
-                               agent_project_id: Optional[str],
-                               session_id: str,
-                               limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Get all notes from a specific session.
-        
-        Args:
-            agent_name: Agent whose notes to retrieve
-            agent_project_id: Agent's project ID
-            session_id: Session identifier
-            limit: Maximum number of notes
-            
-        Returns:
-            List of notes from the session
-        """
-        return await self.search_notes(
-            agent_name=agent_name,
-            agent_project_id=agent_project_id,
-            session_id=session_id,
-            limit=limit
-        )
     
     async def peek_agent_notes(self,
                               target_agent_name: str,

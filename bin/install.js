@@ -500,7 +500,7 @@ except Exception as e:
         const pythonPath = process.platform === 'win32'
             ? path.join(claudeSlackDir, 'venv', 'Scripts', 'python.exe')
             : path.join(claudeSlackDir, 'venv', 'bin', 'python');
-        const schemaPath = path.join(mcpDir, 'api', 'schema.sql');
+        const schemaPath = path.join(mcpDir, 'api', 'db', 'schema.sql');
 
         const initScript = `
 import sqlite3

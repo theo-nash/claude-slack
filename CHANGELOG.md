@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.2] - 2025-09-05
+
+### Major Features
+
+#### ⏰ Complete Time-Based Filtering System
+- **Unix Timestamp Architecture**: Entire codebase refactored to use Unix timestamps (float seconds since epoch)
+- **Centralized Time Utilities**: New `time_utils` module for consistent timestamp handling across all components
+- **Universal Filter Support**: Accept datetime objects, ISO strings, or Unix timestamps in all time filters
+- **Qdrant Compatibility**: Range filters now work correctly with numeric timestamps
+- **SQLite Optimization**: REAL type storage enables fast numeric comparisons
+- **Timezone Clarity**: UTC by definition, eliminating timezone confusion
+- **Backward Compatibility**: Automatic conversion of existing ISO timestamp data
+
+#### 📊 Performance Monitoring System
+- **Opt-in Profiling**: Enable with `CLAUDE_SLACK_PERF=1` environment variable
+- **Multi-Layer Instrumentation**: Track latency across server, orchestrator, and database layers
+- **Performance Diagnostics Tool**: New `get_performance_stats` MCP tool for analyzing bottlenecks
+- **Automatic Slow Query Detection**: Logs operations exceeding 100ms threshold
+- **Component-Level Metrics**: Detailed statistics by function with min/max/avg durations
+- **Zero Overhead When Disabled**: No performance impact in production
+
+#### 🔍 Enhanced Message Retrieval
+- **Message IDs Parameter**: `get_messages` tool now accepts optional `message_ids` array
+- **Targeted Message Access**: Retrieve specific messages while maintaining permission checks
+- **Holistic API Design**: Extended `get_agent_messages` without breaking changes
+- **Permission Enforcement**: Uses agent_channels view for secure access control
+
+### Improvements
+
+#### 📝 Unified Message Formatting System
+- **Single Source of Truth**: Centralized `format_single_message()` function
+- **Consistent Headers**: Standardized format across channels, DMs, and notes
+- **Project Name Display**: Shows actual project names instead of truncated IDs (e.g., "claude-slack" not "b3279ea0")
+- **Message ID Display**: Clear `[id:X]` format in headers for easy reference
+- **No Truncation Policy**: Full context preserved for better agent understanding
+- **Self-Documenting Format**: Clear labels like "channel", "your note", "from DM" without cryptic symbols
+- **Visual Separation**: Brackets distinguish metadata: `[id:5]` `[tags: foo, bar]`
+
+#### 🏷️ Database and Session Improvements
+- **Project Name Derivation**: Automatically derives from project path using `os.path.basename()`
+- **Session Storage Fix**: Properly stores sessions with project_id
+- **Database Path Resolution**: Improved handling of database paths
+- **Notes Filtering**: Enhanced filtering capabilities for agent notes
+
+### Bug Fixes
+- **Channel List Enrichment**: Fixed to show project names via JOIN with projects table
+- **Unix Timestamp Display**: Proper formatting using `format_time_ago()` utility
+- **AgentInfo Formatting**: Fixed formatter to handle both dict and dataclass objects
+- **Project Context**: Ensures project_name is populated throughout the system
+
+### Technical Details
+- **API Enrichment**: `list_channels` now includes project_name field without breaking changes
+- **Database Schema**: Timestamps migrated from TEXT (ISO) to REAL (Unix) type
+- **Performance Results**: Database queries consistently under 1ms
+- **Backward Compatibility**: All APIs maintain existing contracts
+
 ## [4.1.1] - 2025-09-02
 
 ### Improvements

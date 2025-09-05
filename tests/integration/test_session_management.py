@@ -393,8 +393,8 @@ class TestSessionManagerIntegration:
     async def test_cleanup_old_sessions(self, session_manager):
         """Test session cleanup"""
         # Register sessions
-        await session_manager.register_session('session1')
-        await session_manager.register_session('session2')
+        await session_manager.register_session('session1', project_path='/test/path1')
+        await session_manager.register_session('session2', project_path='/test/path2')
         
         # Cleanup (with long window, should delete nothing)
         count = await session_manager.cleanup_old_sessions(max_age_hours=24)

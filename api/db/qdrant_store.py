@@ -6,8 +6,9 @@ Handles ONLY vector indexing and semantic search, no SQLite knowledge.
 
 import os
 import sys
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime
+from ..utils.time_utils import now_timestamp, to_timestamp, from_timestamp
 
 # Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -126,7 +127,7 @@ class QdrantStore:
                            content: str,
                            channel_id: str,
                            sender_id: str,
-                           timestamp: datetime,
+                           timestamp: Union[float, int, datetime, str],  # Accepts Unix timestamp or datetime
                            metadata: Optional[Dict] = None,
                            confidence: Optional[float] = None,
                            sender_project_id: Optional[str] = None,
@@ -159,7 +160,7 @@ class QdrantStore:
             "content": content,  # Store for debugging/analysis
             "metadata": metadata or {},  # Native nested JSON!
             "confidence": confidence or 0.5,
-            "timestamp": timestamp.isoformat()
+            "timestamp": to_timestamp(timestamp)  # Store as Unix timestamp
         }
         
         # Add array length fields for $size operator support
@@ -216,7 +217,9 @@ class QdrantStore:
                      channel_ids: Optional[List[str]] = None,
                      sender_ids: Optional[List[str]] = None,
                      metadata_filters: Optional[Dict[str, Any]] = None,
-                     min_confidence: Optional[float] = None) -> Optional[Filter]:
+                     min_confidence: Optional[float] = None,
+                     since: Optional[datetime] = None,
+                     until: Optional[datetime] = None) -> Optional[Filter]:
         """
         Build Qdrant filter from parameters using the shared filter system.
         Supports MongoDB-style operators with arbitrary nested metadata filtering.
@@ -233,6 +236,15 @@ class QdrantStore:
         
         if min_confidence is not None:
             combined_filters['confidence'] = {'$gte': min_confidence}
+        
+        # Add time filters - convert to Unix timestamp for numeric comparison
+        if since is not None:
+            combined_filters['timestamp'] = combined_filters.get('timestamp', {})
+            combined_filters['timestamp']['$gte'] = to_timestamp(since)
+        
+        if until is not None:
+            combined_filters['timestamp'] = combined_filters.get('timestamp', {})
+            combined_filters['timestamp']['$lte'] = to_timestamp(until)
         
         # Merge metadata filters
         if metadata_filters:
@@ -278,6 +290,8 @@ class QdrantStore:
                     sender_ids: Optional[List[str]] = None,
                     metadata_filters: Optional[Dict[str, Any]] = None,
                     min_confidence: Optional[float] = None,
+                    since: Optional[datetime] = None,
+                    until: Optional[datetime] = None,
                     limit: int = 20,
                     offset: int = 0) -> List[Tuple[int, float, Dict]]:
         """
@@ -289,6 +303,8 @@ class QdrantStore:
             sender_ids: Filter by senders
             metadata_filters: Arbitrary nested metadata filters
             min_confidence: Minimum confidence threshold
+            since: Only messages after this timestamp
+            until: Only messages before this timestamp
             limit: Maximum results
             offset: Pagination offset
             
@@ -301,7 +317,7 @@ class QdrantStore:
         
         # Build filter
         qdrant_filter = self._build_filter(
-            channel_ids, sender_ids, metadata_filters, min_confidence
+            channel_ids, sender_ids, metadata_filters, min_confidence, since, until
         )
         
         # Search in Qdrant

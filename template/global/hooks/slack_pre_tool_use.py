@@ -158,11 +158,12 @@ def update_session_context_file(session_id: str, tool_name: str = None, tool_inp
         
         # Write session context file with tool info
         session_file = sessions_dir / f"{session_id}.json"
+        import time
         context = {
             'session_id': session_id,
             'tool_name': tool_name,
             'tool_inputs': tool_inputs,
-            'updated_at': datetime.now().isoformat()
+            'updated_at': time.time()
         }
         
         session_file.write_text(json.dumps(context, indent=2))
@@ -198,15 +199,16 @@ def main():
                 
         # For MCP tools, the tool_name might be the MCP server name
         # and the actual tool would be in tool_input
-        is_slack_tool = (
-            'claude_slack' in tool_name or 
-            'claude-slack' in tool_name or
-            (tool_name == 'mcp' and 'claude-slack' in str(tool_input))
-        )
+        # We will let the matcher take care of this to make it extensible to other uses
+        # is_slack_tool = (
+        #     'claude_slack' in tool_name or 
+        #     'claude-slack' in tool_name or
+        #     (tool_name == 'mcp' and 'claude-slack' in str(tool_input))
+        # )
         
-        if not is_slack_tool:
-            logger.debug(f"Not a slack tool, passing through: {tool_name}")
-            return 0
+        # if not is_slack_tool:
+        #     logger.debug(f"Not a slack tool, passing through: {tool_name}")
+        #     return 0
                 
         logger.info(f"Processing slack tool: {tool_name}")
         

@@ -11,11 +11,28 @@ import sqlite3
 import aiosqlite
 import hashlib
 import json
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 from .db_helpers import with_connection, aconnect
 from .filters import MongoFilterParser, SQLiteFilterBackend, FilterValidator
+from ..utils.time_utils import now_timestamp, to_timestamp, from_timestamp, format_timestamp
+
+# Try to import performance utilities
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from utils.performance import timing_decorator, Timer
+except ImportError:
+    # Fallback if performance module not available
+    def timing_decorator(component):
+        def decorator(func):
+            return func
+        return decorator
+    class Timer:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
 
 # Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,8 +89,8 @@ class SQLiteStore:
         """Register a project in the database"""
         await conn.execute("""
             INSERT OR REPLACE INTO projects (id, path, name, last_active)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        """, (project_id, project_path, project_name))
+            VALUES (?, ?, ?, ?)
+        """, (project_id, project_path, project_name, now_timestamp()))
     
     @with_connection(writer=False)
     async def get_project(self, conn, project_id: str) -> Optional[Dict]:
@@ -178,8 +195,8 @@ class SQLiteStore:
             await conn.execute("""
                 INSERT OR REPLACE INTO project_links
                 (project_a_id, project_b_id, link_type, enabled, created_by, created_at)
-                VALUES (?, ?, ?, TRUE, ?, CURRENT_TIMESTAMP)
-            """, (project_a_id, project_b_id, link_type, created_by))
+                VALUES (?, ?, ?, TRUE, ?, ?)
+            """, (project_a_id, project_b_id, link_type, created_by, now_timestamp()))
             return True
         except sqlite3.IntegrityError:
             return False
@@ -252,9 +269,9 @@ class SQLiteStore:
             INSERT OR REPLACE INTO agents 
             (name, project_id, description, dm_policy, discoverable, 
              status, current_project_id, metadata, last_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (name, project_id, description, dm_policy, discoverable,
-              status, current_project_id, metadata_str))
+              status, current_project_id, metadata_str, now_timestamp()))
     
     @with_connection(writer=False)
     async def get_agent(self, conn, name: str, project_id: Optional[str] = None) -> Optional[Dict]:
@@ -405,8 +422,8 @@ class SQLiteStore:
             await conn.execute("""
                 INSERT INTO channels 
                 (id, channel_type, access_type, scope, name, created_at)
-                VALUES (?, 'direct', 'private', ?, ?, CURRENT_TIMESTAMP)
-            """, (channel_id, scope, channel_id))
+                VALUES (?, 'direct', 'private', ?, ?, ?)
+            """, (channel_id, scope, channel_id, now_timestamp()))
             
             # Add both agents as members (with can_leave=FALSE for DMs)
             await conn.execute("""
@@ -470,9 +487,9 @@ class SQLiteStore:
             INSERT OR REPLACE INTO channel_members 
             (channel_id, agent_name, agent_project_id, invited_by, source,
              can_leave, can_send, can_invite, can_manage, is_from_default, joined_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (channel_id, agent_name, agent_project_id, invited_by, source,
-              can_leave, can_send, can_invite, can_manage, is_from_default))
+              can_leave, can_send, can_invite, can_manage, is_from_default, now_timestamp()))
     
     @with_connection(writer=True)
     async def add_channel_member(self, conn,
@@ -653,13 +670,16 @@ class SQLiteStore:
         if metadata and isinstance(metadata, dict):
             confidence = metadata.get('confidence')
         
-        # Insert the message
+        # Get current Unix timestamp
+        timestamp = now_timestamp()
+        
+        # Insert the message with explicit timestamp
         cursor = await conn.execute("""
             INSERT INTO messages 
-            (channel_id, sender_id, sender_project_id, content, metadata, thread_id, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (channel_id, sender_id, sender_project_id, content, metadata, thread_id, confidence, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (channel_id, sender_id, sender_project_id, content,
-              json.dumps(metadata) if metadata else None, thread_id, confidence))
+              json.dumps(metadata) if metadata else None, thread_id, confidence, timestamp))
         
         message_id = cursor.lastrowid
         
@@ -667,6 +687,7 @@ class SQLiteStore:
         return message_id
     
     @with_connection(writer=False)
+    @timing_decorator('database')
     async def get_messages(self, conn,
                          agent_name: str,
                          agent_project_id: Optional[str] = None,
@@ -702,8 +723,9 @@ class SQLiteStore:
             params.append(channel_id)
         
         if since:
+            from api.utils.time_utils import to_timestamp
             query += " AND m.timestamp > ?"
-            params.append(since.isoformat())
+            params.append(to_timestamp(since))
         
         query += " ORDER BY m.timestamp DESC LIMIT ?"
         params.append(limit)
@@ -780,10 +802,10 @@ class SQLiteStore:
             query += f" AND m.sender_id IN ({placeholders})"
             params.extend(sender_ids)
         
-        # Add time filter if specified
+        # Add time filter if specified - now using Unix timestamps
         if since:
             query += " AND m.timestamp > ?"
-            params.append(since.isoformat() if isinstance(since, datetime) else since)
+            params.append(to_timestamp(since))
         
         # Order by timestamp descending and limit
         query += " ORDER BY m.timestamp DESC LIMIT ?"
@@ -826,9 +848,9 @@ class SQLiteStore:
             INSERT OR REPLACE INTO dm_permissions
             (agent_name, agent_project_id, other_agent_name, other_agent_project_id,
              permission, reason, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (agent_name, agent_project_id, other_agent_name, other_agent_project_id,
-              permission, reason))
+              permission, reason, now_timestamp()))
     
     @with_connection(writer=True)
     async def update_dm_policy(self, conn,
@@ -886,9 +908,9 @@ class SQLiteStore:
         await conn.execute(f"""
             UPDATE agents
             SET {', '.join(update_fields)},
-                last_active = CURRENT_TIMESTAMP
+                last_active = ?
             WHERE name = ? AND project_id IS NOT DISTINCT FROM ?
-        """, values)
+        """, (*values[:-2], now_timestamp(), *values[-2:]))
     
     @with_connection(writer=False)
     async def get_dm_permission_stats(self, conn,
@@ -1057,14 +1079,13 @@ class SQLiteStore:
                                actions_taken: str, success: bool,
                                error_message: Optional[str] = None):
         """Track configuration sync in history table"""
-        from datetime import datetime, timezone
         await conn.execute("""
             INSERT INTO config_sync_history
             (config_hash, config_snapshot, scope, project_id, 
              actions_taken, success, error_message, applied_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (config_hash, config_snapshot, scope, project_id,
-              actions_taken, success, error_message, datetime.now(timezone.utc).isoformat()))
+              actions_taken, success, error_message, now_timestamp()))
     
     @with_connection(writer=False)
     async def get_last_sync_hash(self, conn) -> Optional[str]:
@@ -1302,9 +1323,9 @@ class SQLiteStore:
             INSERT OR REPLACE INTO sessions 
             (id, project_id, project_path, project_name, transcript_path, 
              scope, updated_at, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (session_id, project_id, project_path, project_name, 
-              transcript_path, scope, metadata_str))
+              transcript_path, scope, now_timestamp(), metadata_str))
         
         self.logger.info(f"Registered session: {session_id} (scope={scope}, project_id={project_id})")
         return session_id
@@ -1348,9 +1369,9 @@ class SQLiteStore:
         result = await conn.execute(f"""
             UPDATE sessions
             SET {', '.join(update_fields)},
-                updated_at = CURRENT_TIMESTAMP
+                updated_at = ?
             WHERE id = ?
-        """, values)
+        """, (*values[:-1], now_timestamp(), values[-1]))
         
         return result.rowcount > 0
     
@@ -1400,13 +1421,14 @@ class SQLiteStore:
         Returns:
             List of active session dictionaries
         """
+        cutoff_time = now_timestamp() - (hours * 3600)
         query = """
             SELECT id, project_id, project_path, project_name,
                    transcript_path, scope, updated_at, metadata
             FROM sessions
-            WHERE updated_at > datetime('now', ? || ' hours')
+            WHERE updated_at > ?
         """
-        params = [-hours]
+        params = [cutoff_time]
         
         if project_id is not None:
             query += " AND project_id = ?"
@@ -1442,10 +1464,11 @@ class SQLiteStore:
         Returns:
             Number of sessions deleted
         """
+        cutoff_time = now_timestamp() - (hours * 3600)
         result = await conn.execute("""
             DELETE FROM sessions
-            WHERE updated_at < datetime('now', ? || ' hours')
-        """, (-hours,))
+            WHERE updated_at < ?
+        """, (cutoff_time,))
         
         deleted_count = result.rowcount
         if deleted_count > 0:
@@ -1479,14 +1502,15 @@ class SQLiteStore:
         inputs_str = json.dumps(tool_inputs, sort_keys=True)
         inputs_hash = hashlib.sha256(inputs_str.encode()).hexdigest()
         
-        # Check for recent duplicate
+        # Check for recent duplicate using Unix timestamps
+        cutoff_time = now_timestamp() - (dedup_window_minutes * 60)
         cursor = await conn.execute("""
             SELECT id FROM tool_calls
             WHERE session_id = ?
               AND tool_name = ?
               AND tool_inputs_hash = ?
-              AND called_at > datetime('now', ? || ' minutes')
-        """, (session_id, tool_name, inputs_hash, -dedup_window_minutes))
+              AND called_at > ?
+        """, (session_id, tool_name, inputs_hash, cutoff_time))
         
         if await cursor.fetchone():
             self.logger.debug(f"Duplicate tool call detected: {tool_name} in session {session_id}")
@@ -1496,8 +1520,8 @@ class SQLiteStore:
         await conn.execute("""
             INSERT INTO tool_calls 
             (session_id, tool_name, tool_inputs_hash, tool_inputs, called_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (session_id, tool_name, inputs_hash, inputs_str))
+            VALUES (?, ?, ?, ?, ?)
+        """, (session_id, tool_name, inputs_hash, inputs_str, now_timestamp()))
         
         return True
     
@@ -1515,13 +1539,14 @@ class SQLiteStore:
         Returns:
             List of recent tool calls
         """
+        cutoff_time = now_timestamp() - (minutes * 60)
         cursor = await conn.execute("""
             SELECT id, tool_name, tool_inputs, called_at
             FROM tool_calls
             WHERE session_id = ?
-              AND called_at > datetime('now', ? || ' minutes')
+              AND called_at > ?
             ORDER BY called_at DESC
-        """, (session_id, -minutes))
+        """, (session_id, cutoff_time))
         
         rows = await cursor.fetchall()
         return [
@@ -1545,10 +1570,11 @@ class SQLiteStore:
         Returns:
             Number of tool calls deleted
         """
+        cutoff_time = now_timestamp() - (minutes * 60)
         result = await conn.execute("""
             DELETE FROM tool_calls
-            WHERE called_at < datetime('now', ? || ' minutes')
-        """, (-minutes,))
+            WHERE called_at < ?
+        """, (cutoff_time,))
         
         deleted_count = result.rowcount
         if deleted_count > 0:
@@ -1652,14 +1678,14 @@ class SQLiteStore:
             where_conditions.append("m.confidence >= ?")
             params.append(min_confidence)
         
-        # Add time range filters
+        # Add time range filters - now using Unix timestamps
         if since:
             where_conditions.append("m.timestamp >= ?")
-            params.append(since.isoformat() if isinstance(since, datetime) else since)
+            params.append(to_timestamp(since))
         
         if until:
             where_conditions.append("m.timestamp <= ?")
-            params.append(until.isoformat() if isinstance(until, datetime) else until)
+            params.append(to_timestamp(until))
         
         # Parse and apply MongoDB-style metadata filters
         if metadata_filters:
@@ -1817,8 +1843,12 @@ class SQLiteStore:
                 
             # Apply time filter
             if since:
-                msg_time = datetime.fromisoformat(result['timestamp'])
-                if msg_time < since:
+                from api.utils.time_utils import to_timestamp
+                msg_timestamp = result['timestamp']
+                # Convert both to Unix timestamps for consistent comparison
+                msg_ts = to_timestamp(msg_timestamp)  # Handles both Unix and ISO
+                since_ts = to_timestamp(since)  # Handles both Unix and ISO
+                if msg_ts and since_ts and msg_ts < since_ts:
                     continue
             
             results.append(result)
@@ -2007,9 +2037,9 @@ class SQLiteStore:
             UPDATE messages
             SET content = ?,
                 is_edited = TRUE,
-                edited_at = CURRENT_TIMESTAMP
+                edited_at = ?
             WHERE id = ?
-        """, (content, message_id))
+        """, (content, now_timestamp(), message_id))
         
         return True
     
@@ -2055,14 +2085,14 @@ class SQLiteStore:
             UPDATE messages
             SET content = '[Message deleted]',
                 is_edited = TRUE,
-                edited_at = CURRENT_TIMESTAMP,
+                edited_at = ?,
                 metadata = json_set(
                     COALESCE(metadata, '{}'),
                     '$.deleted', true,
                     '$.deleted_by', ?,
-                    '$.deleted_at', datetime('now')
+                    '$.deleted_at', ?
                 )
             WHERE id = ?
-        """, (agent_name, message_id))
+        """, (now_timestamp(), agent_name, now_timestamp(), message_id))
         
         return True

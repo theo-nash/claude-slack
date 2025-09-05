@@ -6,6 +6,7 @@ from dataclasses import dataclass, asdict
 from typing import Dict, Optional, Any, List
 from datetime import datetime
 from enum import Enum
+import time
 
 
 @dataclass
@@ -20,7 +21,7 @@ class Message:
         content: Message text content
         metadata: Arbitrary nested JSON metadata
         confidence: Optional confidence score (0.0 to 1.0)
-        timestamp: ISO format timestamp
+        timestamp: Unix timestamp (seconds since epoch)
         score: Search relevance score (set during search operations)
     """
     id: int
@@ -29,7 +30,7 @@ class Message:
     content: str
     metadata: Dict[str, Any] = None
     confidence: Optional[float] = None
-    timestamp: Optional[str] = None
+    timestamp: Optional[float] = None
     score: Optional[float] = None
     search_scores: Optional[Dict[str, Any]] = None
     
@@ -38,7 +39,7 @@ class Message:
         if self.metadata is None:
             self.metadata = {}
         if self.timestamp is None:
-            self.timestamp = datetime.now().isoformat()
+            self.timestamp = time.time()
     
     def to_dict(self) -> Dict[str, Any]:
         """Export as dictionary."""
