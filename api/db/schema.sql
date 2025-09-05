@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,           -- hashed project path (32 chars)
     path TEXT UNIQUE NOT NULL,     -- absolute path to project root
     name TEXT,                     -- human-readable project name
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_active TIMESTAMP,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
+    last_active REAL,
     metadata JSON                  -- project-specific settings
 );
 
@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS agents (
     discoverable TEXT DEFAULT 'public' CHECK (discoverable IN ('public', 'project', 'private')),
     -- public: visible to all, project: visible in linked projects, private: not discoverable
     
-    last_active TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_active REAL,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
     metadata JSON,                 -- Additional agent info
     PRIMARY KEY (name, project_id),
     FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS channels (
     
     created_by TEXT,               -- Agent name that created the channel
     created_by_project_id TEXT,    -- Agent's project_id
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
     is_default BOOLEAN DEFAULT FALSE, -- Auto-subscribe new agents
     is_archived BOOLEAN DEFAULT FALSE,
     
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS channel_members (
     
     -- How they joined (unified model)
     invited_by TEXT DEFAULT 'self', -- 'self' for self-joined, 'system' for DMs, or inviter's name
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    joined_at REAL DEFAULT (strftime('%s', 'now')),
     source TEXT DEFAULT 'manual',   -- 'frontmatter', 'manual', 'default', 'system'
     
     -- Capabilities (not roles!)
@@ -100,13 +100,13 @@ CREATE TABLE IF NOT EXISTS channel_members (
     notification_preference TEXT DEFAULT 'all',
     
     -- Read tracking (Phase 1 fields)
-    last_read_at TIMESTAMP,
+    last_read_at REAL,
     last_read_message_id INTEGER,
     
     -- Default provisioning tracking
     is_from_default BOOLEAN DEFAULT FALSE,  -- Was this membership from is_default=true?
     opted_out BOOLEAN DEFAULT FALSE,        -- Has user explicitly opted out?
-    opted_out_at TIMESTAMP,                 -- When did they opt out?
+    opted_out_at REAL,                 -- When did they opt out?
     
     PRIMARY KEY (channel_id, agent_name, agent_project_id),
     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS dm_permissions (
     other_agent_project_id TEXT,
     permission TEXT NOT NULL CHECK (permission IN ('allow', 'block')),
     reason TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
     PRIMARY KEY (agent_name, agent_project_id, other_agent_name, other_agent_project_id),
     FOREIGN KEY (agent_name, agent_project_id) REFERENCES agents(name, project_id),
     FOREIGN KEY (other_agent_name, other_agent_project_id) REFERENCES agents(name, project_id)
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS messages (
     thread_id TEXT,                -- For threading
     timestamp REAL DEFAULT (strftime('%s', 'now')),  -- Unix timestamp (seconds since epoch)
     is_edited BOOLEAN DEFAULT FALSE,
-    edited_at TIMESTAMP,
+    edited_at REAL,
     metadata JSON,                 -- priority, references, etc.
     
     FOREIGN KEY (channel_id) REFERENCES channels(id),
@@ -164,9 +164,9 @@ CREATE TABLE IF NOT EXISTS agent_message_state (
     action_type TEXT,              -- 'review', 'action', 'fyi' (for mentions)
     status TEXT DEFAULT 'unread',
     
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    read_at TIMESTAMP,
-    done_at TIMESTAMP,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
+    read_at REAL,
+    done_at REAL,
     
     PRIMARY KEY (agent_name, agent_project_id, message_id),
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS project_links (
     project_b_id TEXT NOT NULL,
     link_type TEXT DEFAULT 'bidirectional', -- 'bidirectional', 'a_to_b', 'b_to_a'
     enabled BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at REAL DEFAULT (strftime('%s', 'now')),
     created_by TEXT,
     metadata JSON,
     PRIMARY KEY (project_a_id, project_b_id),
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_name TEXT,
     transcript_path TEXT,
     scope TEXT NOT NULL DEFAULT 'global',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at REAL DEFAULT (strftime('%s', 'now')),
     metadata JSON,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
 );
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     tool_name TEXT NOT NULL,
     tool_inputs_hash TEXT NOT NULL,
     tool_inputs JSON,
-    called_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    called_at REAL DEFAULT (strftime('%s', 'now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS config_sync_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     config_hash TEXT NOT NULL,        -- Hash of the config file for change detection
     config_snapshot JSON NOT NULL,    -- Full snapshot of config at time of sync
-    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    applied_at REAL DEFAULT (strftime('%s', 'now')),
     scope TEXT,                        -- 'global', 'project', or 'all'
     project_id TEXT,                   -- Project ID if project-scoped
     actions_taken JSON,                -- List of actions performed
@@ -519,20 +519,21 @@ CREATE INDEX IF NOT EXISTS idx_config_sync_history_scope
 -- ============================================================================
 
 -- Update session timestamp on access
-CREATE TRIGGER IF NOT EXISTS update_session_timestamp
-AFTER UPDATE ON sessions
-BEGIN
-    UPDATE sessions 
-    SET updated_at = datetime('now')
-    WHERE id = NEW.id;
-END;
+-- This creates infinite loop.  Removing. Handled in application logic.
+-- CREATE TRIGGER IF NOT EXISTS update_session_timestamp
+-- AFTER UPDATE ON sessions
+-- BEGIN
+--     UPDATE sessions 
+--     SET updated_at = strftime('%s', 'now')
+--     WHERE id = NEW.id;
+-- END;
 
 -- Cleanup old sessions (older than 24 hours)
 CREATE TRIGGER IF NOT EXISTS cleanup_old_sessions
 AFTER INSERT ON sessions
 BEGIN
     DELETE FROM sessions 
-    WHERE updated_at < datetime('now', '-24 hours');
+    WHERE updated_at < (strftime('%s', 'now') - 86400);  -- 24 hours = 86400 seconds
 END;
 
 -- Cleanup old tool calls (older than 10 minutes)
@@ -540,7 +541,7 @@ CREATE TRIGGER IF NOT EXISTS cleanup_old_tool_calls
 AFTER INSERT ON tool_calls
 BEGIN
     DELETE FROM tool_calls 
-    WHERE called_at < datetime('now', '-10 minutes');
+    WHERE called_at < (strftime('%s', 'now') - 600);  -- 10 minutes = 600 seconds
 END;
 
 -- ============================================================================

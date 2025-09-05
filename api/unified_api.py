@@ -334,18 +334,16 @@ class ClaudeSlackAPI:
         Returns:
             List of message dictionaries visible to the agent
         """
-        # Convert since string to datetime if provided
-        since_dt = None
-        if since:
-            from datetime import datetime
-            since_dt = datetime.fromisoformat(since)
+        # Convert since to Unix timestamp if provided
+        from api.utils.time_utils import to_timestamp
+        since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_agent_messages(
             agent_name=agent_name,
             agent_project_id=agent_project_id,
             channel_id=channel_id,
             limit=limit,
-            since=since_dt
+            since=since_ts
         )
     
     async def get_messages(self,
@@ -370,18 +368,16 @@ class ClaudeSlackAPI:
         Returns:
             List of message dictionaries (no permission filtering)
         """
-        # Convert since string to datetime if provided
-        since_dt = None
-        if since:
-            from datetime import datetime
-            since_dt = datetime.fromisoformat(since)
+        # Convert since to Unix timestamp if provided
+        from api.utils.time_utils import to_timestamp
+        since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_messages(
             channel_ids=channel_ids,
             sender_ids=sender_ids,
             message_ids=message_ids,
             limit=limit,
-            since=since_dt
+            since=since_ts
         )
     
     # ============================================================================
@@ -629,6 +625,18 @@ class ClaudeSlackAPI:
         result = []
         
         all_channels = await self.db.get_channels_by_scope(scope=scope_filter, project_id=project_id, is_default=is_default)
+        
+        # Enrich channels with project names
+        project_cache = {}
+        for channel in all_channels:
+            if channel.get('project_id') and channel['project_id'] not in project_cache:
+                project = await self.db.get_project(channel['project_id'])
+                if project:
+                    project_cache[channel['project_id']] = project.get('name')
+            
+            # Add project_name to channel data
+            if channel.get('project_id') and channel['project_id'] in project_cache:
+                channel['project_name'] = project_cache[channel['project_id']]
         
         # Add agent access detail, if provided
         if agent_name:

@@ -21,6 +21,7 @@ import hashlib
 from typing import Optional, Dict, Tuple, Any
 from pathlib import Path
 from datetime import datetime, timedelta
+from api.utils.time_utils import now_timestamp, to_timestamp, from_timestamp
 from dataclasses import dataclass
 
 # Add parent directory to path for imports
@@ -216,7 +217,7 @@ class SessionManager:
                     project_name=session_data['project_name'],
                     transcript_path=session_data['transcript_path'],
                     scope=session_data['scope'],
-                    updated_at=datetime.fromtimestamp(session_data['updated_at']) if isinstance(session_data.get('updated_at'), (int, float)) else (datetime.fromisoformat(session_data['updated_at']) if isinstance(session_data.get('updated_at'), str) else datetime.now()),
+                    updated_at=from_timestamp(to_timestamp(session_data.get('updated_at', now_timestamp()))),
                     metadata=session_data['metadata']
                 )
                 

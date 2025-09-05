@@ -6,7 +6,7 @@ Handles ONLY vector indexing and semantic search, no SQLite knowledge.
 
 import os
 import sys
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime
 from ..utils.time_utils import now_timestamp, to_timestamp, from_timestamp
 
@@ -127,7 +127,7 @@ class QdrantStore:
                            content: str,
                            channel_id: str,
                            sender_id: str,
-                           timestamp: datetime,
+                           timestamp: Union[float, int, datetime, str],  # Accepts Unix timestamp or datetime
                            metadata: Optional[Dict] = None,
                            confidence: Optional[float] = None,
                            sender_project_id: Optional[str] = None,

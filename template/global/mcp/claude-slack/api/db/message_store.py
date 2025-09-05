@@ -540,19 +540,14 @@ class MessageStore:
             msg = id_to_message[msg_id]
             payload = message_payloads[msg_id]
             
-            # Parse timestamp - now stored as Unix timestamp
+            # Parse timestamp - work with Unix timestamps directly
+            from api.utils.time_utils import to_timestamp, now_timestamp
             timestamp = msg['timestamp']
-            if isinstance(timestamp, (int, float)):
-                msg_time = datetime.fromtimestamp(timestamp)
-            else:
-                # Fallback for legacy format (shouldn't happen with new data)
-                try:
-                    msg_time = datetime.fromisoformat(str(timestamp).replace(' ', 'T'))
-                except:
-                    msg_time = datetime.strptime(str(timestamp), '%Y-%m-%d %H:%M:%S')
+            msg_ts = to_timestamp(timestamp)  # Handles both Unix and ISO formats
+            now_ts = now_timestamp()
             
-            # Calculate time decay
-            age_hours = max(0, (now - msg_time).total_seconds() / 3600)
+            # Calculate time decay using Unix timestamps (in hours)
+            age_hours = max(0, (now_ts - msg_ts) / 3600)
             decay_score = self._calculate_decay(age_hours, profile.decay_half_life_hours)
             
             # Get confidence score

@@ -22,7 +22,10 @@ from utils.formatting import (
     format_flat_messages,
     format_channel_list, 
     format_agents_concise,
-    format_search_results_concise
+    format_search_results_concise,
+    format_note_search_results,
+    format_notes_response,
+    format_peek_notes
 )
 from log_manager import get_logger
 
@@ -536,26 +539,9 @@ class MCPToolOrchestrator:
         if not agents:
             return self._success_response("No discoverable agents found")
         
-        # Format response
-        formatted = []
-        for a in agents:
-            name = a.get('name', 'unknown')
-            desc = a.get('description', '')
-            status = a.get('status', '')
-            dm_policy = a.get('dm_policy', '')
-            
-            # Build agent info
-            info = f"- {name}"
-            if desc and include_descriptions:
-                info += f": {desc}"
-            if status and status != 'online':
-                info += f" [{status}]"
-            if dm_policy and dm_policy != 'open':
-                info += f" (DM: {dm_policy})"
-            
-            formatted.append(info)
-        
-        return self._success_response('\n'.join(formatted))
+        # Use the unified formatter
+        formatted = format_agents_concise(agents)
+        return self._success_response(formatted)
     
     async def handle_get_linked_projects(self, args: Dict, agent: Optional[Dict], 
                                         context: ProjectContext) -> Dict:
@@ -619,15 +605,9 @@ class MCPToolOrchestrator:
         if not notes:
             return self._success_response("No notes found")
         
-        # Format notes
-        formatted = []
-        for note in notes:
-            tags_str = f" [{', '.join(note['tags'])}]" if note.get('tags') else ""
-            formatted.append(
-                f"[{note['timestamp']}]{tags_str}: {note['content'][:100]}..."
-            )
-        
-        return self._success_response('\n'.join(formatted))
+        # Use the unified formatter
+        formatted = format_note_search_results(notes, query, tags)
+        return self._success_response(formatted)
     
     async def handle_get_recent_notes(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Get agent's recent notes"""
@@ -643,12 +623,9 @@ class MCPToolOrchestrator:
         if not notes:
             return self._success_response("No recent notes")
         
-        # Format notes
-        formatted = []
-        for note in notes:
-            formatted.append(f"[{note['timestamp']}]: {note['content']}")
-        
-        return self._success_response('\n'.join(formatted))
+        # Use the unified formatter for notes
+        formatted = format_notes_response(notes, f"Recent Notes ({len(notes)})", agent['name'])
+        return self._success_response(formatted)
     
     async def handle_peek_agent_notes(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Peek at another agent's notes"""
@@ -677,12 +654,9 @@ class MCPToolOrchestrator:
         if not notes:
             return self._success_response(f"No notes found for {target_agent}")
         
-        # Format notes
-        formatted = [f"Notes from {target_agent}:"]
-        for note in notes:
-            formatted.append(f"[{note['timestamp']}]: {note['content'][:100]}...")
-        
-        return self._success_response('\n'.join(formatted))
+        # Use the unified formatter
+        formatted = format_peek_notes(notes, target_agent, query)
+        return self._success_response(formatted)
     
     # ============================================================================
     # Helper Methods

@@ -97,11 +97,15 @@ class ConfigSyncManager:
             if not project_path:
                 project_path = cwd
             
+            # Derive project name from path
+            project_name = os.path.basename(project_path) if project_path else None
+            
             # Register session (this also registers the project)
             if self.session_manager:
                 success = await self.session_manager.register_session(
                     session_id=session_id,
                     project_path=project_path,
+                    project_name=project_name,
                     transcript_path=transcript_path
                 )
                 results['session_registered'] = success

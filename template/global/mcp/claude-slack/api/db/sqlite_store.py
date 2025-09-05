@@ -1405,13 +1405,14 @@ class SQLiteStore:
         Returns:
             List of active session dictionaries
         """
+        cutoff_time = now_timestamp() - (hours * 3600)
         query = """
             SELECT id, project_id, project_path, project_name,
                    transcript_path, scope, updated_at, metadata
             FROM sessions
-            WHERE updated_at > datetime('now', ? || ' hours')
+            WHERE updated_at > ?
         """
-        params = [-hours]
+        params = [cutoff_time]
         
         if project_id is not None:
             query += " AND project_id = ?"
@@ -1447,10 +1448,11 @@ class SQLiteStore:
         Returns:
             Number of sessions deleted
         """
+        cutoff_time = now_timestamp() - (hours * 3600)
         result = await conn.execute("""
             DELETE FROM sessions
-            WHERE updated_at < datetime('now', ? || ' hours')
-        """, (-hours,))
+            WHERE updated_at < ?
+        """, (cutoff_time,))
         
         deleted_count = result.rowcount
         if deleted_count > 0:
@@ -1484,14 +1486,15 @@ class SQLiteStore:
         inputs_str = json.dumps(tool_inputs, sort_keys=True)
         inputs_hash = hashlib.sha256(inputs_str.encode()).hexdigest()
         
-        # Check for recent duplicate
+        # Check for recent duplicate using Unix timestamps
+        cutoff_time = now_timestamp() - (dedup_window_minutes * 60)
         cursor = await conn.execute("""
             SELECT id FROM tool_calls
             WHERE session_id = ?
               AND tool_name = ?
               AND tool_inputs_hash = ?
-              AND called_at > datetime('now', ? || ' minutes')
-        """, (session_id, tool_name, inputs_hash, -dedup_window_minutes))
+              AND called_at > ?
+        """, (session_id, tool_name, inputs_hash, cutoff_time))
         
         if await cursor.fetchone():
             self.logger.debug(f"Duplicate tool call detected: {tool_name} in session {session_id}")
@@ -1520,13 +1523,14 @@ class SQLiteStore:
         Returns:
             List of recent tool calls
         """
+        cutoff_time = now_timestamp() - (minutes * 60)
         cursor = await conn.execute("""
             SELECT id, tool_name, tool_inputs, called_at
             FROM tool_calls
             WHERE session_id = ?
-              AND called_at > datetime('now', ? || ' minutes')
+              AND called_at > ?
             ORDER BY called_at DESC
-        """, (session_id, -minutes))
+        """, (session_id, cutoff_time))
         
         rows = await cursor.fetchall()
         return [
@@ -1550,10 +1554,11 @@ class SQLiteStore:
         Returns:
             Number of tool calls deleted
         """
+        cutoff_time = now_timestamp() - (minutes * 60)
         result = await conn.execute("""
             DELETE FROM tool_calls
-            WHERE called_at < datetime('now', ? || ' minutes')
-        """, (-minutes,))
+            WHERE called_at < ?
+        """, (cutoff_time,))
         
         deleted_count = result.rowcount
         if deleted_count > 0:
@@ -1824,15 +1829,11 @@ class SQLiteStore:
             if since:
                 from api.utils.time_utils import to_timestamp
                 msg_timestamp = result['timestamp']
-                # Handle both Unix timestamps and ISO strings for backward compatibility
-                if isinstance(msg_timestamp, (int, float)):
-                    if msg_timestamp < to_timestamp(since):
-                        continue
-                else:
-                    # Legacy ISO format
-                    msg_time = datetime.fromisoformat(msg_timestamp)
-                    if msg_time < (since if isinstance(since, datetime) else datetime.fromisoformat(since)):
-                        continue
+                # Convert both to Unix timestamps for consistent comparison
+                msg_ts = to_timestamp(msg_timestamp)  # Handles both Unix and ISO
+                since_ts = to_timestamp(since)  # Handles both Unix and ISO
+                if msg_ts and since_ts and msg_ts < since_ts:
+                    continue
             
             results.append(result)
         

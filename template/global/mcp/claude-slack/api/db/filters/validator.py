@@ -210,14 +210,15 @@ class FilterValidator:
             return value
         
         if isinstance(value, datetime):
-            return value.isoformat()
+            # Convert datetime to Unix timestamp for consistency
+            return value.timestamp()
         
         # Try to convert string dates
         if isinstance(value, str):
             try:
-                # Validate ISO format
-                datetime.fromisoformat(value.replace('Z', '+00:00'))
-                return value
+                # Validate ISO format and convert to Unix timestamp
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                return dt.timestamp()
             except:
                 # Not a date, treat as string
                 return value
