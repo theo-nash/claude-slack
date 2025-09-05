@@ -405,14 +405,16 @@ class SQLiteAdvancedSearch:
             where_conditions.append("m.confidence >= ?")
             params.append(min_confidence)
         
-        # Time range filters
+        # Time range filters - convert to Unix timestamps
         if since:
+            from api.utils.time_utils import to_timestamp
             where_conditions.append("m.timestamp >= ?")
-            params.append(since.isoformat() if isinstance(since, datetime) else since)
+            params.append(to_timestamp(since) if since else None)
         
         if until:
+            from api.utils.time_utils import to_timestamp
             where_conditions.append("m.timestamp <= ?")
-            params.append(until.isoformat() if isinstance(until, datetime) else until)
+            params.append(to_timestamp(until) if until else None)
         
         # Metadata filters (MongoDB-style)
         if metadata_filters:

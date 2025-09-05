@@ -185,11 +185,12 @@ class NotesManager:
                     {"tags": {"$contains": tag}} for tag in tags
                 ]
         
-        # Parse date strings if needed
-        if since and isinstance(since, str):
-            since = datetime.fromisoformat(since)
-        if until and isinstance(until, str):
-            until = datetime.fromisoformat(until)
+        # Convert to Unix timestamp if needed
+        from api.utils.time_utils import to_timestamp
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
         
         # Use search_agent_messages for permission-safe searching
         # This will use semantic search if query is provided and Qdrant is available

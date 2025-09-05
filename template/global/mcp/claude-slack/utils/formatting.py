@@ -44,10 +44,24 @@ def format_channel_name(channel_id: str) -> str:
             return f"#{channel_id.split(':', 1)[1]}"
         return f"#{channel_id}"
 
-def format_time_ago(timestamp_str: str) -> str:
-    """Convert timestamp to human-readable time ago format"""
+def format_time_ago(timestamp_value) -> str:
+    """Convert timestamp to human-readable time ago format
+    
+    Args:
+        timestamp_value: Unix timestamp (float/int) or ISO string for backward compatibility
+    """
     try:
-        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        import time
+        
+        # Handle Unix timestamps (our new format)
+        if isinstance(timestamp_value, (int, float)):
+            timestamp = datetime.fromtimestamp(timestamp_value)
+        # Handle ISO strings (backward compatibility)
+        elif isinstance(timestamp_value, str):
+            timestamp = datetime.fromisoformat(timestamp_value.replace('Z', '+00:00'))
+        else:
+            return str(timestamp_value)
+            
         now = datetime.now()
         diff = now - timestamp
         
@@ -65,7 +79,7 @@ def format_time_ago(timestamp_str: str) -> str:
             weeks = diff.days // 7
             return f"{weeks}w ago"
     except:
-        return timestamp_str
+        return str(timestamp_value)
 
 def format_messages_concise(messages_data: Dict, agent_name: str) -> str:
     """

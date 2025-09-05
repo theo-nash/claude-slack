@@ -14,6 +14,7 @@ This server:
 import os
 import sys
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -159,7 +160,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": time.time(),
         "version": "5.0.0"
     }
 
@@ -177,7 +178,7 @@ async def get_stats():
     return {
         "events": event_stats,
         "database": db_stats,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": time.time()
     }
 
 

@@ -216,7 +216,7 @@ class SessionManager:
                     project_name=session_data['project_name'],
                     transcript_path=session_data['transcript_path'],
                     scope=session_data['scope'],
-                    updated_at=datetime.fromisoformat(session_data['updated_at']) if session_data['updated_at'] else datetime.now(),
+                    updated_at=datetime.fromtimestamp(session_data['updated_at']) if isinstance(session_data.get('updated_at'), (int, float)) else (datetime.fromisoformat(session_data['updated_at']) if isinstance(session_data.get('updated_at'), str) else datetime.now()),
                     metadata=session_data['metadata']
                 )
                 

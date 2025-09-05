@@ -158,11 +158,12 @@ def update_session_context_file(session_id: str, tool_name: str = None, tool_inp
         
         # Write session context file with tool info
         session_file = sessions_dir / f"{session_id}.json"
+        import time
         context = {
             'session_id': session_id,
             'tool_name': tool_name,
             'tool_inputs': tool_inputs,
-            'updated_at': datetime.now().isoformat()
+            'updated_at': time.time()
         }
         
         session_file.write_text(json.dumps(context, indent=2))

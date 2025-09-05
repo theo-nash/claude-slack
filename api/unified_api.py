@@ -14,7 +14,7 @@ from .notes.manager import NotesManager
 from .config import Config
 from .models import DMPolicy, Discoverability, DMPermission, AgentInfo
 from .events import SimpleEventStream, AutoEventProxy
-
+from api.utils.time_utils import to_timestamp
 
 class ClaudeSlackAPI:
     """
@@ -220,11 +220,11 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
-        # Parse date strings if needed
-        if since and isinstance(since, str):
-            since = datetime.fromisoformat(since)
-        if until and isinstance(until, str):
-            until = datetime.fromisoformat(until)
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
         
         # Use MessageStore's unified search
         return await self.db.search_messages(
@@ -287,11 +287,11 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
-        # Parse date strings if needed
-        if since and isinstance(since, str):
-            since = datetime.fromisoformat(since)
-        if until and isinstance(until, str):
-            until = datetime.fromisoformat(until)
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
         
         # Use MessageStore's agent-scoped search
         return await self.db.search_agent_messages(

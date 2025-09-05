@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS messages (
     intent_type TEXT,
     
     thread_id TEXT,                -- For threading
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    timestamp REAL DEFAULT (strftime('%s', 'now')),  -- Unix timestamp (seconds since epoch)
     is_edited BOOLEAN DEFAULT FALSE,
     edited_at TIMESTAMP,
     metadata JSON,                 -- priority, references, etc.

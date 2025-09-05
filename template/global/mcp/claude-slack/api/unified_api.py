@@ -4,7 +4,8 @@ This is the main entry point for all claude-slack operations.
 """
 
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
 from pathlib import Path
 
 from .db.message_store import MessageStore
@@ -13,7 +14,7 @@ from .notes.manager import NotesManager
 from .config import Config
 from .models import DMPolicy, Discoverability, DMPermission, AgentInfo
 from .events import SimpleEventStream, AutoEventProxy
-
+from api.utils.time_utils import to_timestamp
 
 class ClaudeSlackAPI:
     """
@@ -172,6 +173,8 @@ class ClaudeSlackAPI:
                              message_type: Optional[str] = None,
                              metadata_filters: Optional[Dict] = None,
                              min_confidence: Optional[float] = None,
+                             since: Optional[Union[datetime, str]] = None,
+                             until: Optional[Union[datetime, str]] = None,
                              limit: int = 20,
                              ranking_profile: str = "balanced") -> List[Dict]:
         """
@@ -198,6 +201,8 @@ class ClaudeSlackAPI:
                     {"breadcrumbs.metrics.test_coverage": {"$gte": 0.9}}
                     {"outcome": "success", "complexity": {"$lte": 5}}
             min_confidence: Minimum confidence threshold
+            since: Only return messages after this timestamp (datetime or ISO string)
+            until: Only return messages before this timestamp (datetime or ISO string)
             limit: Maximum results
             ranking_profile: Scoring profile for semantic search results:
                 - 'recent': Prioritize recent messages (good for debugging, current status)
@@ -215,6 +220,12 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
+        
         # Use MessageStore's unified search
         return await self.db.search_messages(
             query=query,
@@ -223,6 +234,8 @@ class ClaudeSlackAPI:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )
@@ -236,6 +249,8 @@ class ClaudeSlackAPI:
                                    message_type: Optional[str] = None,
                                    metadata_filters: Optional[Dict] = None,
                                    min_confidence: Optional[float] = None,
+                                   since: Optional[Union[datetime, str]] = None,
+                                   until: Optional[Union[datetime, str]] = None,
                                    limit: int = 20,
                                    ranking_profile: str = "balanced") -> List[Dict]:
         """
@@ -253,6 +268,8 @@ class ClaudeSlackAPI:
             message_type: Filter by message type from metadata (legacy, use metadata_filters)
             metadata_filters: Arbitrary nested metadata filters with MongoDB-style operators
             min_confidence: Minimum confidence threshold
+            since: Only return messages after this timestamp (datetime or ISO string)
+            until: Only return messages before this timestamp (datetime or ISO string)
             limit: Maximum results
             ranking_profile: Scoring profile for semantic search results:
                 - 'recent': Prioritize recent messages (good for debugging, current status)
@@ -270,6 +287,12 @@ class ClaudeSlackAPI:
         elif message_type and metadata_filters and "type" not in metadata_filters:
             metadata_filters["type"] = message_type
         
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
+        
         # Use MessageStore's agent-scoped search
         return await self.db.search_agent_messages(
             agent_name=agent_name,
@@ -279,6 +302,8 @@ class ClaudeSlackAPI:
             sender_ids=sender_ids,
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )
@@ -866,6 +891,8 @@ class ClaudeSlackAPI:
                                 agent_project_id: Optional[str] = None,
                                 query: Optional[str] = None,
                                 tags: Optional[List[str]] = None,
+                                since: Optional[Union[datetime, str]] = None,
+                                until: Optional[Union[datetime, str]] = None,
                                 limit: int = 50) -> List[Dict]:
         """
         Search agent's notes with optional semantic search.
@@ -879,6 +906,8 @@ class ClaudeSlackAPI:
             agent_project_id: Optional agent's project ID
             query: Optional search query (triggers semantic search if available)
             tags: Optional tags to filter by
+            since: Only return notes after this timestamp (datetime or ISO string)
+            until: Only return notes before this timestamp (datetime or ISO string)
             limit: Maximum results
             
         Returns:
@@ -889,6 +918,8 @@ class ClaudeSlackAPI:
             agent_project_id=agent_project_id,
             query=query,
             tags=tags,
+            since=since,
+            until=until,
             limit=limit
         )
     
@@ -969,6 +1000,8 @@ class ClaudeSlackAPI:
             sender_ids=agent_names,  # For notes, sender = agent
             metadata_filters=metadata_filters,
             min_confidence=min_confidence,
+            since=since,
+            until=until,
             limit=limit,
             ranking_profile=ranking_profile
         )
