@@ -83,8 +83,14 @@ def format_single_message(msg: Dict, context_override: str = None, agent_name: s
     if sender:
         header_parts.append(sender)
     header_parts.append(f"({time_str})")
+    
+    # Add message ID if present
+    msg_id = msg.get('id')
+    if msg_id:
+        header_parts.append(f"[id:{msg_id}]")
+    
     if tags:
-        header_parts.append(f"tags: {tags}")
+        header_parts.append(f"[tags: {tags}]")
     
     header = " ".join(header_parts) + ":"
     
