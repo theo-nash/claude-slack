@@ -316,6 +316,7 @@ class ClaudeSlackAPI:
                                 agent_name: str,
                                 agent_project_id: Optional[str] = None,
                                 channel_id: Optional[str] = None,
+                                message_ids: Optional[List[int]] = None,
                                 limit: int = 100,
                                 since: Optional[str] = None) -> List[Dict]:
         """
@@ -328,14 +329,23 @@ class ClaudeSlackAPI:
             agent_name: Agent requesting messages
             agent_project_id: Agent's project ID
             channel_id: Optional filter by specific channel
-            limit: Maximum messages
-            since: ISO timestamp to get messages after
+            message_ids: Optional list of specific message IDs to retrieve
+            limit: Maximum messages (ignored if message_ids is provided)
+            since: ISO timestamp to get messages after (ignored if message_ids is provided)
             
         Returns:
             List of message dictionaries visible to the agent
         """
+        # If specific message IDs requested, use get_messages_by_ids
+        if message_ids:
+            return await self.db.get_messages_by_ids(
+                message_ids=message_ids,
+                agent_name=agent_name,
+                agent_project_id=agent_project_id
+            )
+        
+        # Otherwise use the regular flow
         # Convert since to Unix timestamp if provided
-        from api.utils.time_utils import to_timestamp
         since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_agent_messages(
@@ -369,7 +379,6 @@ class ClaudeSlackAPI:
             List of message dictionaries (no permission filtering)
         """
         # Convert since to Unix timestamp if provided
-        from api.utils.time_utils import to_timestamp
         since_ts = to_timestamp(since) if since else None
         
         return await self.db.get_messages(

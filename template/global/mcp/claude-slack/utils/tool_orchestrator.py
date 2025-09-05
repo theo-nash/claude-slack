@@ -439,19 +439,23 @@ class MCPToolOrchestrator:
     
     async def handle_get_messages(self, args: Dict, agent: Dict, context: ProjectContext) -> Dict:
         """Get messages for an agent"""
+        message_ids = args.get("message_ids")
         since = args.get("since")
         limit = args.get("limit", 100)
         unread_only = args.get("unread_only", False)
         
-        # Get all messages accessible to the agent
+        # Get messages - either specific IDs or recent messages
         messages = await self.api.get_agent_messages(
             agent_name=agent['name'],
             agent_project_id=agent['project_id'],
+            message_ids=message_ids,  # Will use get_messages_by_ids if provided
             limit=limit,
             since=since
         )
         
         if not messages:
+            if message_ids:
+                return self._success_response("No messages found with those IDs (may not exist or not accessible)")
             return self._success_response("No recent messages")
         
         # Use the formatting utility that handles flat message lists

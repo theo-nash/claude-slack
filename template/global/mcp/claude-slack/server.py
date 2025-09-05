@@ -214,7 +214,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_messages",
-            description="Check for new messages from your channels and DMs. TIP: Call this at the start of each session to catch up on context",
+            description="Check for new messages from your channels and DMs, or get specific messages by ID. TIP: Call this at the start of each session to catch up on context",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -222,18 +222,23 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Your unique agent identifier (REQUIRED)"
                     },
+                    "message_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Optional list of specific message IDs to retrieve"
+                    },
                     "since": {
                         "type": "string",
-                        "description": "ISO timestamp to get messages since"
+                        "description": "ISO timestamp to get messages since (ignored if message_ids provided)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of messages",
+                        "description": "Maximum number of messages (ignored if message_ids provided)",
                         "default": 100
                     },
                     "unread_only": {
                         "type": "boolean",
-                        "description": "Only return unread messages",
+                        "description": "Only return unread messages (ignored if message_ids provided)",
                         "default": False
                     }
                 },
