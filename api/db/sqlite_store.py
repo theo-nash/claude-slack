@@ -776,7 +776,8 @@ class SQLiteStore:
         query = """
             SELECT m.id, m.channel_id, m.sender_id, m.sender_project_id,
                    m.content, m.timestamp, m.thread_id, m.metadata,
-                   c.name as channel_name, c.channel_type, c.scope
+                   c.name as channel_name, c.channel_type, c.scope,
+                   m.is_edited, m.edited_at
             FROM messages m
             INNER JOIN channels c ON m.channel_id = c.id
             WHERE 1=1
@@ -826,7 +827,9 @@ class SQLiteStore:
                 'metadata': json.loads(row[7]) if row[7] else {},
                 'channel_name': row[8],
                 'channel_type': row[9],
-                'scope': row[10]
+                'scope': row[10],
+                'is_edited': row[11],
+                'edited_at': row[12]
             }
             for row in rows
         ]
@@ -2002,44 +2005,70 @@ class SQLiteStore:
     @with_connection(writer=True)
     async def update_message(self, conn,
                            message_id: int,
-                           content: str,
-                           agent_name: str,
+                           content: Optional[str] = None,
+                           metadata: Optional[Dict] = None,
+                           agent_name: Optional[str] = None,
                            agent_project_id: Optional[str] = None) -> bool:
         """
-        Update a message's content.
+        Update a message's content and/or metadata.
         
         Args:
             message_id: The message ID to update
-            content: New content
-            agent_name: Agent requesting the update
+            content: New content (optional)
+            metadata: New metadata to merge with existing (optional)
+            agent_name: Agent requesting the update (for authorization)
             agent_project_id: Agent's project ID
         
         Returns:
             True if updated, False if not found or not authorized
         """
-        # Verify the agent is the sender
-        cursor = await conn.execute("""
-            SELECT sender_id, sender_project_id
-            FROM messages
-            WHERE id = ?
-        """, (message_id,))
-        
-        row = await cursor.fetchone()
-        if not row:
+        # If neither content nor metadata provided, nothing to update
+        if content is None and metadata is None:
             return False
         
-        sender_id, sender_project_id = row
-        if sender_id != agent_name or sender_project_id != agent_project_id:
-            return False  # Not authorized to edit
+        # If agent_name provided, verify authorization
+        if agent_name is not None:
+            cursor = await conn.execute("""
+                SELECT sender_id, sender_project_id
+                FROM messages
+                WHERE id = ?
+            """, (message_id,))
+            
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            
+            sender_id, sender_project_id = row
+            if sender_id != agent_name or sender_project_id != agent_project_id:
+                return False  # Not authorized to edit
         
-        # Update the message
-        await conn.execute("""
+        # Build update query
+        update_fields = []
+        params = []
+        
+        if content is not None:
+            update_fields.append("content = ?")
+            params.append(content)
+        
+        if metadata is not None:
+            # Merge with existing metadata
+            update_fields.append("metadata = json_patch(COALESCE(metadata, '{}'), ?)")
+            params.append(json.dumps(metadata))
+        
+        # Always set edited fields
+        update_fields.append("is_edited = TRUE")
+        update_fields.append("edited_at = ?")
+        params.append(now_timestamp())
+        
+        # Add message_id for WHERE clause
+        params.append(message_id)
+        
+        # Execute update
+        await conn.execute(f"""
             UPDATE messages
-            SET content = ?,
-                is_edited = TRUE,
-                edited_at = ?
+            SET {', '.join(update_fields)}
             WHERE id = ?
-        """, (content, now_timestamp(), message_id))
+        """, params)
         
         return True
     

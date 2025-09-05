@@ -212,6 +212,70 @@ class TestMessageOperations:
         assert len(messages) >= 2  # Should have our test messages
     
     @pytest.mark.asyncio
+    async def test_update_message_metadata(self, populated_store):
+        """Test updating message metadata."""
+        # Send a message with initial metadata
+        message_id = await populated_store.send_message(
+            channel_id="global:general",
+            sender_id="alice",
+            sender_project_id="proj1",
+            content="Message to update",
+            metadata={"original": True, "version": 1}
+        )
+        
+        # Update metadata (should merge with existing)
+        success = await populated_store.update_message(
+            message_id=message_id,
+            metadata={"updated": True, "version": 2, "new_field": "test"},
+            agent_name="alice",
+            agent_project_id="proj1"
+        )
+        assert success is True
+        
+        # Retrieve updated message
+        messages = await populated_store.get_messages_admin(
+            channel_ids=["global:general"]
+        )
+        
+        # Find our updated message
+        updated_msg = None
+        for msg in messages:
+            if msg["id"] == message_id:
+                updated_msg = msg
+                break
+        
+        assert updated_msg is not None
+        assert updated_msg["is_edited"] == 1  # SQLite returns 1 for TRUE
+        assert updated_msg["edited_at"] is not None
+        
+        # Verify metadata was merged correctly
+        expected_metadata = {
+            "original": True,
+            "version": 2,
+            "updated": True, 
+            "new_field": "test"
+        }
+        assert updated_msg["metadata"] == expected_metadata
+        
+        # Test content update
+        success = await populated_store.update_message(
+            message_id=message_id,
+            content="Updated content",
+            agent_name="alice",
+            agent_project_id="proj1"
+        )
+        assert success is True
+        
+        # Test unauthorized update (different agent)
+        success = await populated_store.update_message(
+            message_id=message_id,
+            content="Unauthorized update",
+            agent_name="bob",
+            agent_project_id="proj2"
+        )
+        assert success is False
+    
+    @pytest.mark.asyncio
     async def test_message_permissions(self, populated_store):
         """Test permission-based message retrieval."""
         # Create a private channel
