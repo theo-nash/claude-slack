@@ -19,6 +19,21 @@ from .db_helpers import with_connection, aconnect
 from .filters import MongoFilterParser, SQLiteFilterBackend, FilterValidator
 from ..utils.time_utils import now_timestamp, to_timestamp, from_timestamp, format_timestamp
 
+# Try to import performance utilities
+try:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from utils.performance import timing_decorator, Timer
+except ImportError:
+    # Fallback if performance module not available
+    def timing_decorator(component):
+        def decorator(func):
+            return func
+        return decorator
+    class Timer:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+
 # Add parent directory to path to import log_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -672,6 +687,7 @@ class SQLiteStore:
         return message_id
     
     @with_connection(writer=False)
+    @timing_decorator('database')
     async def get_messages(self, conn,
                          agent_name: str,
                          agent_project_id: Optional[str] = None,

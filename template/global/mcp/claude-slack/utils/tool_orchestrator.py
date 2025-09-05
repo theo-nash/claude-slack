@@ -27,6 +27,7 @@ from utils.formatting import (
     format_notes_response,
     format_peek_notes
 )
+from utils.performance import timing_decorator, Timer
 from log_manager import get_logger
 
 
@@ -72,6 +73,7 @@ class MCPToolOrchestrator:
         # Initialize only the managers we actually use
         self.api = api
             
+    @timing_decorator('orchestrator')
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any],
                           context: Optional[ProjectContext] = None) -> Dict[str, Any]:
         """
@@ -93,7 +95,8 @@ class MCPToolOrchestrator:
                 if not agent_id:
                     return self._error_response("Missing required parameter: agent_id")
                 
-                agent = await self._validate_and_get_agent(agent_id, context)
+                with Timer('agent_validation', 'orchestrator'):
+                    agent = await self._validate_and_get_agent(agent_id, context)
                 if not agent:
                     project_id = context.project_id if context else None
                     available_agents = await self.api.list_agents(project_id=project_id)
