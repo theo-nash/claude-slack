@@ -1,7 +1,17 @@
 # MongoDB-Style Filtering for SQLiteStore
 
+> **⚠️ DEPRECATED - This document is outdated**
+> 
+> **Status:** This design document is no longer accurate as of September 2025.
+> 
+> **What Changed:** The MongoDB-style filtering system has been completely rewritten using a modular backend architecture located in `api/db/filters/`. The legacy `MongoToSQLFilter` class described in this document has been removed.
+> 
+> **Current Implementation:** See `api/db/filters/sqlite_backend.py` for the active SQLite filtering implementation.
+
 ## Overview
-Port the sophisticated MongoDB-style query filtering from QdrantStore to SQLiteStore, enabling complex metadata queries with nested conditions and operators.
+~~Port the sophisticated MongoDB-style query filtering from QdrantStore to SQLiteStore, enabling complex metadata queries with nested conditions and operators.~~
+
+**DEPRECATED:** This design has been superseded by the modular filtering system in `api/db/filters/`.
 
 ## Current State Analysis
 

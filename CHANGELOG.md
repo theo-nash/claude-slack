@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.3] - 2025-09-09
+
+### Changed
+- **Legacy Code Cleanup**: Removed unused `mongo_filter.py` from both API source and bundled template
+- **Filter Fix**: Fixed malformed JSON errors in `$exists` filter by removing unnecessary `json_type()` wrapper
+- **Bundle Optimization**: Reduced bundle size from 350KB to 333KB
+- **Documentation**: Marked `MONGODB_FILTERING_DESIGN.md` as deprecated in favor of modular `db/filters/` system
+- **Repository**: Added `.claude/` to `.gitignore` and removed from tracking
+
+### Technical Details
+- Updated `sqlite_backend.py` to use direct NULL checks instead of JSON parsing for existence filters
+- Simplified SQL generation improves performance and eliminates JSON malformation edge cases
+- Test expectations updated to reflect cleaner SQL output without `json_type` calls
+
 ## [4.1.2] - 2025-09-05
 
 ### Major Features
