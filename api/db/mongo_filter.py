@@ -232,9 +232,9 @@ class MongoToSQLFilter:
             elif op == '$exists':
                 json_path = self._get_json_extract(field_path)
                 if op_value:
-                    conditions.append(f"json_type({json_path}) IS NOT NULL")
+                    conditions.append(f"{json_path} IS NOT NULL")
                 else:
-                    conditions.append(f"json_type({json_path}) IS NULL")
+                    conditions.append(f"{json_path} IS NULL")
             
             elif op == '$null':
                 json_path = self._get_json_extract(field_path)
