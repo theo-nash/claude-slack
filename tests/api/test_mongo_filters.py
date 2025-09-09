@@ -306,7 +306,7 @@ class TestSQLiteFilterBackend:
         expr = parser.parse({"metadata": {"$exists": True}})
         sql, params = backend.convert(expr)
         
-        assert "json_type" in sql
+        assert "json_extract" in sql
         assert "IS NOT NULL" in sql
         assert params == []
     

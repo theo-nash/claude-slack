@@ -261,9 +261,9 @@ class SQLiteFilterBackend(FilterBackend):
         
         if 'json_extract' in field_ref:
             if should_exist:
-                return f"json_type({field_ref}) IS NOT NULL"
+                return f"{field_ref} IS NOT NULL"
             else:
-                return f"json_type({field_ref}) IS NULL"
+                return f"{field_ref} IS NULL"
         else:
             # For direct columns, check NULL
             if should_exist:
