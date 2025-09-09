@@ -224,9 +224,11 @@ class SQLiteFilterBackend(FilterBackend):
     
     def _build_comparison(self, field_ref: str, op: FilterOperator, value: Any, negated: bool) -> str:
         """Build comparison operators (GT, GTE, LT, LTE)."""
-        # Cast to numeric if needed
+        # Cast to appropriate type based on the value being compared
         if 'json_extract' in field_ref:
-            field_ref = f"CAST({field_ref} AS REAL)"
+            cast_type = self._infer_cast_type(value)
+            if cast_type:
+                field_ref = f"CAST({field_ref} AS {cast_type})"
         
         self.params.append(value)
         
@@ -239,6 +241,24 @@ class SQLiteFilterBackend(FilterBackend):
         
         result = f"{field_ref} {sql_op} ?"
         return f"NOT ({result})" if negated else result
+    
+    def _infer_cast_type(self, value: Any) -> Optional[str]:
+        """Infer appropriate SQL cast type for comparison based on value."""
+        if isinstance(value, bool):
+            return 'INTEGER'
+        elif isinstance(value, int):
+            return 'INTEGER'
+        elif isinstance(value, float):
+            return 'REAL'
+        elif isinstance(value, str):
+            # Check if it looks like a number
+            try:
+                float(value)
+                return 'REAL'
+            except ValueError:
+                # For string comparisons (like timestamps), use TEXT
+                return 'TEXT'
+        return None
     
     def _build_in(self, field_ref: str, values: List[Any], negated: bool) -> str:
         """Build IN/NOT IN clause."""
