@@ -100,7 +100,8 @@ class MessageStore:
                           sender_project_id: Optional[str],
                           content: str,
                           metadata: Optional[Dict] = None,
-                          thread_id: Optional[str] = None) -> int:
+                          thread_id: Optional[str] = None,
+                          auto_register_sender: bool = True) -> int:
         """
         Store a message in both SQLite and Qdrant.
         
@@ -114,10 +115,23 @@ class MessageStore:
             content: Message content
             metadata: Optional nested metadata
             thread_id: Optional thread ID
+            auto_register_sender: If sender is unregistered, will be automatically provisioned
             
         Returns:
             Message ID
         """
+        # Register sender if applicable
+        if auto_register_sender:
+            try:
+                await self.sqlite.register_agent(
+                    name=sender_id,
+                    project_id=sender_project_id,
+                    status= 'online'
+                )
+                self.logger.debug(f"Sender {sender_id} autoregistered in project {project_id}")
+            except Exception as e:
+                self.logger.error(f"Auto-register error: {e}")
+            
         # Extract confidence from metadata if present
         confidence = None
         if metadata and isinstance(metadata, dict):
