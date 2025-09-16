@@ -434,21 +434,21 @@ class QdrantStore:
             pass  # Index might already exist
         
         try:
-            # Create index for confidence field
+            # Create index for timestamp field
             self.client.create_payload_index(
                 collection_name=self.collection_name,
-                field_name="confidence",
+                field_name="timestamp",
                 field_schema=PayloadSchemaType.FLOAT
             )
         except Exception:
             pass  # Index might already exist
         
         try:
-            # Create index for timestamp field
+            # Create index for confidence field
             self.client.create_payload_index(
                 collection_name=self.collection_name,
-                field_name="timestamp",
-                field_schema=PayloadSchemaType.DATETIME
+                field_name="confidence",
+                field_schema=PayloadSchemaType.FLOAT
             )
         except Exception:
             pass  # Index might already exist

@@ -120,14 +120,23 @@ class NotesManager:
         # Ensure notes channel exists
         channel_id = await self.ensure_notes_channel(agent_name, agent_project_id)
         
-        # Prepare note metadata
-        note_metadata = {
-            "type": "note",
-            "tags": tags or [],
-            "session_context": session_context,
-            **(metadata or {})
-        }
-        
+        if isinstance(session_context, dict):
+            # Structured session context - merge into metadata
+            note_metadata = {
+                "type": "note",
+                "tags": tags or [],
+                **session_context,  # session_id, project_id, etc.
+                **(metadata or {})
+            }
+        else:
+            # String session context - keep as description
+            note_metadata = {
+                "type": "note",
+                "tags": tags or [],
+                "session_context": session_context,
+                **(metadata or {})
+            }
+                    
         # Send message to notes channel
         message_id = await self.store.send_message(
             channel_id=channel_id,

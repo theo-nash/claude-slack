@@ -9,7 +9,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="claude-slack-api",
-    version="4.1.0",
+    version="4.1.4",
     author="Claude-Slack Team",
     description="Clean infrastructure API for AI agent knowledge management with Qdrant",
     long_description=long_description,

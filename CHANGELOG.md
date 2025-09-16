@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.4] - 2025-09-16
+
+### Features
+- **Auto-Registration**: Added `auto_register_sender` parameter to message store for automatic sender provisioning
+- **Temporal Search**: Enhanced notes search with `since` and `until` parameters for time-based filtering
+- **Structured Session Context**: Notes manager now supports structured session context metadata
+
+### Improvements
+- **Qdrant Indexing**: Fixed index creation order for timestamp and confidence fields
+- **Bundle Updates**: Updated API bundle timestamp to reflect latest changes
+
+### Technical Details
+- Enhanced message store with sender auto-registration capability
+- Fixed Qdrant timestamp index creation using FLOAT schema type instead of DATETIME
+- Improved notes manager to handle both string and structured session context
+- Added temporal filtering support to unified API notes search
+
 ## [4.1.3] - 2025-09-09
 
 ### Changed

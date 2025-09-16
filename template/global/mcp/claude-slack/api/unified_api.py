@@ -948,6 +948,8 @@ class ClaudeSlackAPI:
                           tags: Optional[List[str]] = None,
                           metadata_filters: Optional[Dict] = None,
                           min_confidence: Optional[float] = None,
+                          since: Optional[Union[datetime, str]] = None,
+                            until: Optional[Union[datetime, str]] = None,
                           limit: int = 50,
                           ranking_profile: str = "balanced") -> List[Dict]:
         """
@@ -976,12 +978,20 @@ class ClaudeSlackAPI:
                     {"tags": {"$contains": "solution"}}
                     {"$or": [{"tags": {"$contains": "bug"}}, {"tags": {"$contains": "issue"}}]}
             min_confidence: Minimum confidence threshold
+            since: Only return notes after this timestamp (datetime or ISO string)
+            until: Only return notes before this timestamp (datetime or ISO string
             limit: Maximum results
             ranking_profile: Scoring profile for semantic search results
             
         Returns:
             List of notes with search scores
         """
+        # Convert to Unix timestamp if needed
+        if since:
+            since = to_timestamp(since)
+        if until:
+            until = to_timestamp(until)
+            
         # Build channel filter if agent_names provided
         if agent_names and not channel_ids:
             channel_ids = []
